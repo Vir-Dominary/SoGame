@@ -78,6 +78,13 @@ func ConfigureTapInterface(ifName, ip string) error {
 		return nil
 	}
 
+	resetCmd := exec.Command("netsh", "interface", "ip", "set", "address",
+		ifName, "dhcp")
+	resetCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	resetCmd.CombinedOutput()
+
+	time.Sleep(500 * time.Millisecond)
+
 	cmd := exec.Command("netsh", "interface", "ip", "set", "address",
 		ifName, "static", ip, "255.255.255.0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
