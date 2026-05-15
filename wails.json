@@ -1,0 +1,19 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "忽游",
+  "outputfilename": "SoGame",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "vir_dominary"
+  },
+  "info": {
+    "companyName": "vir_dominary",
+    "productName": "忽游",
+    "productVersion": "1.0",
+    "copyright": "Copyright © 2026 vir_dominary",
+    "comments": "忽游 - 远程组网工具"
+  }
+}
