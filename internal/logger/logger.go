@@ -2,7 +2,6 @@ package logger
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -20,13 +19,6 @@ const (
 	WARN
 	ERROR
 )
-
-var levelNames = map[LogLevel]string{
-	DEBUG: "DEBUG",
-	INFO:  "INFO",
-	WARN:  "WARN",
-	ERROR: "ERROR",
-}
 
 var levelPrefixes = map[LogLevel]string{
 	DEBUG: "[DEBUG]",
@@ -132,20 +124,16 @@ func (l *Logger) log(level LogLevel, msg string) {
 	logMsg := fmt.Sprintf("%s %s %s:%d - %s\n",
 		timestamp, prefix, file, line, msg)
 
-	// 检查是否需要轮转日志
 	if l.logFile != nil {
 		msgSize := int64(len(logMsg))
 		if l.currentSize+msgSize > maxLogFileSize {
 			l.rotateLogFile()
 		}
-		// 写入文件
 		if n, err := l.logFile.WriteString(logMsg); err == nil {
 			l.currentSize += int64(n)
 		}
+		l.logFile.Sync()
 	}
-
-	// 同时输出到标准输出
-	fmt.Print(logMsg)
 }
 
 // rotateLogFile 轮转日志文件
@@ -275,18 +263,6 @@ func GetLogFile() string {
 	return filepath.Join(dir, fmt.Sprintf("sogame_%s.log", time.Now().Format("2006-01-02")))
 }
 
-// OpenLogFile 打开日志文件（用于 UI 显示）
-func OpenLogFile() io.ReadCloser {
-	logFile := GetLogFile()
-	f, err := os.Open(logFile)
-	if err != nil {
-		// 如果打开失败，返回一个空的 reader
-		return io.NopCloser(io.Reader(nil))
-	}
-	return f
-}
-
-// GetLogContent 获取日志文件内容（用于 UI 显示，返回最后 N 行）
 func GetLogContent(lines int) (string, error) {
 	logFile := GetLogFile()
 	content, err := os.ReadFile(logFile)

@@ -2,12 +2,12 @@ package n2n
 
 import (
 	"bufio"
-	"bytes"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -19,6 +19,7 @@ import (
 )
 
 type StatusCallback func(isRunning bool, message string)
+type ConnectionStateCallback func(state ConnectionState)
 
 type ConnectionState int
 
@@ -51,20 +52,21 @@ func (s ConnectionState) String() string {
 }
 
 type Edge struct {
-	cmd             *exec.Cmd
-	mu              sync.Mutex
-	done            chan struct{}
-	callback        StatusCallback
-	isHealthy       bool
-	lastHealthCheck time.Time
-	config          *config.Config
-	autoRestart     bool
-	restartCount    int
-	maxRestarts     int
-	restartCooldown time.Duration
-	manualStop      bool
-	connectionState ConnectionState
-	registeredPeers int
+	cmd                     *exec.Cmd
+	mu                      sync.Mutex
+	done                    chan struct{}
+	callback                StatusCallback
+	connectionStateCallback ConnectionStateCallback
+	isHealthy               bool
+	lastHealthCheck         time.Time
+	config                  *config.Config
+	autoRestart             bool
+	restartCount            int
+	maxRestarts             int
+	restartCooldown         time.Duration
+	manualStop              bool
+	connectionState         ConnectionState
+	registeredPeers         int
 }
 
 func maskEdgeKey(key string) string {
@@ -77,13 +79,60 @@ func maskEdgeKey(key string) string {
 	return key[:2] + strings.Repeat("*", len(key)-4) + key[len(key)-2:]
 }
 
+// MaskSupernode 脱敏中心节点地址，仅显示节点名称
+func MaskSupernode(address string) string {
+	name := lookupNodeName(address)
+	if name != "" {
+		return name
+	}
+	// 未知节点，脱敏显示：隐藏 IP 中间部分
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return "***"
+	}
+	parts := strings.Split(host, ".")
+	if len(parts) == 4 {
+		return parts[0] + ".***.***." + parts[3] + ":" + port
+	}
+	// 主机名或 IPv6，仅显示首尾
+	if len(host) > 8 {
+		return host[:4] + "***" + host[len(host)-2:] + ":" + port
+	}
+	return "***:" + port
+}
+
+// knownNodes 已知的公用节点列表（地址 -> 名称）
+var knownNodes = map[string]string{
+	"119.6.178.183:10090":                         "公用节点——中国成都",
+	"146.56.108.91:10090":                         "公用节点——英国",
+	"116.28.76.77:10090":                          "公用节点——中国中山",
+	"[2603:c024:5:5f5f:203d:234:6c3d:593c]:10090": "公用节点——韩国",
+	"117.72.86.224:10090":                         "临时节点——中国北京",
+	"8.148.244.159:10090":                         "临时节点——中国深圳",
+	"111.225.98.22:10090":                         "临时节点——中国河北",
+	"n2n.vvcd.win:10090":                          "临时节点——中国苏州",
+}
+
+func lookupNodeName(address string) string {
+	return knownNodes[address]
+}
+
 func BuildArgs(cfg *config.Config) []string {
-	return []string{
+	args := []string{
 		"-c", cfg.Community,
 		"-k", cfg.Key,
 		"-a", cfg.IP,
 		"-l", cfg.Supernode,
+		"-r",
+		"-v",
 	}
+
+	// 指定使用 SoGame 专属 TAP 适配器
+	if platform.IsSoGameAdapterExists() {
+		args = append(args, "-d", platform.SoGameAdapterName)
+	}
+
+	return args
 }
 
 func BuildArgsForLogging(cfg *config.Config) []string {
@@ -98,10 +147,22 @@ func BuildArgsForLogging(cfg *config.Config) []string {
 func (e *Edge) Start(cfg *config.Config) error {
 	e.mu.Lock()
 
+	// 如果已有 edge 进程在运行，先停止它再重新启动
 	if e.cmd != nil && e.cmd.ProcessState == nil {
+		pid := e.cmd.Process.Pid
 		e.mu.Unlock()
-		return fmt.Errorf("edge process already running (PID: %d)", e.cmd.Process.Pid)
+		logger.Warnf("edge process already running (PID: %d), stopping it before restart", pid)
+		if err := e.Stop(); err != nil {
+			logger.Warnf("failed to stop existing edge process: %v", err)
+		}
+		e.Reset()
+		e.mu.Lock()
 	}
+
+	// 清理系统中可能残留的孤儿 edge 进程
+	e.mu.Unlock()
+	KillOrphanEdgeProcess()
+	e.mu.Lock()
 
 	e.manualStop = false
 	e.connectionState = StateConnecting
@@ -124,10 +185,15 @@ func (e *Edge) Start(cfg *config.Config) error {
 	logger.Infof("========== EDGE CONNECTION START ==========")
 	logger.Infof("  Community:    %s", cfg.Community)
 	logger.Infof("  Local IP:     %s", cfg.IP)
-	logger.Infof("  Supernode:    %s", cfg.Supernode)
+	logger.Infof("  Supernode:    %s", MaskSupernode(cfg.Supernode))
 	logger.Infof("  Key:          %s", maskEdgeKey(cfg.Key))
-	logger.Infof("  Edge Path:    %s", edgePath)
 	logger.Infof("============================================")
+
+	// 在启动 edge 之前，确保 TAP 适配器处于启用状态
+	// 其他 VPN 软件（UU 加速器、Redmin VPN 等）关闭时可能会禁用 TAP 适配器
+	if tapName := platform.FindTapInterfaceName(); tapName != "" {
+		platform.EnableTapInterface(tapName)
+	}
 
 	go e.testSupernodeConnectivity(cfg.Supernode)
 
@@ -159,8 +225,6 @@ func (e *Edge) Start(cfg *config.Config) error {
 		return fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
 
-	var outputBuf bytes.Buffer
-
 	logger.Infof("starting edge process (PID pending)")
 
 	if err := cmd.Start(); err != nil {
@@ -169,21 +233,27 @@ func (e *Edge) Start(cfg *config.Config) error {
 		return fmt.Errorf("failed to start edge process: %w", err)
 	}
 
+	// 保存 PID 到文件，用于清理孤儿进程
+	saveEdgePID(cmd.Process.Pid)
+
 	go func() {
 		scanner := bufio.NewScanner(stdoutPipe)
 		for scanner.Scan() {
 			line := scanner.Text()
-			outputBuf.WriteString(line + "\n")
 			e.parseEdgeOutput(line)
-			logger.Debugf("[EDGE] %s", line)
+			logger.Debugf("[EDGE stdout] %s", line)
 		}
 	}()
+
+	// 收集 stderr 输出，用于诊断 edge 进程启动失败
+	var stderrBuf strings.Builder
 	go func() {
 		scanner := bufio.NewScanner(stderrPipe)
 		for scanner.Scan() {
 			line := scanner.Text()
-			outputBuf.WriteString(line + "\n")
-			logger.Debugf("[EDGE] %s", line)
+			stderrBuf.WriteString(line)
+			stderrBuf.WriteString("\n")
+			logger.Infof("[EDGE stderr] %s", line)
 		}
 	}()
 
@@ -201,6 +271,9 @@ func (e *Edge) Start(cfg *config.Config) error {
 		err := e.cmd.Wait()
 		close(done)
 
+		// 进程退出后清除 PID 文件
+		clearEdgePID()
+
 		e.mu.Lock()
 		e.isHealthy = false
 		wasManualStop := e.manualStop
@@ -213,7 +286,11 @@ func (e *Edge) Start(cfg *config.Config) error {
 		}
 
 		if err != nil {
+			stderrOutput := strings.TrimSpace(stderrBuf.String())
 			logger.Errorf("edge process exited with error: %v", err)
+			if stderrOutput != "" {
+				logger.Errorf("edge stderr output:\n%s", stderrOutput)
+			}
 
 			if shouldRestart {
 				e.mu.Lock()
@@ -239,9 +316,19 @@ func (e *Edge) Start(cfg *config.Config) error {
 			} else {
 				if e.callback != nil {
 					if e.restartCount >= e.maxRestarts {
-						e.callback(false, fmt.Sprintf("进程意外退出，已达到最大重启次数 (%d)", e.maxRestarts))
+						stderrOutput := strings.TrimSpace(stderrBuf.String())
+						errMsg := fmt.Sprintf("进程意外退出，已达到最大重启次数 (%d)", e.maxRestarts)
+						if stderrOutput != "" {
+							errMsg += "\n错误输出:\n" + stderrOutput
+						}
+						e.callback(false, errMsg)
 					} else {
-						e.callback(false, "进程意外退出: "+err.Error())
+						stderrOutput := strings.TrimSpace(stderrBuf.String())
+						errMsg := "进程意外退出: " + err.Error()
+						if stderrOutput != "" {
+							errMsg += "\n错误输出:\n" + stderrOutput
+						}
+						e.callback(false, errMsg)
 					}
 				}
 			}
@@ -259,9 +346,15 @@ func (e *Edge) Start(cfg *config.Config) error {
 		exited := e.cmd.ProcessState != nil
 		e.mu.Unlock()
 		if exited {
-			output := outputBuf.String()
-			logger.Errorf("edge process exited immediately (PID: %d), output:\n%s", pid, output)
-			return fmt.Errorf("edge process exited immediately (PID: %d), output: %s", pid, strings.TrimSpace(output))
+			// 等待 stderr 收集完成
+			time.Sleep(200 * time.Millisecond)
+			stderrOutput := strings.TrimSpace(stderrBuf.String())
+			logger.Errorf("edge process exited immediately (PID: %d)", pid)
+			if stderrOutput != "" {
+				logger.Errorf("edge stderr output:\n%s", stderrOutput)
+				return fmt.Errorf("edge 进程立即退出 (PID: %d)\n错误输出:\n%s", pid, stderrOutput)
+			}
+			return fmt.Errorf("edge 进程立即退出 (PID: %d)，无错误输出", pid)
 		}
 	}
 
@@ -302,9 +395,10 @@ func (e *Edge) Stop() error {
 	err := e.cmd.Process.Signal(os.Interrupt)
 	if err != nil {
 		logger.Warnf("failed to send interrupt signal: %v, attempting force kill", err)
-		err = e.cmd.Process.Kill()
-		if err != nil {
-			return fmt.Errorf("failed to kill edge process: %w", err)
+		killCmd := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F")
+		killCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		if killErr := killCmd.Run(); killErr != nil {
+			return fmt.Errorf("failed to kill edge process: %w", killErr)
 		}
 	}
 
@@ -317,7 +411,9 @@ func (e *Edge) Stop() error {
 		e.mu.Unlock()
 		if stillRunning {
 			logger.Warnf("graceful shutdown timeout, force killing process (PID: %d)", pid)
-			if killErr := e.cmd.Process.Kill(); killErr != nil {
+			killCmd := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F")
+			killCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+			if killErr := killCmd.Run(); killErr != nil {
 				logger.Errorf("failed to force kill edge process (PID: %d): %v", pid, killErr)
 			}
 		}
@@ -342,6 +438,12 @@ func (e *Edge) SetStatusCallback(callback StatusCallback) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.callback = callback
+}
+
+func (e *Edge) SetConnectionStateCallback(callback ConnectionStateCallback) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.connectionStateCallback = callback
 }
 
 func (e *Edge) GetStatus() string {
@@ -462,6 +564,9 @@ func findEdgeExecutable() (string, error) {
 	candidates := []string{
 		filepath.Join(baseDir, "edge.exe"),
 		filepath.Join(baseDir, "bin", "edge.exe"),
+		// wails build 输出到 build/bin/，但 edge.exe 可能在项目根的 bin/ 下
+		filepath.Join(baseDir, "..", "bin", "edge.exe"),
+		filepath.Join(baseDir, "..", "..", "bin", "edge.exe"),
 	}
 
 	for _, path := range candidates {
@@ -479,6 +584,87 @@ func findEdgeExecutable() (string, error) {
 	)
 }
 
+// edgePIDPath 返回 edge 进程 PID 文件路径
+func edgePIDPath() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "SoGame", "edge.pid"), nil
+}
+
+// saveEdgePID 保存 edge 进程 PID 到文件
+func saveEdgePID(pid int) {
+	path, err := edgePIDPath()
+	if err != nil {
+		logger.Warnf("failed to get edge PID file path: %v", err)
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(path), 0700)
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("%d", pid)), 0600); err != nil {
+		logger.Warnf("failed to save edge PID: %v", err)
+	}
+}
+
+// clearEdgePID 清除 edge 进程 PID 文件
+func clearEdgePID() {
+	path, err := edgePIDPath()
+	if err != nil {
+		return
+	}
+	_ = os.Remove(path)
+}
+
+// KillOrphanEdgeProcess 通过 PID 文件清理上次运行遗留的 edge 进程
+func KillOrphanEdgeProcess() {
+	path, err := edgePIDPath()
+	if err != nil {
+		return
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return // PID 文件不存在，无需清理
+	}
+
+	pidStr := strings.TrimSpace(string(data))
+	if pidStr == "" {
+		return
+	}
+
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil {
+		_ = os.Remove(path)
+		return
+	}
+
+	// 检查进程是否仍在运行
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		_ = os.Remove(path)
+		return
+	}
+
+	// 尝试发送信号检查进程是否存在（Windows 上 FindProcess 总是成功）
+	if err := proc.Signal(os.Interrupt); err != nil {
+		// 进程不存在，清除 PID 文件
+		_ = os.Remove(path)
+		return
+	}
+
+	logger.Infof("found orphan edge process (PID: %d), terminating...", pid)
+	// 使用 taskkill 命令而非 proc.Kill()，避免被杀毒软件标记为可疑进程操作
+	killCmd := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F")
+	killCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	if err := killCmd.Run(); err != nil {
+		logger.Warnf("failed to kill orphan edge process (PID: %d): %v", pid, err)
+	} else {
+		logger.Infof("orphan edge process terminated (PID: %d)", pid)
+	}
+
+	_ = os.Remove(path)
+}
+
 func (e *Edge) parseEdgeOutput(line string) {
 	lineLower := strings.ToLower(line)
 
@@ -486,9 +672,14 @@ func (e *Edge) parseEdgeOutput(line string) {
 		strings.Contains(lineLower, "successfully registered") {
 		e.mu.Lock()
 		e.connectionState = StateRegistered
+		cb := e.connectionStateCallback
 		e.mu.Unlock()
 		logger.Infof(">>> 连接状态: 已成功注册到中心节点 <<<")
 		logger.Infof("    虚拟网络已建立，可以与同群组内其他节点通信")
+
+		if cb != nil {
+			cb(StateRegistered)
+		}
 
 		go e.postConnectCheck()
 	}
@@ -497,16 +688,43 @@ func (e *Edge) parseEdgeOutput(line string) {
 		strings.Contains(lineLower, "resolving supernode") {
 		e.mu.Lock()
 		e.connectionState = StateConnecting
+		cb := e.connectionStateCallback
 		e.mu.Unlock()
 		logger.Infof(">>> 连接状态: 正在连接中心节点... <<<")
+
+		if cb != nil {
+			cb(StateConnecting)
+		}
 	}
 
 	if strings.Contains(lineLower, "connected to supernode") ||
 		strings.Contains(lineLower, "supernode connection established") {
 		e.mu.Lock()
 		e.connectionState = StateConnected
+		cb := e.connectionStateCallback
 		e.mu.Unlock()
 		logger.Infof(">>> 连接状态: 已连接到中心节点 <<<")
+
+		if cb != nil {
+			cb(StateConnected)
+		}
+	}
+
+	// 捕获 edge 的 <<< ================ >>> supernode 标记行
+	// 这是 n2n edge 成功连接到 supernode 的标志
+	if strings.Contains(lineLower, "<<<") && strings.Contains(lineLower, ">>>") && strings.Contains(lineLower, "supernode") {
+		e.mu.Lock()
+		e.connectionState = StateRegistered
+		cb := e.connectionStateCallback
+		e.mu.Unlock()
+		logger.Infof(">>> 连接状态: 已成功注册到中心节点 <<<")
+		logger.Infof("    虚拟网络已建立，可以与同群组内其他节点通信")
+
+		if cb != nil {
+			cb(StateRegistered)
+		}
+
+		go e.postConnectCheck()
 	}
 
 	if strings.Contains(lineLower, "peer") && strings.Contains(lineLower, "added") {
@@ -520,40 +738,53 @@ func (e *Edge) parseEdgeOutput(line string) {
 	if strings.Contains(lineLower, "error") ||
 		strings.Contains(lineLower, "failed") ||
 		strings.Contains(lineLower, "cannot") {
-		e.mu.Lock()
-		if e.connectionState != StateRegistered {
-			e.connectionState = StateError
-		}
-		e.mu.Unlock()
 		logger.Warnf(">>> 连接警告: %s <<<", line)
+
+		// 仅在尚未注册时才标记为错误状态
+		e.mu.Lock()
+		if e.connectionState != StateRegistered && e.connectionState != StateConnected {
+			e.connectionState = StateError
+			cb := e.connectionStateCallback
+			e.mu.Unlock()
+
+			if cb != nil {
+				cb(StateError)
+			}
+		} else {
+			e.mu.Unlock()
+		}
 	}
 
 	if strings.Contains(lineLower, "disconnected") ||
 		strings.Contains(lineLower, "connection lost") {
 		e.mu.Lock()
 		e.connectionState = StateDisconnected
+		cb := e.connectionStateCallback
 		e.mu.Unlock()
 		logger.Warnf(">>> 连接状态: 已断开连接 <<<")
+
+		if cb != nil {
+			cb(StateDisconnected)
+		}
 	}
 }
 
 func (e *Edge) testSupernodeConnectivity(supernode string) {
 	host, port, err := net.SplitHostPort(supernode)
 	if err != nil {
-		logger.Warnf("中心节点地址格式无效: %s", supernode)
+		logger.Warnf("中心节点地址格式无效")
 		return
 	}
 
 	logger.Infof(">>> 中心节点连通性测试 <<<")
-	logger.Infof("  主机: %s", host)
-	logger.Infof("  端口: %s", port)
+	logger.Infof("  节点: %s", MaskSupernode(supernode))
 
 	logger.Infof("  [1/2] DNS 解析测试...")
-	ips, err := net.LookupIP(host)
+	_, err = net.LookupIP(host)
 	if err != nil {
 		logger.Errorf("  [1/2] DNS 解析失败: %v", err)
 	} else {
-		logger.Infof("  [1/2] DNS 解析成功: %v", ips)
+		logger.Infof("  [1/2] DNS 解析成功")
 	}
 
 	logger.Infof("  [2/2] UDP 连接测试...")
@@ -567,7 +798,7 @@ func (e *Edge) testSupernodeConnectivity(supernode string) {
 			logger.Errorf("  [2/2] UDP 连接失败: %v", err)
 		} else {
 			udpConn.Close()
-			logger.Infof("  [2/2] UDP 连接成功: 可发送数据到 %s", address)
+			logger.Infof("  [2/2] UDP 连接成功")
 		}
 	}
 
@@ -599,11 +830,14 @@ func (e *Edge) postConnectCheck() {
 }
 
 func (e *Edge) pingVPNAddress(ip string) error {
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, "0"), 2*time.Second)
+	// 使用 chcp 65001 切换到 UTF-8 编码，避免中文乱码
+	cmd := exec.Command("cmd", "/C", "chcp 65001 >nul && ping -n 1 -w 2000 "+ip)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return err
+		return fmt.Errorf("ping %s failed: %v", ip, err)
 	}
-	conn.Close()
+	_ = output
 	return nil
 }
 
@@ -649,7 +883,7 @@ func (e *Edge) LogConnectionStatus() {
 	}())
 	logger.Infof("  群内节点数:   %d", e.registeredPeers)
 	if e.config != nil {
-		logger.Infof("  中心节点:     %s", e.config.Supernode)
+		logger.Infof("  中心节点:     %s", MaskSupernode(e.config.Supernode))
 		logger.Infof("  群名:         %s", e.config.Community)
 		logger.Infof("  本机IP:       %s", e.config.IP)
 	}

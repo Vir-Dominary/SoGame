@@ -10,9 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
-	"syscall"
 
 	"netjoin/internal/config"
 	"netjoin/internal/logger"
@@ -70,7 +68,8 @@ func (a *App) Shutdown(ctx context.Context) {
 			logger.Infof("shutdown: edge process stopped")
 		}
 	}
-	killOrphanEdgeProcesses()
+	// 清理可能遗留的孤儿进程（仅清理本应用启动的）
+	n2n.KillOrphanEdgeProcess()
 }
 
 func (a *App) GetState() string {
@@ -126,6 +125,10 @@ func (a *App) GetNodes() []NodeInfo {
 		{Name: "公用节点——英国", Address: "146.56.108.91:10090"},
 		{Name: "公用节点——中国中山", Address: "116.28.76.77:10090"},
 		{Name: "公用节点——韩国", Address: "[2603:c024:5:5f5f:203d:234:6c3d:593c]:10090"},
+		{Name: "临时节点——中国北京", Address: "117.72.86.224:10090"},
+		{Name: "临时节点——中国深圳", Address: "8.148.244.159:10090"},
+		{Name: "临时节点——中国河北", Address: "111.225.98.22:10090"},
+		{Name: "临时节点——中国苏州", Address: "n2n.vvcd.win:10090"},
 	}
 }
 
@@ -156,15 +159,6 @@ func generateStableIP(deviceID, community string) string {
 	b, _ := hex.DecodeString(hash[:2])
 	host := b[0]%254 + 1
 	return fmt.Sprintf("10.10.10.%d", host)
-}
-
-func killOrphanEdgeProcesses() {
-	cmd := exec.Command("taskkill", "/F", "/IM", "edge.exe")
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := cmd.CombinedOutput()
-	if err == nil {
-		logger.Infof("cleaned up orphan edge processes: %s", strings.TrimSpace(string(output)))
-	}
 }
 
 func (a *App) GenerateInvite(supernode string) (string, error) {
@@ -225,7 +219,7 @@ func (a *App) ConnectWithInvite(code string) error {
 
 	logger.Infof("邀请码解析成功:")
 	logger.Infof("  群名: %s", data.Community)
-	logger.Infof("  中心节点: %s", data.Supernode)
+	logger.Infof("  中心节点: %s", n2n.MaskSupernode(data.Supernode))
 	if data.Key != "" {
 		logger.Infof("  密钥: %s", maskKey(data.Key))
 	}
@@ -235,8 +229,6 @@ func (a *App) ConnectWithInvite(code string) error {
 }
 
 func (a *App) Connect(community, ip, key, supernode string) error {
-	killOrphanEdgeProcesses()
-
 	a.mu.Lock()
 	a.state = StateConnecting
 	a.errMsg = ""
@@ -264,8 +256,8 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 		return fmt.Errorf(a.errMsg)
 	}
 
-	if !platform.IsNetworkAdapterReady() {
-		status, err := platform.InstallTapAdapter()
+	if !platform.IsSoGameAdapterExists() {
+		status, err := platform.EnsureSoGameAdapter()
 		if err != nil || (status != platform.TapInstallSuccess && status != platform.TapAlreadyInstalled) {
 			a.mu.Lock()
 			a.state = StateFailed
@@ -273,20 +265,25 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 			a.mu.Unlock()
 			return fmt.Errorf(a.errMsg)
 		}
+	} else {
+		platform.EnableTapInterface(platform.SoGameAdapterName)
 	}
 
-	err := a.edge.Start(a.cfg)
-	if err != nil {
+	// 在启动 edge 之前设置回调，因为 edge 可能在 Start() 返回前就输出注册成功
+	a.edge.SetConnectionStateCallback(func(state n2n.ConnectionState) {
 		a.mu.Lock()
-		a.state = StateFailed
-		a.errMsg = fmt.Sprintf("连接失败: %v", err)
-		a.mu.Unlock()
-		return fmt.Errorf(a.errMsg)
-	}
-
-	a.mu.Lock()
-	a.state = StateConnected
-	a.mu.Unlock()
+		defer a.mu.Unlock()
+		switch state {
+		case n2n.StateRegistered:
+			a.state = StateConnected
+			a.errMsg = ""
+		case n2n.StateError:
+			a.state = StateFailed
+			a.errMsg = "连接过程中发生错误"
+		case n2n.StateDisconnected:
+			a.state = StateDisconnected
+		}
+	})
 
 	a.edge.SetStatusCallback(func(isRunning bool, message string) {
 		if !isRunning {
@@ -296,6 +293,20 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 			a.mu.Unlock()
 		}
 	})
+
+	// 保持 StateConnecting，实际连接是异步的，通过回调更新状态
+	a.mu.Lock()
+	a.state = StateConnecting
+	a.mu.Unlock()
+
+	err := a.edge.Start(a.cfg)
+	if err != nil {
+		a.mu.Lock()
+		a.state = StateFailed
+		a.errMsg = fmt.Sprintf("连接失败: %v", err)
+		a.mu.Unlock()
+		return fmt.Errorf(a.errMsg)
+	}
 
 	return nil
 }

@@ -6,10 +6,9 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
-	"syscall"
 
 	"netjoin/internal/logger"
 	"netjoin/internal/security"
@@ -224,21 +223,20 @@ func Save(cfg *Config) error {
 }
 
 // setFilePermissions 在不同平台上设置文件权限
+// Windows 上 os.WriteFile 的 0600 模式已足够，不再调用 icacls 以避免杀毒软件误报
 func setFilePermissions(path string) error {
-	// 在 Windows 上，我们可以尝试使用 icacls 命令来设置权限
-	// 这里只是一个尝试，因为 Windows 的权限管理比较复杂
-	if isWindows() {
-		cmd := exec.Command("icacls", path, "/inheritance:r", "/grant:r", "%USERNAME%:F")
-		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-		return cmd.Run()
+	if !isWindows() {
+		return nil
 	}
-	// 在 Unix 系统上，权限已经通过 os.WriteFile 设置
+	// Windows 上文件权限由 NTFS ACL 控制，0600 模式在 Windows 上
+	// 仅设置只读属性，实际安全性由文件所在目录的 ACL 保证。
+	// 配置文件存储在 %AppData%\SoGame 下，该目录默认只有当前用户可访问。
 	return nil
 }
 
 // isWindows 检查当前是否为 Windows 系统
 func isWindows() bool {
-	return os.PathSeparator == '\\' && os.PathListSeparator == ';'
+	return runtime.GOOS == "windows"
 }
 
 // Validate 验证配置的有效性
@@ -321,16 +319,28 @@ func ValidateIP(ipStr string) error {
 	return nil
 }
 
-// ValidateSupernode 验证 Supernode 地址 (IP:PORT)
+// ValidateSupernode 验证 Supernode 地址 (IP:PORT 或 HOSTNAME:PORT)
 func ValidateSupernode(address string) error {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return fmt.Errorf("must be in HOST:PORT format: %w", err)
 	}
 
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return fmt.Errorf("invalid IP address: %s", host)
+	if host == "" {
+		return fmt.Errorf("host cannot be empty")
+	}
+
+	// 允许 IP 地址和主机名
+	if ip := net.ParseIP(host); ip == nil {
+		// 不是 IP 地址，验证为主机名
+		if len(host) > 253 {
+			return fmt.Errorf("hostname too long (max 253 characters)")
+		}
+		for _, ch := range host {
+			if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '.') {
+				return fmt.Errorf("hostname contains invalid characters")
+			}
+		}
 	}
 
 	portNum, err := strconv.Atoi(port)

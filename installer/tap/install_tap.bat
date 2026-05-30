@@ -29,14 +29,27 @@ if not defined TAPINSTALL (
     exit /b 1
 )
 
-echo INFO: Adding TAP driver to store with pnputil...
-pnputil /add-driver "%SCRIPT_DIR%OemWin2k.inf" /install >nul 2>&1
+echo INFO: Adding TAP driver to driver store with pnputil...
+pnputil /add-driver "%SCRIPT_DIR%OemWin2k.inf" /install
+if errorlevel 1 (
+    echo WARN: pnputil add-driver failed, trying with force flag...
+    pnputil /add-driver "%SCRIPT_DIR%OemWin2k.inf" /install /force
+)
 
 echo INFO: Creating TAP adapter instance with %TAPINSTALL%...
 "%TAPINSTALL%" install "%SCRIPT_DIR%OemWin2k.inf" tap0901
 if errorlevel 1 (
-    echo ERROR: TAP adapter installation failed
-    exit /b 1
+    echo WARN: tapinstall failed with standard method, trying legacy method...
+    rem Try using pnputil to install the driver first, then create instance
+    pnputil /add-driver "%SCRIPT_DIR%OemWin2k.inf" /install 2>nul
+    timeout /t 2 /nobreak >nul
+    "%TAPINSTALL%" install "%SCRIPT_DIR%OemWin2k.inf" tap0901
+    if errorlevel 1 (
+        echo ERROR: TAP adapter installation failed after retry
+        echo ERROR: This may be due to driver signing requirements.
+        echo ERROR: Try running: bcdedit /set nointegritychecks on
+        exit /b 1
+    )
 )
 
 timeout /t 3 /nobreak >nul

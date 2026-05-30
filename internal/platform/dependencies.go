@@ -41,6 +41,8 @@ func checkEdgeExecutable() DependencyCheckResult {
 	candidates := []string{
 		filepath.Join(baseDir, "edge.exe"),
 		filepath.Join(baseDir, "bin", "edge.exe"),
+		filepath.Join(baseDir, "..", "bin", "edge.exe"),
+		filepath.Join(baseDir, "..", "..", "bin", "edge.exe"),
 	}
 
 	for _, path := range candidates {
