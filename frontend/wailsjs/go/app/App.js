@@ -38,6 +38,10 @@ export function GetNodes() {
   return window['go']['app']['App']['GetNodes']();
 }
 
+export function GetPluginStatus(arg1) {
+  return window['go']['app']['App']['GetPluginStatus'](arg1);
+}
+
 export function GetState() {
   return window['go']['app']['App']['GetState']();
 }
@@ -46,6 +50,14 @@ export function IsNetworkAdapterReady() {
   return window['go']['app']['App']['IsNetworkAdapterReady']();
 }
 
+export function ListPlugins() {
+  return window['go']['app']['App']['ListPlugins']();
+}
+
 export function OpenLogs() {
   return window['go']['app']['App']['OpenLogs']();
+}
+
+export function PluginAction(arg1, arg2) {
+  return window['go']['app']['App']['PluginAction'](arg1, arg2);
 }

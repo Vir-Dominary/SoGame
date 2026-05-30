@@ -16,6 +16,8 @@ import (
 	"netjoin/internal/logger"
 	"netjoin/internal/n2n"
 	"netjoin/internal/platform"
+	"netjoin/internal/plugin"
+	"netjoin/internal/plugins"
 )
 
 type AppState string
@@ -28,12 +30,14 @@ const (
 )
 
 type App struct {
-	mu     sync.Mutex
-	ctx    context.Context
-	edge   *n2n.Edge
-	cfg    *config.Config
-	state  AppState
-	errMsg string
+	mu      sync.Mutex
+	ctx     context.Context
+	edge    *n2n.Edge
+	cfg     *config.Config
+	state   AppState
+	errMsg  string
+	plugins *plugin.Manager
+	hostIP  string // 房主 VPN IP，从邀请码解析获得（为空表示自己是房主）
 }
 
 func NewApp() *App {
@@ -44,9 +48,10 @@ func NewApp() *App {
 	}
 
 	return &App{
-		edge:  &n2n.Edge{},
-		cfg:   cfg,
-		state: StateDisconnected,
+		edge:    &n2n.Edge{},
+		cfg:     cfg,
+		state:   StateDisconnected,
+		plugins: plugin.NewManager(plugins.All()...),
 	}
 }
 
@@ -136,6 +141,7 @@ type inviteData struct {
 	Community string `json:"c"`
 	Key       string `json:"k"`
 	Supernode string `json:"s"`
+	HostIP    string `json:"h"`
 }
 
 func getStableDeviceID() string {
@@ -181,10 +187,14 @@ func (a *App) GenerateInvite(supernode string) (string, error) {
 		logger.Infof("自动生成房间密钥: %s", maskKey(a.cfg.Key))
 	}
 
+	deviceID := getStableDeviceID()
+	hostIP := generateStableIP(deviceID, a.cfg.Community)
+
 	data := inviteData{
 		Community: a.cfg.Community,
 		Key:       a.cfg.Key,
 		Supernode: supernode,
+		HostIP:    hostIP,
 	}
 
 	jsonBytes, err := json.Marshal(data)
@@ -223,7 +233,13 @@ func (a *App) ConnectWithInvite(code string) error {
 	if data.Key != "" {
 		logger.Infof("  密钥: %s", maskKey(data.Key))
 	}
+	if data.HostIP != "" {
+		logger.Infof("  房主IP: %s", data.HostIP)
+	}
 	logger.Infof("  分配IP: %s", ip)
+
+	// 保存房主 IP 供插件使用
+	a.hostIP = data.HostIP
 
 	return a.Connect(data.Community, ip, data.Key, data.Supernode)
 }
@@ -322,6 +338,7 @@ func (a *App) Disconnect() error {
 	a.mu.Lock()
 	a.state = StateDisconnected
 	a.errMsg = ""
+	a.hostIP = ""
 	a.mu.Unlock()
 	return nil
 }
@@ -368,4 +385,30 @@ func (a *App) GetLogContent() string {
 		return fmt.Sprintf("读取日志失败: %v", err)
 	}
 	return content
+}
+
+func (a *App) pluginSession() plugin.Session {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	return plugin.Session{
+		Connected: a.state == StateConnected || a.state == StateConnecting,
+		IsHost:    a.hostIP == "" || a.hostIP == a.cfg.IP,
+		MyIP:      a.cfg.IP,
+		HostIP:    a.hostIP,
+		Community: a.cfg.Community,
+		Supernode: a.cfg.Supernode,
+	}
+}
+
+func (a *App) ListPlugins() []plugin.Meta {
+	return a.plugins.ListMeta()
+}
+
+func (a *App) GetPluginStatus(pluginID string) (plugin.Status, error) {
+	return a.plugins.Status(pluginID, a.pluginSession())
+}
+
+func (a *App) PluginAction(pluginID, actionID string) error {
+	return a.plugins.RunAction(pluginID, actionID, a.pluginSession())
 }

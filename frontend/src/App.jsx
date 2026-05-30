@@ -8,6 +8,9 @@ import {
   Disconnect,
   OpenLogs,
   GetAboutInfo,
+  ListPlugins,
+  GetPluginStatus,
+  PluginAction,
 } from '../wailsjs/go/app/App'
 
 const STATES = {
@@ -32,6 +35,9 @@ function App() {
   const [elapsed, setElapsed] = useState('')
   const [showAbout, setShowAbout] = useState(false)
   const [aboutInfo, setAboutInfo] = useState(null)
+  const [plugins, setPlugins] = useState([])
+  const [pluginStatuses, setPluginStatuses] = useState({})
+  const [actionLoading, setActionLoading] = useState({})
   const pollRef = useRef(null)
   const timerRef = useRef(null)
 
@@ -74,6 +80,50 @@ function App() {
       setElapsed('')
     }
   }, [status])
+
+  // 连接成功后加载插件列表
+  useEffect(() => {
+    if (status === 'connected') {
+      loadPlugins()
+    } else {
+      setPlugins([])
+      setPluginStatuses({})
+    }
+  }, [status])
+
+  const loadPlugins = async () => {
+    try {
+      const list = await ListPlugins()
+      setPlugins(list || [])
+      const statuses = {}
+      for (const p of (list || [])) {
+        try {
+          statuses[p.id] = await GetPluginStatus(p.id)
+        } catch (_) {}
+      }
+      setPluginStatuses(statuses)
+    } catch (_) {}
+  }
+
+  const handlePluginAction = async (pluginId, actionId) => {
+    setActionLoading(prev => ({ ...prev, [pluginId]: actionId }))
+    try {
+      await PluginAction(pluginId, actionId)
+      setErrorMsg('')
+      // 操作后刷新该插件状态
+      const s = await GetPluginStatus(pluginId)
+      setPluginStatuses(prev => ({ ...prev, [pluginId]: s }))
+    } catch (e) {
+      setErrorMsg(String(e))
+      // 失败时也刷新状态（后端可能已自动重置）
+      try {
+        const s = await GetPluginStatus(pluginId)
+        setPluginStatuses(prev => ({ ...prev, [pluginId]: s }))
+      } catch (_) {}
+    } finally {
+      setActionLoading(prev => ({ ...prev, [pluginId]: null }))
+    }
+  }
 
   const startPolling = useCallback((interval = 500, stopOnConnected = true) => {
     if (pollRef.current) clearInterval(pollRef.current)
@@ -303,6 +353,36 @@ function App() {
                   <div className="elapsed">{elapsed}</div>
                 )}
               </div>
+
+              {isConnected && plugins.length > 0 && (
+                <div className="plugin-panel">
+                  {plugins.map(p => {
+                    const ps = pluginStatuses[p.id]
+                    const actions = ps?.actions || []
+                    const loading = actionLoading[p.id]
+                    return (
+                      <div key={p.id} className="plugin-card">
+                        <div className="plugin-info">
+                          <span className="plugin-name">{p.name}</span>
+                          {ps && <span className="plugin-status-text">{ps.message}</span>}
+                        </div>
+                        <div className="plugin-actions">
+                          {actions.map(a => (
+                            <button
+                              key={a.id}
+                              className={`plugin-action-btn ${!a.enabled || loading ? 'disabled' : ''}`}
+                              disabled={!a.enabled || !!loading}
+                              onClick={() => handlePluginAction(p.id, a.id)}
+                            >
+                              {loading === a.id ? '...' : a.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </>
           )}
 

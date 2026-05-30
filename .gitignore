@@ -1,0 +1,10 @@
+# 构建输出
+build/bin/
+build/bin.zip
+
+# IDE / 工具缓存
+.understand-anything/
+
+# 系统文件
+Thumbs.db
+.DS_Store
