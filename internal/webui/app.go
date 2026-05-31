@@ -312,6 +312,11 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 }
 
 func (a *App) Disconnect() error {
+	a.mu.Lock()
+	a.state = StateDisconnected
+	a.errMsg = ""
+	a.mu.Unlock()
+
 	err := a.edge.Stop()
 	if err != nil {
 		a.mu.Lock()
@@ -319,10 +324,6 @@ func (a *App) Disconnect() error {
 		a.mu.Unlock()
 		return err
 	}
-	a.mu.Lock()
-	a.state = StateDisconnected
-	a.errMsg = ""
-	a.mu.Unlock()
 	return nil
 }
 

@@ -34,6 +34,7 @@ function App() {
   const [aboutInfo, setAboutInfo] = useState(null)
   const pollRef = useRef(null)
   const timerRef = useRef(null)
+  const disconnectingRef = useRef(false)
 
   useEffect(() => {
     loadNodes()
@@ -127,13 +128,19 @@ function App() {
 
   const handleConnect = async () => {
     if (status === 'connected') {
-      try {
-        await Disconnect()
-        setStatus('disconnected')
-        setErrorMsg('')
-      } catch (e) {
-        setErrorMsg(String(e))
+      if (disconnectingRef.current) return
+      disconnectingRef.current = true
+      if (pollRef.current) {
+        clearInterval(pollRef.current)
+        pollRef.current = null
       }
+      setStatus('disconnected')
+      setErrorMsg('')
+      Disconnect().catch(e => {
+        setErrorMsg(String(e))
+      }).finally(() => {
+        disconnectingRef.current = false
+      })
       return
     }
 
