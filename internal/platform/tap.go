@@ -11,7 +11,7 @@ import (
 	"time"
 	"unsafe"
 
-	"netjoin/internal/logger"
+	"sogame/internal/logger"
 
 	"golang.org/x/sys/windows"
 )
@@ -197,7 +197,7 @@ func ConfigureTapInterface(ifName, ip string) error {
 	time.Sleep(500 * time.Millisecond)
 
 	cmd := exec.Command("netsh", "interface", "ip", "set", "address",
-		ifName, "static", ip, "255.255.255.0")
+		ifName, "static", ip, "255.255.0.0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
