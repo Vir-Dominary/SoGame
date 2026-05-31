@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -123,32 +124,7 @@ func checkVirtualAdapter() DependencyCheckResult {
 }
 
 func containsIgnoreCase(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if equalsIgnoreCase(s[i:i+len(substr)], substr) {
-			return true
-		}
-	}
-	return false
-}
-
-func equalsIgnoreCase(s1, s2 string) bool {
-	if len(s1) != len(s2) {
-		return false
-	}
-	for i := range s1 {
-		c1 := s1[i]
-		c2 := s2[i]
-		if c1 >= 'A' && c1 <= 'Z' {
-			c1 += 'a' - 'A'
-		}
-		if c2 >= 'A' && c2 <= 'Z' {
-			c2 += 'a' - 'A'
-		}
-		if c1 != c2 {
-			return false
-		}
-	}
-	return true
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }
 
 func checkAdminPrivileges() DependencyCheckResult {

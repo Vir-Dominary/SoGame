@@ -7,11 +7,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 
-	"netjoin/internal/logger"
-	"netjoin/internal/security"
+	"sogame/internal/logger"
+	"sogame/internal/security"
 
 	"gopkg.in/yaml.v3"
 )
@@ -35,13 +34,21 @@ type Config struct {
 var encryptor *security.Encryptor
 
 func init() {
-	// 初始化加密器
 	key, err := security.GetOrCreateEncryptionKey()
 	if err != nil {
-		logger.Warnf("failed to get encryption key: %v, using default key", err)
-		key = "default-encryption-key-for-netjoin"
+		logger.Errorf("failed to get encryption key: %v, generating a new one", err)
+		key, err = security.GenerateAndSaveEncryptionKey()
+		if err != nil {
+			logger.Errorf("failed to generate new encryption key: %v, config encryption will be disabled", err)
+		}
 	}
-	encryptor, _ = security.NewEncryptor(key)
+	if key != "" {
+		var encErr error
+		encryptor, encErr = security.NewEncryptor(key)
+		if encErr != nil {
+			logger.Errorf("failed to create encryptor: %v, config encryption will be disabled", encErr)
+		}
+	}
 }
 
 func DefaultConfig() *Config {
@@ -54,7 +61,7 @@ func DefaultConfig() *Config {
 		NodeName:  "my-node",
 		Community: generateRandomCommunity(),
 		Key:       "",
-		Supernode: "8.148.244.159:8080",
+		Supernode: "8.148.244.159:10090",
 		IP:        "10.10.10.10",
 	}
 }
@@ -63,7 +70,7 @@ func DefaultConfig() *Config {
 func generateRandomCommunity() string {
 	bytes := make([]byte, 4)
 	if _, err := rand.Read(bytes); err != nil {
-		return "netjoin"
+		return "sogame"
 	}
 	return "community-" + hex.EncodeToString(bytes)
 }
@@ -115,8 +122,7 @@ func LoadOrCreate() (*Config, error) {
 		return defaultCfg, fmt.Errorf("config file corrupted, restored to default config: %w", err)
 	}
 
-	// 解密密钥
-	if cfg.Key != "" {
+	if cfg.Key != "" && encryptor != nil {
 		decryptedKey, err := encryptor.Decrypt(cfg.Key)
 		if err != nil {
 			logger.Warnf("failed to decrypt key, using raw key: %v", err)
@@ -195,10 +201,15 @@ func Save(cfg *Config) error {
 		Version: AppVersion,
 	}
 
-	// 加密密钥
-	encryptedKey, err := encryptor.Encrypt(cfg.Key)
-	if err != nil {
-		return fmt.Errorf("failed to encrypt key: %w", err)
+	encryptedKey := cfg.Key
+	if encryptor != nil {
+		encrypted, err := encryptor.Encrypt(cfg.Key)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt key: %w", err)
+		}
+		encryptedKey = encrypted
+	} else {
+		logger.Warnf("encryptor not available, saving key in plaintext")
 	}
 
 	configCopy.Key = encryptedKey
@@ -213,30 +224,7 @@ func Save(cfg *Config) error {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 
-	// 在 Windows 上，尝试设置文件权限以增强安全性
-	// 注意：Windows 的权限模型与 Unix 不同，这里只是做一个尝试
-	if err := setFilePermissions(path); err != nil {
-		logger.Warnf("failed to set file permissions: %v", err)
-	}
-
 	return nil
-}
-
-// setFilePermissions 在不同平台上设置文件权限
-// Windows 上 os.WriteFile 的 0600 模式已足够，不再调用 icacls 以避免杀毒软件误报
-func setFilePermissions(path string) error {
-	if !isWindows() {
-		return nil
-	}
-	// Windows 上文件权限由 NTFS ACL 控制，0600 模式在 Windows 上
-	// 仅设置只读属性，实际安全性由文件所在目录的 ACL 保证。
-	// 配置文件存储在 %AppData%\SoGame 下，该目录默认只有当前用户可访问。
-	return nil
-}
-
-// isWindows 检查当前是否为 Windows 系统
-func isWindows() bool {
-	return runtime.GOOS == "windows"
 }
 
 // Validate 验证配置的有效性
@@ -377,11 +365,9 @@ func RestoreFromBackup() (*Config, error) {
 		return nil, fmt.Errorf("failed to parse backup file: %w", err)
 	}
 
-	// 解密密钥
-	if cfg.Key != "" {
+	if cfg.Key != "" && encryptor != nil {
 		decryptedKey, err := encryptor.Decrypt(cfg.Key)
 		if err != nil {
-			// 解密失败，可能是未加密的旧配置，尝试使用原始密钥
 			logger.Warnf("failed to decrypt key from backup, using raw key: %v", err)
 		} else {
 			cfg.Key = decryptedKey

@@ -12,10 +12,10 @@ import (
 	"os/exec"
 	"sync"
 
-	"netjoin/internal/config"
-	"netjoin/internal/logger"
-	"netjoin/internal/n2n"
-	"netjoin/internal/platform"
+	"sogame/internal/config"
+	"sogame/internal/logger"
+	"sogame/internal/n2n"
+	"sogame/internal/platform"
 )
 
 type AppState string
@@ -120,16 +120,12 @@ type NodeInfo struct {
 }
 
 func (a *App) GetNodes() []NodeInfo {
-	return []NodeInfo{
-		{Name: "公用节点——中国成都", Address: "119.6.178.183:10090"},
-		{Name: "公用节点——英国", Address: "146.56.108.91:10090"},
-		{Name: "公用节点——中国中山", Address: "116.28.76.77:10090"},
-		{Name: "公用节点——韩国", Address: "[2603:c024:5:5f5f:203d:234:6c3d:593c]:10090"},
-		{Name: "临时节点——中国北京", Address: "117.72.86.224:10090"},
-		{Name: "临时节点——中国深圳", Address: "8.148.244.159:10090"},
-		{Name: "临时节点——中国河北", Address: "111.225.98.22:10090"},
-		{Name: "临时节点——中国苏州", Address: "n2n.vvcd.win:10090"},
+	nodes := n2n.GetKnownNodes()
+	result := make([]NodeInfo, 0, len(nodes))
+	for _, node := range nodes {
+		result = append(result, NodeInfo{Name: node.Name, Address: node.Address})
 	}
+	return result
 }
 
 type inviteData struct {
@@ -156,9 +152,10 @@ func generateStableIP(deviceID, community string) string {
 	h := sha256.New()
 	h.Write([]byte(deviceID + community))
 	hash := hex.EncodeToString(h.Sum(nil))
-	b, _ := hex.DecodeString(hash[:2])
-	host := b[0]%254 + 1
-	return fmt.Sprintf("10.10.10.%d", host)
+	b, _ := hex.DecodeString(hash[:4])
+	host3 := int(b[0])%254 + 1
+	host4 := int(b[1])%254 + 1
+	return fmt.Sprintf("10.10.%d.%d", host3, host4)
 }
 
 func (a *App) GenerateInvite(supernode string) (string, error) {
@@ -245,7 +242,7 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 		a.state = StateFailed
 		a.errMsg = fmt.Sprintf("保存配置失败: %v", err)
 		a.mu.Unlock()
-		return fmt.Errorf(a.errMsg)
+		return fmt.Errorf("保存配置失败: %w", err)
 	}
 
 	if a.cfg.Key == "" {
@@ -253,7 +250,7 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 		a.state = StateFailed
 		a.errMsg = "请先设置密码"
 		a.mu.Unlock()
-		return fmt.Errorf(a.errMsg)
+		return fmt.Errorf("请先设置密码")
 	}
 
 	if !platform.IsSoGameAdapterExists() {
@@ -263,7 +260,7 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 			a.state = StateFailed
 			a.errMsg = fmt.Sprintf("网络适配器安装失败: %v", err)
 			a.mu.Unlock()
-			return fmt.Errorf(a.errMsg)
+			return fmt.Errorf("网络适配器安装失败: %w", err)
 		}
 	} else {
 		platform.EnableTapInterface(platform.SoGameAdapterName)
@@ -294,29 +291,19 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 		}
 	})
 
-	// 保持 StateConnecting，实际连接是异步的，通过回调更新状态
-	a.mu.Lock()
-	a.state = StateConnecting
-	a.mu.Unlock()
-
 	err := a.edge.Start(a.cfg)
 	if err != nil {
 		a.mu.Lock()
 		a.state = StateFailed
 		a.errMsg = fmt.Sprintf("连接失败: %v", err)
 		a.mu.Unlock()
-		return fmt.Errorf(a.errMsg)
+		return fmt.Errorf("连接失败: %w", err)
 	}
 
 	return nil
 }
 
 func (a *App) Disconnect() error {
-	a.mu.Lock()
-	a.state = StateDisconnected
-	a.errMsg = ""
-	a.mu.Unlock()
-
 	err := a.edge.Stop()
 	if err != nil {
 		a.mu.Lock()
@@ -324,6 +311,10 @@ func (a *App) Disconnect() error {
 		a.mu.Unlock()
 		return err
 	}
+	a.mu.Lock()
+	a.state = StateDisconnected
+	a.errMsg = ""
+	a.mu.Unlock()
 	return nil
 }
 

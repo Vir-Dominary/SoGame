@@ -7,16 +7,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
-	"netjoin/internal/config"
-	"netjoin/internal/logger"
-	"netjoin/internal/platform"
+	"sogame/internal/config"
+	"sogame/internal/logger"
+	"sogame/internal/platform"
 )
 
 type StatusCallback func(isRunning bool, message string)
@@ -25,10 +24,6 @@ type ConnectionStateCallback func(state ConnectionState)
 type ConnectionState int
 
 const (
-	authRetryDelay         = 5 * time.Second
-	maxAuthConflictRetry   = 2
-	newProcessGroupFlag    = 0x00000200
-
 	StateDisconnected ConnectionState = iota
 	StateConnecting
 	StateConnected
@@ -59,7 +54,6 @@ func (s ConnectionState) String() string {
 type Edge struct {
 	cmd                     *exec.Cmd
 	mu                      sync.Mutex
-	stopMu                  sync.Mutex
 	done                    chan struct{}
 	callback                StatusCallback
 	connectionStateCallback ConnectionStateCallback
@@ -73,9 +67,6 @@ type Edge struct {
 	manualStop              bool
 	connectionState         ConnectionState
 	registeredPeers         int
-	authConflictRetries     int
-	registrationRetryPending bool
-	mgmtPort                int
 }
 
 func maskEdgeKey(key string) string {
@@ -123,10 +114,27 @@ var knownNodes = map[string]string{
 }
 
 func lookupNodeName(address string) string {
+	return LookupNodeName(address)
+}
+
+func LookupNodeName(address string) string {
 	return knownNodes[address]
 }
 
-func BuildArgs(cfg *config.Config, mgmtPort int) []string {
+type KnownNode struct {
+	Name    string
+	Address string
+}
+
+func GetKnownNodes() []KnownNode {
+	nodes := make([]KnownNode, 0, len(knownNodes))
+	for addr, name := range knownNodes {
+		nodes = append(nodes, KnownNode{Name: name, Address: addr})
+	}
+	return nodes
+}
+
+func BuildArgs(cfg *config.Config) []string {
 	args := []string{
 		"-c", cfg.Community,
 		"-k", cfg.Key,
@@ -134,11 +142,6 @@ func BuildArgs(cfg *config.Config, mgmtPort int) []string {
 		"-l", cfg.Supernode,
 		"-r",
 		"-v",
-	}
-
-	// 开放管理端口，用于优雅退出
-	if mgmtPort > 0 {
-		args = append(args, "-t", strconv.Itoa(mgmtPort))
 	}
 
 	// 指定使用 SoGame 专属 TAP 适配器
@@ -159,9 +162,6 @@ func BuildArgsForLogging(cfg *config.Config) []string {
 }
 
 func (e *Edge) Start(cfg *config.Config) error {
-	e.stopMu.Lock()
-	e.stopMu.Unlock()
-
 	e.mu.Lock()
 
 	// 如果已有 edge 进程在运行，先停止它再重新启动
@@ -184,8 +184,6 @@ func (e *Edge) Start(cfg *config.Config) error {
 	e.manualStop = false
 	e.connectionState = StateConnecting
 	e.registeredPeers = 0
-	e.authConflictRetries = 0
-	e.registrationRetryPending = false
 	e.config = cfg
 
 	if e.maxRestarts == 0 {
@@ -216,13 +214,7 @@ func (e *Edge) Start(cfg *config.Config) error {
 
 	go e.testSupernodeConnectivity(cfg.Supernode)
 
-	mgmtPort, err := allocateUDPPort()
-	if err != nil {
-		logger.Warnf("failed to allocate management port, graceful shutdown unavailable: %v", err)
-	}
-	e.mgmtPort = mgmtPort
-
-	args := BuildArgs(cfg, mgmtPort)
+	args := BuildArgs(cfg)
 
 	logger.Debugf("edge args:")
 	for i := 0; i < len(args); i += 2 {
@@ -236,8 +228,7 @@ func (e *Edge) Start(cfg *config.Config) error {
 	cmd := exec.Command(edgePath, args...)
 
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: newProcessGroupFlag,
+		HideWindow: true,
 	}
 
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -402,15 +393,9 @@ func (e *Edge) Reset() {
 	e.registeredPeers = 0
 	e.manualStop = false
 	e.restartCount = 0
-	e.authConflictRetries = 0
-	e.registrationRetryPending = false
-	e.mgmtPort = 0
 }
 
 func (e *Edge) Stop() error {
-	e.stopMu.Lock()
-	defer e.stopMu.Unlock()
-
 	e.mu.Lock()
 	if e.cmd == nil || e.cmd.ProcessState != nil {
 		e.mu.Unlock()
@@ -424,8 +409,37 @@ func (e *Edge) Stop() error {
 
 	logger.Infof("stopping edge process (PID: %d)", pid)
 
-	if err := terminateEdgeProcess(pid, done, e.mgmtPort); err != nil {
-		return err
+	err := e.cmd.Process.Signal(os.Interrupt)
+	if err != nil {
+		logger.Warnf("failed to send interrupt signal: %v, attempting force kill", err)
+		killCmd := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F")
+		killCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		if killErr := killCmd.Run(); killErr != nil {
+			return fmt.Errorf("failed to kill edge process: %w", killErr)
+		}
+	}
+
+	select {
+	case <-done:
+		logger.Infof("edge process terminated successfully (PID: %d)", pid)
+	case <-time.After(5 * time.Second):
+		e.mu.Lock()
+		stillRunning := e.cmd.ProcessState == nil
+		e.mu.Unlock()
+		if stillRunning {
+			logger.Warnf("graceful shutdown timeout, force killing process (PID: %d)", pid)
+			killCmd := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F")
+			killCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+			if killErr := killCmd.Run(); killErr != nil {
+				logger.Errorf("failed to force kill edge process (PID: %d): %v", pid, killErr)
+			}
+		}
+		select {
+		case <-done:
+			logger.Infof("edge process force terminated (PID: %d)", pid)
+		case <-time.After(2 * time.Second):
+			return fmt.Errorf("edge process did not terminate within 7 seconds (PID: %d)", pid)
+		}
 	}
 
 	return nil
@@ -503,15 +517,6 @@ func (e *Edge) checkHealth() {
 		e.isHealthy = false
 		if e.callback != nil {
 			e.callback(false, "进程状态异常: process is nil")
-		}
-		return
-	}
-
-	if e.cmd.ProcessState != nil {
-		logger.Warnf("edge process health check failed: process already exited")
-		e.isHealthy = false
-		if e.callback != nil {
-			e.callback(false, "进程状态异常: process already exited")
 		}
 		return
 	}
@@ -618,220 +623,67 @@ func clearEdgePID() {
 	_ = os.Remove(path)
 }
 
-// KillOrphanEdgeProcess 通过 PID 文件清理上次运行遗留的 edge 进程。
-// 返回值表示是否终止了仍在运行的进程。
-func KillOrphanEdgeProcess() bool {
+// KillOrphanEdgeProcess 通过 PID 文件清理上次运行遗留的 edge 进程
+func KillOrphanEdgeProcess() {
 	path, err := edgePIDPath()
 	if err != nil {
-		return false
+		return
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return false
+		return // PID 文件不存在，无需清理
 	}
 
 	pidStr := strings.TrimSpace(string(data))
 	if pidStr == "" {
-		return false
+		return
 	}
 
 	pid, err := strconv.Atoi(pidStr)
 	if err != nil {
 		_ = os.Remove(path)
-		return false
+		return
 	}
 
-	if !edgeProcessRunning(pid) {
+	// 检查进程是否仍在运行
+	proc, err := os.FindProcess(pid)
+	if err != nil {
 		_ = os.Remove(path)
-		return false
+		return
+	}
+
+	// 尝试发送信号检查进程是否存在（Windows 上 FindProcess 总是成功）
+	if err := proc.Signal(os.Interrupt); err != nil {
+		// 进程不存在，清除 PID 文件
+		_ = os.Remove(path)
+		return
 	}
 
 	logger.Infof("found orphan edge process (PID: %d), terminating...", pid)
-	if err := terminateEdgeProcess(pid, nil, 0); err != nil {
+	// 使用 taskkill 命令而非 proc.Kill()，避免被杀毒软件标记为可疑进程操作
+	killCmd := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F")
+	killCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	if err := killCmd.Run(); err != nil {
 		logger.Warnf("failed to kill orphan edge process (PID: %d): %v", pid, err)
 	} else {
 		logger.Infof("orphan edge process terminated (PID: %d)", pid)
 	}
 
 	_ = os.Remove(path)
-	return true
-}
-
-func allocateUDPPort() (int, error) {
-	addr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	conn, err := net.ListenUDP("udp", addr)
-	if err != nil {
-		return 0, err
-	}
-	port := conn.LocalAddr().(*net.UDPAddr).Port
-	conn.Close()
-	return port, nil
-}
-
-func sendMgmtStop(port int) bool {
-	addr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port}
-	conn, err := net.DialUDP("udp", nil, addr)
-	if err != nil {
-		return false
-	}
-	defer conn.Close()
-	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-	_, err = conn.Write([]byte("stop\n"))
-	return err == nil
-}
-
-func terminateEdgeProcess(pid int, done <-chan struct{}, mgmtPort int) error {
-	if runtime.GOOS == "windows" {
-		return terminateEdgeProcessWindows(pid, done, mgmtPort)
-	}
-	return terminateEdgeProcessUnix(pid, done)
-}
-
-func terminateEdgeProcessUnix(pid int, done <-chan struct{}) error {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return nil
-	}
-	if err := proc.Signal(os.Interrupt); err != nil {
-		logger.Warnf("failed to send interrupt signal: %v, attempting kill", err)
-		if killErr := proc.Kill(); killErr != nil {
-			return fmt.Errorf("failed to kill edge process: %w", killErr)
-		}
-	}
-	return waitForProcessExit(pid, done, 7*time.Second)
-}
-
-func terminateEdgeProcessWindows(pid int, done <-chan struct{}, mgmtPort int) error {
-	if mgmtPort > 0 {
-		logger.Debugf("sending stop command to edge management port %d (PID: %d)", mgmtPort, pid)
-		if sendMgmtStop(mgmtPort) {
-			if waitForProcessExit(pid, done, 8*time.Second) == nil {
-				logger.Infof("edge process terminated gracefully via management port (PID: %d)", pid)
-				return nil
-			}
-			logger.Warnf("graceful shutdown timeout after management stop (PID: %d)", pid)
-		} else {
-			logger.Debugf("management stop failed, trying taskkill without /F (PID: %d)", pid)
-		}
-	}
-
-	if err := runTaskkill(pid, false); err != nil {
-		logger.Debugf("taskkill without /F failed: %v", err)
-	} else if waitForProcessExit(pid, done, 5*time.Second) == nil {
-		logger.Infof("edge process terminated via taskkill (PID: %d)", pid)
-		return nil
-	}
-
-	logger.Warnf("force killing edge process (PID: %d)", pid)
-	if err := runTaskkill(pid, true); err != nil {
-		return fmt.Errorf("failed to force kill edge process: %w", err)
-	}
-	if err := waitForProcessExit(pid, done, 3*time.Second); err != nil {
-		return err
-	}
-	logger.Infof("edge process force terminated (PID: %d)", pid)
-	return nil
-}
-
-func runTaskkill(pid int, force bool) error {
-	args := []string{"/PID", strconv.Itoa(pid), "/T"}
-	if force {
-		args = append(args, "/F")
-	}
-	killCmd := exec.Command("taskkill", args...)
-	killCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	return killCmd.Run()
-}
-
-func waitForProcessExit(pid int, done <-chan struct{}, timeout time.Duration) error {
-	if done != nil {
-		select {
-		case <-done:
-			return nil
-		case <-time.After(timeout):
-		}
-	} else {
-		deadline := time.Now().Add(timeout)
-		for time.Now().Before(deadline) {
-			if !edgeProcessRunning(pid) {
-				return nil
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
-	}
-	if !edgeProcessRunning(pid) {
-		return nil
-	}
-	return fmt.Errorf("edge process did not terminate within %v (PID: %d)", timeout, pid)
-}
-
-func edgeProcessRunning(pid int) bool {
-	out, err := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid), "/NH").
-		CombinedOutput()
-	if err != nil {
-		return false
-	}
-	return strings.Contains(string(out), strconv.Itoa(pid))
-}
-
-func (e *Edge) scheduleRegistrationRetry() {
-	e.mu.Lock()
-	if e.manualStop || e.registrationRetryPending {
-		e.mu.Unlock()
-		return
-	}
-	if e.authConflictRetries >= maxAuthConflictRetry {
-		e.mu.Unlock()
-		return
-	}
-	e.registrationRetryPending = true
-	e.authConflictRetries++
-	retryNum := e.authConflictRetries
-	cfg := e.config
-	e.mu.Unlock()
-
-	go func() {
-		defer func() {
-			e.mu.Lock()
-			e.registrationRetryPending = false
-			e.mu.Unlock()
-		}()
-
-		delay := authRetryDelay * time.Duration(retryNum)
-		logger.Infof("supernode 尚未释放上次注册，%v 后自动重试 (%d/%d)...",
-			delay, retryNum, maxAuthConflictRetry)
-		time.Sleep(delay)
-
-		e.mu.Lock()
-		manual := e.manualStop
-		e.mu.Unlock()
-		if manual || cfg == nil {
-			return
-		}
-
-		if err := e.Stop(); err != nil {
-			logger.Warnf("registration retry: stop failed: %v", err)
-		}
-		e.Reset()
-		if err := e.Start(cfg); err != nil {
-			logger.Errorf("registration retry: start failed: %v", err)
-			if e.callback != nil {
-				e.callback(false, "注册冲突，自动重试失败: "+err.Error())
-			}
-		}
-	}()
 }
 
 func (e *Edge) parseEdgeOutput(line string) {
 	lineLower := strings.ToLower(line)
 
 	if strings.Contains(lineLower, "registered with supernode") ||
-		strings.Contains(lineLower, "successfully registered") {
+		strings.Contains(lineLower, "successfully registered") ||
+		(strings.Contains(lineLower, "<<<") && strings.Contains(lineLower, ">>>") && strings.Contains(lineLower, "supernode")) {
 		e.mu.Lock()
+		if e.connectionState == StateRegistered {
+			e.mu.Unlock()
+			return
+		}
 		e.connectionState = StateRegistered
 		cb := e.connectionStateCallback
 		e.mu.Unlock()
@@ -843,6 +695,7 @@ func (e *Edge) parseEdgeOutput(line string) {
 		}
 
 		go e.postConnectCheck()
+		return
 	}
 
 	if strings.Contains(lineLower, "connecting to supernode") ||
@@ -871,23 +724,6 @@ func (e *Edge) parseEdgeOutput(line string) {
 		}
 	}
 
-	// 捕获 edge 的 <<< ================ >>> supernode 标记行
-	// 这是 n2n edge 成功连接到 supernode 的标志
-	if strings.Contains(lineLower, "<<<") && strings.Contains(lineLower, ">>>") && strings.Contains(lineLower, "supernode") {
-		e.mu.Lock()
-		e.connectionState = StateRegistered
-		cb := e.connectionStateCallback
-		e.mu.Unlock()
-		logger.Infof(">>> 连接状态: 已成功注册到中心节点 <<<")
-		logger.Infof("    虚拟网络已建立，可以与同群组内其他节点通信")
-
-		if cb != nil {
-			cb(StateRegistered)
-		}
-
-		go e.postConnectCheck()
-	}
-
 	if strings.Contains(lineLower, "peer") && strings.Contains(lineLower, "added") {
 		e.mu.Lock()
 		e.registeredPeers++
@@ -896,19 +732,11 @@ func (e *Edge) parseEdgeOutput(line string) {
 		logger.Infof(">>> 节点发现: 发现新节点 (当前群内共 %d 个节点) <<<", peers)
 	}
 
-	if strings.Contains(lineLower, "already in use") ||
-		strings.Contains(lineLower, "not released yet") {
-		logger.Warnf(">>> 连接警告: %s <<<", line)
-		e.scheduleRegistrationRetry()
-		return
-	}
-
 	if strings.Contains(lineLower, "error") ||
 		strings.Contains(lineLower, "failed") ||
 		strings.Contains(lineLower, "cannot") {
 		logger.Warnf(">>> 连接警告: %s <<<", line)
 
-		// 仅在尚未注册时才标记为错误状态
 		e.mu.Lock()
 		if e.connectionState != StateRegistered && e.connectionState != StateConnected {
 			e.connectionState = StateError
@@ -998,8 +826,7 @@ func (e *Edge) postConnectCheck() {
 }
 
 func (e *Edge) pingVPNAddress(ip string) error {
-	// 使用 chcp 65001 切换到 UTF-8 编码，避免中文乱码
-	cmd := exec.Command("cmd", "/C", "chcp 65001 >nul && ping -n 1 -w 2000 "+ip)
+	cmd := exec.Command("ping", "-n", "1", "-w", "2000", ip)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1081,7 +908,7 @@ func (e *Edge) configureTapInterface(cfg *config.Config) {
 	if err := platform.ConfigureTapInterface(ifName, cfg.IP); err != nil {
 		logger.Errorf("  配置 TAP 适配器失败: %v", err)
 	} else {
-		logger.Infof("  配置 TAP 适配器成功: %s/24, MTU=1290", cfg.IP)
+		logger.Infof("  配置 TAP 适配器成功: %s/16, MTU=1290", cfg.IP)
 	}
 
 	logger.Infof(">>> TAP 适配器配置完成 <<<")

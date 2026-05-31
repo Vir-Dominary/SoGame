@@ -63,6 +63,9 @@ func GetLocalIPAddress() (string, error) {
 	}
 	defer conn.Close()
 
-	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	localAddr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		return "", fmt.Errorf("failed to determine local IP: unexpected address type %T", conn.LocalAddr())
+	}
 	return localAddr.IP.String(), nil
 }

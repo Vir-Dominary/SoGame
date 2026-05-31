@@ -1,5 +1,5 @@
-#define MyAppName "忽游"
-#define MyAppVersion "1.0"
+#define MyAppName "SoGame"
+#define MyAppVersion "1.3"
 #define MyAppPublisher "vir_dominary"
 #define MyAppExeName "SoGame.exe"
 
@@ -71,9 +71,14 @@ Filename: "{app}\tap\install_tap.bat"; \
 function IsTapInstalled(): Boolean;
 var
   ResultCode: Integer;
+  Output: string;
 begin
-  Exec('netsh', 'interface show interface', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Result := (ResultCode = 0);
+  Result := False;
+  if Exec('powershell', '-Command "Get-NetAdapter -IncludeHidden | Where-Object { $_.InterfaceDescription -match ''tap0901|TAP-Windows'' } | Measure-Object | Select-Object -ExpandProperty Count"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    if ResultCode = 0 then
+      Result := True;
+  end;
 end;
 
 function ShouldInstallTap(): Boolean;

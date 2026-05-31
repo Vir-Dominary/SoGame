@@ -1,4 +1,4 @@
-module netjoin
+module sogame
 
 go 1.25.0
 
