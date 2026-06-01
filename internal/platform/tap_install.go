@@ -51,11 +51,31 @@ func isTapinstallSuccess(output string) bool {
 }
 
 // EnsureSoGameAdapter 确保 SoGame-VPN 适配器存在
-// 四段降级：检查 → 改名 → 创建 → 装驱动→重试
+// 五段降级：GUID查找 → 描述改名 → 创建 → 装驱动→重试
 func EnsureSoGameAdapter() (TapInstallStatus, error) {
 	if IsSoGameAdapterExists() {
 		logger.Infof("SoGame 专属适配器 '%s' 已存在", SoGameAdapterName)
+		saveAdapterRecord(getAdapterGUID(SoGameAdapterName), SoGameAdapterName)
 		return TapAlreadyInstalled, nil
+	}
+
+	// 尝试0：按记录的 GUID 查找（即使被改名也能精确定位）
+	if rec := loadAdapterRecord(); rec != nil {
+		if a := findAdapterByGUID(rec.GUID); a != nil {
+			logger.Infof("通过 GUID 找回适配器 '%s'（曾用名: %s），正在恢复名称...", a.Name, rec.Name)
+			renameCmd := exec.Command("netsh", "interface", "set", "interface",
+				fmt.Sprintf("name=%s", a.Name), fmt.Sprintf("newname=%s", SoGameAdapterName))
+			renameCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+			if out, err := renameCmd.CombinedOutput(); err != nil {
+				logger.Warnf("GUID 适配器重命名失败: %v, %s", err, strings.TrimSpace(string(out)))
+			} else {
+				logger.Infof("已将 GUID 适配器 '%s' 恢复为 '%s'", a.Name, SoGameAdapterName)
+				saveAdapterRecord(rec.GUID, SoGameAdapterName)
+				return TapInstallSuccess, nil
+			}
+		} else {
+			logger.Infof("记录的适配器 GUID=%s 已不存在，将重新创建", rec.GUID)
+		}
 	}
 
 	logger.Infof("正在创建 SoGame 专属 TAP 适配器 '%s'...", SoGameAdapterName)
@@ -70,6 +90,7 @@ func EnsureSoGameAdapter() (TapInstallStatus, error) {
 			logger.Warnf("netsh 重命名适配器失败: %v, %s", err, strings.TrimSpace(string(out)))
 		} else {
 			logger.Infof("已将 '%s' 重命名为 '%s'", oldName, SoGameAdapterName)
+			saveAdapterRecord(getAdapterGUID(SoGameAdapterName), SoGameAdapterName)
 			return TapInstallSuccess, nil
 		}
 	}
@@ -77,6 +98,7 @@ func EnsureSoGameAdapter() (TapInstallStatus, error) {
 	// 尝试2：创建新实例（此时系统中没有任何 TAP 适配器）
 	status, err := createSoGameAdapter()
 	if err == nil {
+		saveAdapterRecord(getAdapterGUID(SoGameAdapterName), SoGameAdapterName)
 		return status, nil
 	}
 
@@ -89,6 +111,8 @@ func EnsureSoGameAdapter() (TapInstallStatus, error) {
 	status, err = createSoGameAdapter()
 	if err != nil {
 		logger.Errorf("驱动已安装但创建 TAP 适配器仍然失败: %v", err)
+	} else {
+		saveAdapterRecord(getAdapterGUID(SoGameAdapterName), SoGameAdapterName)
 	}
 	return status, err
 }
