@@ -48,6 +48,7 @@ func init() {
 		if encErr != nil {
 			logger.Errorf("failed to create encryptor: %v, config encryption will be disabled", encErr)
 		}
+
 	}
 }
 
