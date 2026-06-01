@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 
 	"netjoin/internal/config"
 	"netjoin/internal/logger"
@@ -256,17 +257,24 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 		return fmt.Errorf(a.errMsg)
 	}
 
-	if !platform.IsSoGameAdapterExists() {
-		status, err := platform.EnsureSoGameAdapter()
-		if err != nil || (status != platform.TapInstallSuccess && status != platform.TapAlreadyInstalled) {
+	if _, err := platform.EnsureSoGameAdapter(); err != nil {
+		a.mu.Lock()
+		a.state = StateFailed
+		a.errMsg = fmt.Sprintf("网络适配器安装失败: %v", err)
+		a.mu.Unlock()
+		return fmt.Errorf(a.errMsg)
+	}
+
+	if err := platform.RestartTapAdapter(platform.SoGameAdapterName); err != nil {
+		logger.Warnf("TAP 适配器重启失败: %v，2秒后重试...", err)
+		time.Sleep(2 * time.Second)
+		if err := platform.RestartTapAdapter(platform.SoGameAdapterName); err != nil {
 			a.mu.Lock()
 			a.state = StateFailed
-			a.errMsg = fmt.Sprintf("网络适配器安装失败: %v", err)
+			a.errMsg = fmt.Sprintf("TAP 适配器启动失败: %v", err)
 			a.mu.Unlock()
 			return fmt.Errorf(a.errMsg)
 		}
-	} else {
-		platform.EnableTapInterface(platform.SoGameAdapterName)
 	}
 
 	// 在启动 edge 之前设置回调，因为 edge 可能在 Start() 返回前就输出注册成功
