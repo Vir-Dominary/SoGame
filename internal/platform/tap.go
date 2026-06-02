@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"unsafe"
 
 	"netjoin/internal/logger"
+	"netjoin/internal/nic"
 
 	"golang.org/x/sys/windows"
 )
@@ -129,6 +131,12 @@ func EnableTapInterface(ifName string) {
 		return
 	}
 
+	if enableTapInterfaceByDeviceAPI(ifName) {
+		return
+	}
+
+	logger.Warnf("TAP 适配器 '%s' 设备层启用失败，回退到 netsh/PowerShell", ifName)
+
 	checkCmd := exec.Command("powershell", "-Command",
 		fmt.Sprintf("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; (Get-NetAdapter -Name '%s' -ErrorAction SilentlyContinue).Status", ifName))
 	checkCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
@@ -161,6 +169,31 @@ func EnableTapInterface(ifName string) {
 	}
 
 	time.Sleep(1 * time.Second)
+}
+
+func enableTapInterfaceByDeviceAPI(ifName string) bool {
+	info, err := nic.FindByFriendlyName(ifName)
+	if err != nil {
+		logger.Warnf("查找 TAP 适配器 '%s' 失败: %v", ifName, err)
+		return false
+	}
+	if info.AdminStatus == nic.AdminUp {
+		logger.Debugf("TAP 适配器 '%s' 已处于设备层启用状态", ifName)
+		return true
+	}
+
+	logger.Infof("正在通过设备层 API 启用 TAP 适配器 '%s'...", ifName)
+	if err := nic.SetDeviceStatus(info.Luid, true); err != nil {
+		logger.Warnf("设备层启用 TAP 适配器 '%s' 失败: %v", ifName, err)
+		return false
+	}
+	if err := nic.WaitAdminStatus(context.Background(), info.Luid, nic.AdminUp, 200*time.Millisecond, 10*time.Second); err != nil {
+		logger.Warnf("等待 TAP 适配器 '%s' 启用失败: %v", ifName, err)
+		return false
+	}
+
+	logger.Infof("TAP 适配器 '%s' 已通过设备层 API 启用", ifName)
+	return true
 }
 
 // SetInterfaceMetric 设置网卡的跃点数（优先级），值越小优先级越高
