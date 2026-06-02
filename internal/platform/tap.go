@@ -2,6 +2,7 @@ package platform
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -53,15 +54,43 @@ func IsSoGameAdapterExists() bool {
 		return true
 	}
 
-	cmd := exec.Command("powershell", "-Command",
-		fmt.Sprintf("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; try { $a = Get-NetAdapter -Name '%s' -ErrorAction Stop; if ($a.Status -ne $null) { Write-Output 'EXISTS' } else { Write-Output 'EXISTS' } } catch { Write-Output 'NOT_FOUND' }", SoGameAdapterName))
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := cmd.CombinedOutput()
+	_, err := nic.FindByFriendlyName(SoGameAdapterName)
+	if err == nil {
+		return true
+	}
+	if !errors.Is(err, nic.ErrNotFound) {
+		logger.Warnf("查找 SoGame 专属适配器 '%s' 失败: %v", SoGameAdapterName, err)
+	}
+	return false
+}
+
+func isTapLikeDescription(description string) bool {
+	desc := strings.ToLower(description)
+	return strings.Contains(desc, "tap-windows") ||
+		strings.Contains(desc, "tap0901") ||
+		strings.Contains(desc, "tap") ||
+		strings.Contains(desc, "wintun") ||
+		strings.Contains(desc, "tun")
+}
+
+func findTapAdapterByNic() (*nic.Info, error) {
+	list, err := nic.List()
 	if err != nil {
-		return false
+		return nil, err
 	}
 
-	return strings.TrimSpace(string(output)) == "EXISTS"
+	for i := range list {
+		if strings.EqualFold(list[i].FriendlyName, SoGameAdapterName) {
+			return &list[i], nil
+		}
+	}
+	for i := range list {
+		if isTapLikeDescription(list[i].Description) {
+			return &list[i], nil
+		}
+	}
+
+	return nil, fmt.Errorf("%w: TAP adapter", nic.ErrNotFound)
 }
 
 // isTapDriverInstalled 检查 TAP 驱动是否已安装到系统中（不一定有 SoGame 适配器实例）
@@ -82,18 +111,13 @@ func isTapAdapterInstalled() bool {
 		return true
 	}
 
-	if IsSoGameAdapterExists() {
+	_, err := findTapAdapterByNic()
+	if err == nil {
 		return true
 	}
-
-	cmd := exec.Command("powershell", "-Command",
-		`Get-NetAdapter | Where-Object { $_.InterfaceDescription -match 'tap|wintun|tun' } | Select-Object -First 1 -ExpandProperty Name`)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := cmd.CombinedOutput()
-	if err == nil && len(strings.TrimSpace(string(output))) > 0 {
-		return true
+	if !errors.Is(err, nic.ErrNotFound) {
+		logger.Warnf("查找 TAP 适配器失败: %v", err)
 	}
-
 	return false
 }
 
@@ -103,26 +127,20 @@ func FindTapInterfaceName() string {
 		return ""
 	}
 
-	// 优先查找 SoGame 专属适配器
-	if IsSoGameAdapterExists() {
-		logger.Debugf("found SoGame dedicated adapter: %s", SoGameAdapterName)
-		return SoGameAdapterName
-	}
-
-	// 回退：查找任何可用的 TAP 适配器（优先选择没有 IP 的）
-	cmd := exec.Command("powershell", "-Command",
-		fmt.Sprintf(`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $adapters = Get-NetAdapter | Where-Object { $_.InterfaceDescription -match 'tap|wintun|tun' -and $_.Name -ne '%s' }; foreach ($a in $adapters) { $ip = (Get-NetIPAddress -InterfaceAlias $a.Name -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress; if (-not $ip) { Write-Output $a.Name; break } }; if (-not $?) { foreach ($a in $adapters) { Write-Output $a.Name; break } }`, SoGameAdapterName))
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := cmd.CombinedOutput()
-	if err == nil {
-		name := strings.TrimSpace(string(output))
-		if name != "" {
-			logger.Debugf("found TAP interface (fallback): %s", name)
-			return name
+	info, err := findTapAdapterByNic()
+	if err != nil {
+		if !errors.Is(err, nic.ErrNotFound) {
+			logger.Warnf("查找 TAP 接口失败: %v", err)
 		}
+		return ""
 	}
 
-	return ""
+	if strings.EqualFold(info.FriendlyName, SoGameAdapterName) {
+		logger.Debugf("found SoGame dedicated adapter by nic: %s", info.FriendlyName)
+	} else {
+		logger.Debugf("found TAP interface by nic: %s", info.FriendlyName)
+	}
+	return info.FriendlyName
 }
 
 // EnableTapInterface 启用可能被禁用的 TAP 网络适配器
