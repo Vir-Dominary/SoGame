@@ -15,6 +15,7 @@ import (
 
 	"netjoin/internal/logger"
 	"netjoin/internal/nic"
+	tapadapter "netjoin/internal/tap"
 
 	"golang.org/x/sys/windows"
 )
@@ -64,96 +65,16 @@ func IsSoGameAdapterExists() bool {
 	return false
 }
 
-func isTapLikeDescription(description string) bool {
-	desc := strings.ToLower(description)
-	return strings.Contains(desc, "tap-windows") ||
-		strings.Contains(desc, "tap0901") ||
-		strings.Contains(desc, "tap") ||
-		strings.Contains(desc, "wintun") ||
-		strings.Contains(desc, "tun")
-}
-
-func isTapWindowsDescription(description string) bool {
-	desc := strings.ToLower(description)
-	return strings.Contains(desc, "tap-windows") ||
-		strings.Contains(desc, "tap0901")
-}
-
-func findTapAdapterByNic() (*nic.Info, error) {
-	list, err := nic.List()
-	if err != nil {
-		return nil, err
-	}
-
-	for i := range list {
-		if strings.EqualFold(list[i].FriendlyName, SoGameAdapterName) {
-			return &list[i], nil
-		}
-	}
-	for i := range list {
-		if isTapLikeDescription(list[i].Description) {
-			return &list[i], nil
-		}
-	}
-
-	return nil, fmt.Errorf("%w: TAP adapter", nic.ErrNotFound)
-}
-
-func findRenameableTapAdapterByNic() (*nic.Info, error) {
-	list, err := nic.List()
-	if err != nil {
-		return nil, err
-	}
-
-	for i := range list {
-		if strings.EqualFold(list[i].FriendlyName, SoGameAdapterName) {
-			continue
-		}
-		if isTapWindowsDescription(list[i].Description) {
-			return &list[i], nil
-		}
-	}
-
-	return nil, fmt.Errorf("%w: renameable TAP adapter", nic.ErrNotFound)
-}
-
-func waitAdapterFriendlyName(name string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for {
-		if _, err := nic.FindByFriendlyName(name); err == nil {
-			return nil
-		} else {
-			lastErr = err
-		}
-		if time.Now().After(deadline) {
-			return lastErr
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-}
-
 func renameTapAdapterByNic() bool {
-	info, err := findRenameableTapAdapterByNic()
+	info, err := tapadapter.RenameCandidate(SoGameAdapterName, 3*time.Second)
 	if err != nil {
 		if !errors.Is(err, nic.ErrNotFound) {
-			logger.Warnf("查找可重命名 TAP 适配器失败: %v", err)
+			logger.Warnf("重命名 TAP 适配器为 '%s' 失败: %v", SoGameAdapterName, err)
 		}
 		return false
 	}
 
-	oldName := info.FriendlyName
-	if err := nic.RenameConnection(info.Luid, SoGameAdapterName); err != nil {
-		logger.Warnf("重命名 TAP 适配器 '%s' 为 '%s' 失败: %v", oldName, SoGameAdapterName, err)
-		return false
-	}
-
-	if err := waitAdapterFriendlyName(SoGameAdapterName, 3*time.Second); err != nil {
-		logger.Warnf("TAP 适配器已请求重命名为 '%s'，但验证失败: %v", SoGameAdapterName, err)
-		return false
-	}
-
-	logger.Infof("已将 TAP 适配器 '%s' 重命名为 '%s'", oldName, SoGameAdapterName)
+	logger.Infof("已将 TAP 适配器 '%s' 重命名为 '%s'", info.FriendlyName, SoGameAdapterName)
 	return true
 }
 
@@ -163,17 +84,12 @@ func isTapDriverInstalled() bool {
 		return true
 	}
 
-	list, err := nic.List()
+	ok, err := tapadapter.HasWindowsAdapter()
 	if err != nil {
 		logger.Warnf("查询 TAP 驱动实例失败: %v", err)
 		return false
 	}
-	for i := range list {
-		if isTapWindowsDescription(list[i].Description) {
-			return true
-		}
-	}
-	return false
+	return ok
 }
 
 // isTapAdapterInstalled 检查是否存在任何 TAP 适配器
@@ -182,7 +98,7 @@ func isTapAdapterInstalled() bool {
 		return true
 	}
 
-	_, err := findTapAdapterByNic()
+	_, err := tapadapter.FindAdapter(SoGameAdapterName)
 	if err == nil {
 		return true
 	}
@@ -198,7 +114,7 @@ func FindTapInterfaceName() string {
 		return ""
 	}
 
-	info, err := findTapAdapterByNic()
+	info, err := tapadapter.FindAdapter(SoGameAdapterName)
 	if err != nil {
 		if !errors.Is(err, nic.ErrNotFound) {
 			logger.Warnf("查找 TAP 接口失败: %v", err)
