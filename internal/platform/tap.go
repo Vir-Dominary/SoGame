@@ -157,16 +157,23 @@ func renameTapAdapterByNic() bool {
 	return true
 }
 
-// isTapDriverInstalled 检查 TAP 驱动是否已安装到系统中（不一定有 SoGame 适配器实例）
+// isTapDriverInstalled 检查系统中是否已有 TAP-Windows 适配器实例。
 func isTapDriverInstalled() bool {
-	cmd := exec.Command("powershell", "-Command",
-		`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; (Get-NetAdapter -IncludeHidden | Where-Object { $_.InterfaceDescription -match 'TAP-Windows|tap0901' } | Measure-Object).Count`)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := cmd.CombinedOutput()
+	if !IsWindows() {
+		return true
+	}
+
+	list, err := nic.List()
 	if err != nil {
+		logger.Warnf("查询 TAP 驱动实例失败: %v", err)
 		return false
 	}
-	return strings.TrimSpace(string(output)) != "0"
+	for i := range list {
+		if isTapWindowsDescription(list[i].Description) {
+			return true
+		}
+	}
+	return false
 }
 
 // isTapAdapterInstalled 检查是否存在任何 TAP 适配器
@@ -213,44 +220,7 @@ func EnableTapInterface(ifName string) {
 		return
 	}
 
-	if enableTapInterfaceByDeviceAPI(ifName) {
-		return
-	}
-
-	logger.Warnf("TAP 适配器 '%s' 设备层启用失败，回退到 netsh/PowerShell", ifName)
-
-	checkCmd := exec.Command("powershell", "-Command",
-		fmt.Sprintf("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; (Get-NetAdapter -Name '%s' -ErrorAction SilentlyContinue).Status", ifName))
-	checkCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := checkCmd.CombinedOutput()
-	if err == nil {
-		status := strings.TrimSpace(string(output))
-		if strings.EqualFold(status, "Up") {
-			return
-		}
-		logger.Infof("TAP 适配器 '%s' 当前状态: %s，正在启用...", ifName, status)
-	}
-
-	enableCmd := exec.Command("netsh", "interface", "set", "interface", ifName, "enable")
-	enableCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	enableOutput, enableErr := enableCmd.CombinedOutput()
-	if enableErr != nil {
-		logger.Warnf("netsh enable interface failed: %v, %s", enableErr, strings.TrimSpace(string(enableOutput)))
-
-		psCmd := exec.Command("powershell", "-Command",
-			fmt.Sprintf("Enable-NetAdapter -Name '%s' -Confirm:$false", ifName))
-		psCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-		psOutput, psErr := psCmd.CombinedOutput()
-		if psErr != nil {
-			logger.Warnf("PowerShell Enable-NetAdapter failed: %v, %s", psErr, strings.TrimSpace(string(psOutput)))
-		} else {
-			logger.Infof("TAP 适配器 '%s' 已通过 PowerShell 启用", ifName)
-		}
-	} else {
-		logger.Infof("TAP 适配器 '%s' 已通过 netsh 启用", ifName)
-	}
-
-	time.Sleep(1 * time.Second)
+	enableTapInterfaceByDeviceAPI(ifName)
 }
 
 func enableTapInterfaceByDeviceAPI(ifName string) bool {
