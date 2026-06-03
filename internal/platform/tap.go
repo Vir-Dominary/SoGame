@@ -130,38 +130,35 @@ func FindTapInterfaceName() string {
 	return info.FriendlyName
 }
 
-// EnableTapInterface 启用可能被禁用的 TAP 网络适配器
-func EnableTapInterface(ifName string) {
+// RestartTapInterface 重启 TAP 网络适配器以清空设备层残留状态。
+func RestartTapInterface(ifName string) error {
 	if !IsWindows() || ifName == "" {
-		return
+		return nil
 	}
 
-	enableTapInterfaceByDeviceAPI(ifName)
+	const attempts = 2
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		logger.Infof("正在通过设备层 API 重启 TAP 适配器 '%s' (%d/%d)...", ifName, attempt, attempts)
+		if err := tapadapter.RestartAdapter(context.Background(), ifName, 10*time.Second); err != nil {
+			lastErr = err
+			if attempt < attempts {
+				logger.Warnf("设备层重启 TAP 适配器 '%s' 失败，将重试: %v", ifName, err)
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			logger.Warnf("设备层重启 TAP 适配器 '%s' 失败: %v", ifName, err)
+			return err
+		}
+		logger.Infof("TAP 适配器 '%s' 已通过设备层 API 重启", ifName)
+		return nil
+	}
+	return lastErr
 }
 
-func enableTapInterfaceByDeviceAPI(ifName string) bool {
-	info, err := nic.FindByFriendlyName(ifName)
-	if err != nil {
-		logger.Warnf("查找 TAP 适配器 '%s' 失败: %v", ifName, err)
-		return false
-	}
-	if info.AdminStatus == nic.AdminUp {
-		logger.Debugf("TAP 适配器 '%s' 已处于设备层启用状态", ifName)
-		return true
-	}
-
-	logger.Infof("正在通过设备层 API 启用 TAP 适配器 '%s'...", ifName)
-	if err := nic.SetDeviceStatus(info.Luid, true); err != nil {
-		logger.Warnf("设备层启用 TAP 适配器 '%s' 失败: %v", ifName, err)
-		return false
-	}
-	if err := nic.WaitAdminStatus(context.Background(), info.Luid, nic.AdminUp, 200*time.Millisecond, 10*time.Second); err != nil {
-		logger.Warnf("等待 TAP 适配器 '%s' 启用失败: %v", ifName, err)
-		return false
-	}
-
-	logger.Infof("TAP 适配器 '%s' 已通过设备层 API 启用", ifName)
-	return true
+// EnableTapInterface 兼容旧接口；当前实现会执行设备层重启。
+func EnableTapInterface(ifName string) {
+	_ = RestartTapInterface(ifName)
 }
 
 // SetInterfaceMetric 设置网卡的跃点数（优先级），值越小优先级越高
@@ -187,8 +184,6 @@ func ConfigureTapInterface(ifName, ip string) error {
 	if !IsWindows() {
 		return nil
 	}
-
-	EnableTapInterface(ifName)
 
 	resetCmd := exec.Command("netsh", "interface", "ip", "set", "address",
 		ifName, "dhcp")
@@ -240,7 +235,9 @@ func IsNetworkAdapterReady() bool {
 func EnsureSoGameAdapter() (TapInstallStatus, error) {
 	if IsSoGameAdapterExists() {
 		logger.Infof("SoGame 专属适配器 '%s' 已存在", SoGameAdapterName)
-		EnableTapInterface(SoGameAdapterName)
+		if err := RestartTapInterface(SoGameAdapterName); err != nil {
+			return TapInstallFailed, fmt.Errorf("重启 SoGame 专属适配器失败: %w", err)
+		}
 		return TapAlreadyInstalled, nil
 	}
 
@@ -248,7 +245,9 @@ func EnsureSoGameAdapter() (TapInstallStatus, error) {
 
 	// 尝试1：将现有的未命名 TAP 适配器重命名为 SoGame-VPN
 	if renameTapAdapterByNic() {
-		EnableTapInterface(SoGameAdapterName)
+		if err := RestartTapInterface(SoGameAdapterName); err != nil {
+			return TapInstallFailed, fmt.Errorf("重启 SoGame 专属适配器失败: %w", err)
+		}
 		return TapInstallSuccess, nil
 	}
 
@@ -409,8 +408,10 @@ func createSoGameAdapter() (TapInstallStatus, error) {
 		logger.Warnf("  未能将 TAP 适配器重命名为 '%s'", SoGameAdapterName)
 	}
 
-	// 启用适配器并设置跃点数
-	EnableTapInterface(SoGameAdapterName)
+	// 重启适配器以清空残留状态
+	if err := RestartTapInterface(SoGameAdapterName); err != nil {
+		return TapInstallFailed, fmt.Errorf("重启 SoGame 专属适配器失败: %w", err)
+	}
 
 	if IsSoGameAdapterExists() {
 		logger.Infof("SoGame 专属适配器 '%s' 创建成功", SoGameAdapterName)

@@ -208,12 +208,6 @@ func (e *Edge) Start(cfg *config.Config) error {
 	logger.Infof("  Key:          %s", maskEdgeKey(cfg.Key))
 	logger.Infof("============================================")
 
-	// 在启动 edge 之前，确保 TAP 适配器处于启用状态
-	// 其他 VPN 软件（UU 加速器、Redmin VPN 等）关闭时可能会禁用 TAP 适配器
-	if tapName := platform.FindTapInterfaceName(); tapName != "" {
-		platform.EnableTapInterface(tapName)
-	}
-
 	go e.testSupernodeConnectivity(cfg.Supernode)
 
 	mgmtPort, err := allocateUDPPort()
