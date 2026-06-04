@@ -300,6 +300,10 @@ func createSoGameAdapter() (TapInstallStatus, error) {
 	}
 
 	logger.Infof("  创建 TAP 适配器实例: %s", tapinstallPath)
+	before, err := tapadapter.ListWindowsAdapters()
+	if err != nil {
+		return TapInstallFailed, fmt.Errorf("获取 TAP 安装前快照失败: %w", err)
+	}
 
 	installCmd := exec.Command(tapinstallPath, "install", infPath, "tap0901")
 	installCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
@@ -324,19 +328,20 @@ func createSoGameAdapter() (TapInstallStatus, error) {
 
 	time.Sleep(3 * time.Second)
 
-	// 查找新创建的 TAP 适配器并重命名为 SoGame-VPN
-	renamedName, renameErr := tapadapter.RenameFirstWindowsAdapter(SoGameAdapterName)
-	if renameErr != nil {
-		logger.Warnf("  重命名适配器失败: %v", renameErr)
-	} else {
-		if renamedName == SoGameAdapterName {
-			logger.Infof("  TAP 适配器已重命名为 '%s'", SoGameAdapterName)
-		} else if renamedName == "NOT_FOUND" {
-			logger.Warnf("  未找到可重命名的 TAP 适配器")
-		} else {
-			logger.Warnf("  重命名结果异常: %s", renamedName)
-		}
+	after, err := tapadapter.ListWindowsAdapters()
+	if err != nil {
+		return TapInstallFailed, fmt.Errorf("获取 TAP 安装后快照失败: %w", err)
 	}
+	created, err := tapadapter.FindNewWindowsAdapter(before, after)
+	if err != nil {
+		return TapInstallFailed, err
+	}
+
+	logger.Infof("  新建 TAP 适配器: %s (LUID=%d)", created.FriendlyName, created.Luid)
+	if err := tapadapter.RenameAdapter(created.Luid, SoGameAdapterName); err != nil {
+		return TapInstallFailed, fmt.Errorf("重命名新建 TAP 适配器失败: %w", err)
+	}
+	logger.Infof("  TAP 适配器已重命名为 '%s'", SoGameAdapterName)
 
 	// 启用适配器并设置跃点数
 	EnableTapInterface(SoGameAdapterName)
