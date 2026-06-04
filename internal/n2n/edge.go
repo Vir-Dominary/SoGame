@@ -257,8 +257,8 @@ func (e *Edge) Start(cfg *config.Config) error {
 		scanner := bufio.NewScanner(stdoutPipe)
 		for scanner.Scan() {
 			line := scanner.Text()
+			logger.Infof("[EDGE] %s", line)
 			e.parseEdgeOutput(line)
-			logger.Debugf("[EDGE stdout] %s", line)
 		}
 	}()
 
@@ -271,6 +271,7 @@ func (e *Edge) Start(cfg *config.Config) error {
 			stderrBuf.WriteString(line)
 			stderrBuf.WriteString("\n")
 			logger.Infof("[EDGE stderr] %s", line)
+			e.parseEdgeOutput(line)
 		}
 	}()
 
@@ -677,10 +678,18 @@ func (e *Edge) parseEdgeOutput(line string) {
 	lineLower := strings.ToLower(line)
 
 	// 优先检测注册成功状态（这是最终成功状态）
+	// n2n edge v3 多种输出格式：
+	//   [OK] edge <<< ================ >>> supernode
+	//   registered with supernode
+	//   successfully registered
+	//   连接状态: 已成功注册到中心节点
 	if strings.Contains(lineLower, "registered with supernode") ||
 		strings.Contains(lineLower, "successfully registered") ||
 		(strings.Contains(lineLower, "<<<") && strings.Contains(lineLower, ">>>") && strings.Contains(lineLower, "supernode")) ||
-		strings.Contains(lineLower, "连接状态: 已成功注册到中心节点") {
+		strings.Contains(lineLower, "连接状态: 已成功注册到中心节点") ||
+		strings.Contains(lineLower, "edge_operate") && strings.Contains(lineLower, "supernode") && !strings.Contains(lineLower, "error") ||
+		strings.Contains(lineLower, "supernode0:") && strings.Contains(lineLower, "ok") ||
+		(strings.Contains(lineLower, "ok") && strings.Contains(lineLower, "edge") && strings.Contains(lineLower, "supernode")) {
 		e.mu.Lock()
 		if e.connectionState == StateRegistered {
 			e.mu.Unlock()
@@ -893,7 +902,7 @@ func (e *Edge) LogConnectionStatus() {
 	logger.Infof("  状态:         %s", e.connectionState.String())
 	logger.Infof("  进程:         %s", processStatus)
 	logger.Infof("  已注册:       %s", func() string {
-		if e.isHealthy {
+		if e.connectionState == StateRegistered {
 			return "是"
 		}
 		return "否"
@@ -931,6 +940,22 @@ func (e *Edge) configureTapInterface(cfg *config.Config) {
 		logger.Errorf("  配置 TAP 适配器失败: %v", err)
 	} else {
 		logger.Infof("  配置 TAP 适配器成功: %s/16, MTU=1290", cfg.IP)
+
+		// TAP 配置成功意味着 edge 已经建立了虚拟网络
+		// 如果 parseEdgeOutput 尚未检测到注册成功，在此推断为已连接
+		e.mu.Lock()
+		if e.connectionState == StateConnecting || e.connectionState == StateConnected {
+			prevState := e.connectionState
+			e.connectionState = StateRegistered
+			cb := e.connectionStateCallback
+			e.mu.Unlock()
+			logger.Infof("状态转换: %s -> Connected (TAP 配置成功，推断已注册)", prevState.String())
+			if cb != nil {
+				cb(StateRegistered)
+			}
+		} else {
+			e.mu.Unlock()
+		}
 	}
 
 	logger.Infof(">>> TAP 适配器配置完成 <<<")
