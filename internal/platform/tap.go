@@ -203,7 +203,7 @@ func IsNetworkAdapterReady() bool {
 }
 
 // EnsureSoGameAdapter 确保存在 SoGame 专属 TAP 适配器
-// 如果不存在，则将现有 TAP 适配器重命名或创建新的
+// 如果不存在，则认领同名 TAP 适配器或创建新的
 func EnsureSoGameAdapter() (TapInstallStatus, error) {
 	resolved, resolveErr := tapadapter.ResolveKnownAdapter(SoGameAdapterName)
 	if resolveErr != nil {
@@ -224,22 +224,9 @@ func EnsureSoGameAdapter() (TapInstallStatus, error) {
 		return TapAlreadyInstalled, nil
 	}
 
-	logger.Infof("正在创建 SoGame 专属 TAP 适配器 '%s'...", SoGameAdapterName)
+	logger.Infof("未找到可认领的 SoGame 专属适配器 '%s'，将创建新 TAP 实例", SoGameAdapterName)
 
-	// 尝试1：将现有的未命名 TAP 适配器重命名为 SoGame-VPN
-	renamedName, renameErr := tapadapter.RenameFirstWindowsAdapter(SoGameAdapterName)
-	if renameErr == nil {
-		if renamedName == SoGameAdapterName {
-			logger.Infof("已将现有 TAP 适配器重命名为 '%s'", SoGameAdapterName)
-			EnableTapInterface(SoGameAdapterName)
-			rememberCurrentSoGameAdapter()
-			return TapInstallSuccess, nil
-		}
-	} else {
-		logger.Warnf("重命名现有适配器失败: %v", renameErr)
-	}
-
-	// 尝试2：如果没有 TAP 驱动，先安装驱动
+	// 如果没有 TAP 驱动，先安装驱动
 	if !isTapDriverInstalled() {
 		status, err := installTapDriver()
 		if err != nil {
@@ -247,7 +234,7 @@ func EnsureSoGameAdapter() (TapInstallStatus, error) {
 		}
 	}
 
-	// 尝试3：创建新的 TAP 适配器实例并重命名
+	// 创建新的 TAP 适配器实例并重命名
 	return createSoGameAdapter()
 }
 
