@@ -7,8 +7,6 @@ import (
 	"syscall"
 )
 
-const notFoundResult = "NOT_FOUND"
-
 func IsWindowsAdapterDescription(description string) bool {
 	desc := strings.ToLower(strings.TrimSpace(description))
 	return strings.Contains(desc, "tap-windows") || strings.Contains(desc, "tap0901")
@@ -54,17 +52,6 @@ func FindFallbackInterfaceName(excludeName string) (string, error) {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", err
-	}
-	return strings.TrimSpace(string(output)), nil
-}
-
-func RenameFirstWindowsAdapter(newName string) (string, error) {
-	cmd := exec.Command("powershell", "-Command",
-		fmt.Sprintf(`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $tap = Get-NetAdapter | Where-Object { $_.InterfaceDescription -match 'TAP-Windows|tap0901|tap-windows' -and $_.Name -ne '%s' } | Select-Object -First 1; if ($tap) { Rename-NetAdapter -Name $tap.Name -NewName '%s' -PassThru | Select-Object -ExpandProperty Name } else { Write-Output '%s' }`, newName, newName, notFoundResult))
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return strings.TrimSpace(string(output)), nil
 }
