@@ -119,6 +119,12 @@ type NodeInfo struct {
 	Address string `json:"address"`
 }
 
+type NodeLatencyInfo struct {
+	Name    string `json:"name"`
+	Address string `json:"address"`
+	Latency int    `json:"latency"`
+}
+
 func (a *App) GetNodes() []NodeInfo {
 	nodes := n2n.GetKnownNodes()
 	result := make([]NodeInfo, 0, len(nodes))
@@ -126,6 +132,19 @@ func (a *App) GetNodes() []NodeInfo {
 		result = append(result, NodeInfo{Name: node.Name, Address: node.Address})
 	}
 	return result
+}
+
+func (a *App) GetNodesWithLatency() []NodeLatencyInfo {
+	results := n2n.MeasureAllNodesLatency()
+	out := make([]NodeLatencyInfo, 0, len(results))
+	for _, r := range results {
+		out = append(out, NodeLatencyInfo{
+			Name:    r.Name,
+			Address: r.Address,
+			Latency: r.Latency,
+		})
+	}
+	return out
 }
 
 type inviteData struct {
