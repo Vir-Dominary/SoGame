@@ -213,11 +213,14 @@ func EnsureSoGameAdapter() (TapInstallStatus, error) {
 		EnableTapInterface(resolved.Info.FriendlyName)
 		rememberKnownTapAdapter(resolved)
 		return TapAlreadyInstalled, nil
+	} else if shouldForgetKnownAdapter(resolved.Status) {
+		forgetKnownTapAdapter(resolved.Status)
 	}
 
 	if IsSoGameAdapterExists() {
 		logger.Infof("SoGame 专属适配器 '%s' 已存在", SoGameAdapterName)
 		EnableTapInterface(SoGameAdapterName)
+		rememberCurrentSoGameAdapter()
 		return TapAlreadyInstalled, nil
 	}
 
@@ -229,6 +232,7 @@ func EnsureSoGameAdapter() (TapInstallStatus, error) {
 		if renamedName == SoGameAdapterName {
 			logger.Infof("已将现有 TAP 适配器重命名为 '%s'", SoGameAdapterName)
 			EnableTapInterface(SoGameAdapterName)
+			rememberCurrentSoGameAdapter()
 			return TapInstallSuccess, nil
 		}
 	} else {
@@ -352,6 +356,7 @@ func createSoGameAdapter() (TapInstallStatus, error) {
 
 	if IsSoGameAdapterExists() {
 		logger.Infof("SoGame 专属适配器 '%s' 创建成功", SoGameAdapterName)
+		rememberCurrentSoGameAdapter()
 		return TapInstallSuccess, nil
 	}
 
@@ -368,12 +373,30 @@ func rememberKnownTapAdapter(resolved tapadapter.ResolveResult) {
 	if resolved.Info == nil || resolved.NetCfgInstanceID == "" {
 		return
 	}
-	if err := tapadapter.SaveKnownAdapter(tapadapter.KnownAdapter{
-		NetCfgInstanceID: resolved.NetCfgInstanceID,
-		LUID:             resolved.Info.Luid,
-		FriendlyName:     resolved.Info.FriendlyName,
-		Description:      resolved.Info.Description,
-	}); err != nil {
+	if err := tapadapter.RememberKnownAdapter(*resolved.Info, resolved.NetCfgInstanceID); err != nil {
 		logger.Warnf("保存已知 TAP 适配器失败: %v", err)
+	}
+}
+
+func rememberCurrentSoGameAdapter() {
+	if _, err := tapadapter.RememberKnownAdapterByFriendlyName(SoGameAdapterName); err != nil {
+		logger.Warnf("保存当前 SoGame TAP 适配器失败: %v", err)
+	}
+}
+
+func forgetKnownTapAdapter(status tapadapter.ResolveStatus) {
+	if err := tapadapter.DeleteKnownAdapter(); err != nil {
+		logger.Warnf("删除已知 TAP 适配器记录失败: %v", err)
+		return
+	}
+	logger.Infof("已清理失效 TAP 适配器记录: %s", status)
+}
+
+func shouldForgetKnownAdapter(status tapadapter.ResolveStatus) bool {
+	switch status {
+	case tapadapter.ResolveMissing, tapadapter.ResolveInvalid, tapadapter.ResolveNameMismatch:
+		return true
+	default:
+		return false
 	}
 }

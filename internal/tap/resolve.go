@@ -18,9 +18,10 @@ const (
 )
 
 var (
-	findByNetCfgID   = nic.FindByNetCfgID
-	findByLuid       = nic.FindByLuid
-	netCfgIDFromLuid = nic.NetCfgIDFromLuid
+	findByNetCfgID     = nic.FindByNetCfgID
+	findByFriendlyName = nic.FindByFriendlyName
+	findByLuid         = nic.FindByLuid
+	netCfgIDFromLuid   = nic.NetCfgIDFromLuid
 )
 
 type ResolveResult struct {
