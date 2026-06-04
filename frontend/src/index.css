@@ -526,3 +526,157 @@ body {
   border-color: #30363d;
   color: #e6edf3;
 }
+
+.details-btn {
+  background: rgba(61, 220, 132, 0.08);
+  border: 1px solid rgba(61, 220, 132, 0.2);
+  border-radius: 6px;
+  padding: 4px 16px;
+  color: #3ddc84;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  outline: none;
+}
+
+.details-btn:hover {
+  background: rgba(61, 220, 132, 0.15);
+  border-color: #3ddc84;
+}
+
+.details-panel {
+  flex-shrink: 0;
+  border-top: 1px solid #21262d;
+  background: rgba(22, 27, 34, 0.95);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.details-inner {
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.details-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.details-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #3ddc84;
+  letter-spacing: 0.5px;
+}
+
+.details-desc {
+  font-size: 13px;
+  color: #8b949e;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.details-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.details-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.details-label {
+  font-size: 12px;
+  color: #484f58;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+}
+
+.details-value {
+  font-size: 13px;
+  color: #e6edf3;
+}
+
+.details-value-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.details-ip {
+  font-family: 'Cascadia Code', 'Consolas', monospace;
+  font-size: 13px;
+  color: #3ddc84;
+}
+
+.details-copy-btn {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid #21262d;
+  border-radius: 4px;
+  padding: 2px 8px;
+  color: #8b949e;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s;
+  outline: none;
+}
+
+.details-copy-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #e6edf3;
+}
+
+.details-divider {
+  border-top: 1px solid #21262d;
+  margin: 2px 0;
+}
+
+.details-sponsor {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.details-sponsor-label {
+  font-size: 12px;
+  color: #484f58;
+  font-weight: 500;
+}
+
+.details-sponsor-link {
+  font-size: 13px;
+  color: #3ddc84;
+  text-decoration: none;
+  transition: color 0.2s;
+}
+
+.details-sponsor-link:hover {
+  color: #56d364;
+  text-decoration: underline;
+}
+
+.details-close {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 7px 0;
+  color: #8b949e;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+  outline: none;
+  width: 100%;
+}
+
+.details-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: #30363d;
+  color: #e6edf3;
+}

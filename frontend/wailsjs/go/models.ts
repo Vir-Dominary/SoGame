@@ -28,11 +28,11 @@ export namespace app {
 	    key_masked: string;
 	    key_set: boolean;
 	    supernode: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ConfigInfo(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.community = source["community"];
@@ -40,6 +40,26 @@ export namespace app {
 	        this.key_masked = source["key_masked"];
 	        this.key_set = source["key_set"];
 	        this.supernode = source["supernode"];
+	    }
+	}
+	export class ConnectionDetails {
+	    connected: boolean;
+	    virtualIP: string;
+	    nodeName: string;
+	    status: string;
+	    sponsorURL: string;
+
+	    static createFrom(source: any = {}) {
+	        return new ConnectionDetails(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connected = source["connected"];
+	        this.virtualIP = source["virtualIP"];
+	        this.nodeName = source["nodeName"];
+	        this.status = source["status"];
+	        this.sponsorURL = source["sponsorURL"];
 	    }
 	}
 	export class NodeInfo {

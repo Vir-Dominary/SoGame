@@ -340,6 +340,43 @@ type AboutInfo struct {
 	AppDesc     string `json:"appDesc"`
 }
 
+type ConnectionDetails struct {
+	Connected  bool   `json:"connected"`
+	VirtualIP  string `json:"virtualIP"`
+	NodeName   string `json:"nodeName"`
+	Status     string `json:"status"`
+	SponsorURL string `json:"sponsorURL"`
+}
+
+func (a *App) GetConnectionDetails() ConnectionDetails {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	details := ConnectionDetails{
+		Connected:  a.state == StateConnected,
+		VirtualIP:  a.cfg.IP,
+		NodeName:   n2n.LookupNodeName(a.cfg.Supernode),
+		SponsorURL: "https://afdian.com/a/vir_dominary",
+	}
+
+	if details.NodeName == "" {
+		details.NodeName = n2n.MaskSupernode(a.cfg.Supernode)
+	}
+
+	switch a.state {
+	case StateConnected:
+		details.Status = "正常"
+	case StateConnecting:
+		details.Status = "连接中"
+	case StateFailed:
+		details.Status = "异常"
+	default:
+		details.Status = "未连接"
+	}
+
+	return details
+}
+
 func (a *App) GetAboutInfo() AboutInfo {
 	return AboutInfo{
 		AppName:     config.AppName,

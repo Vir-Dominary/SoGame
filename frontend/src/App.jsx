@@ -8,6 +8,7 @@ import {
   Disconnect,
   OpenLogs,
   GetAboutInfo,
+  GetConnectionDetails,
 } from '../wailsjs/go/app/App'
 import { BrowserOpenURL, ClipboardSetText } from '../wailsjs/runtime/runtime'
 
@@ -33,6 +34,9 @@ function App() {
   const [elapsed, setElapsed] = useState('')
   const [showAbout, setShowAbout] = useState(false)
   const [aboutInfo, setAboutInfo] = useState(null)
+  const [showDetails, setShowDetails] = useState(false)
+  const [connDetails, setConnDetails] = useState(null)
+  const [ipCopied, setIpCopied] = useState(false)
   const pollRef = useRef(null)
   const timerRef = useRef(null)
 
@@ -172,6 +176,23 @@ function App() {
     } catch (e) { console.error('GetAboutInfo failed:', e) }
   }
 
+  const handleOpenDetails = async () => {
+    try {
+      const details = await GetConnectionDetails()
+      setConnDetails(details)
+      setShowDetails(true)
+      setIpCopied(false)
+    } catch (e) { console.error('GetConnectionDetails failed:', e) }
+  }
+
+  const handleCopyIP = () => {
+    if (connDetails && connDetails.virtualIP) {
+      ClipboardSetText(connDetails.virtualIP).catch(e => console.error('clipboard write failed:', e))
+      setIpCopied(true)
+      setTimeout(() => setIpCopied(false), 2000)
+    }
+  }
+
   const st = STATES[status] || STATES.disconnected
   const isConnected = status === 'connected'
   const isConnecting = status === 'connecting'
@@ -303,6 +324,9 @@ function App() {
                 {isConnected && elapsed && (
                   <div className="elapsed">{elapsed}</div>
                 )}
+                {isConnected && (
+                  <button className="details-btn" onClick={handleOpenDetails}>详情</button>
+                )}
               </div>
             </>
           )}
@@ -380,6 +404,47 @@ function App() {
                 </div>
               </div>
               <button className="about-close" onClick={() => setShowAbout(false)}>关闭</button>
+            </div>
+          </div>
+        )}
+
+        {showDetails && connDetails && (
+          <div className="details-panel">
+            <div className="details-inner">
+              <div className="details-header">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3ddc84" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12"/>
+                </svg>
+                <span className="details-title">连接成功</span>
+              </div>
+              <p className="details-desc">您已经成功接入局域网，可以开始游戏了。</p>
+              <div className="details-body">
+                <div className="details-row">
+                  <span className="details-label">本机虚拟网络地址</span>
+                  <div className="details-value-group">
+                    <span className="details-value details-ip">{connDetails.virtualIP}</span>
+                    <button className="details-copy-btn" onClick={handleCopyIP}>
+                      {ipCopied ? '已复制' : '复制'}
+                    </button>
+                  </div>
+                </div>
+                <div className="details-row">
+                  <span className="details-label">当前节点</span>
+                  <span className="details-value">{connDetails.nodeName}</span>
+                </div>
+                <div className="details-row">
+                  <span className="details-label">连接状态</span>
+                  <span className="details-value" style={{ color: '#3ddc84' }}>{connDetails.status}</span>
+                </div>
+              </div>
+              <div className="details-divider" />
+              <div className="details-sponsor">
+                <span className="details-sponsor-label">支持开发者团队</span>
+                <a className="details-sponsor-link" href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(connDetails.sponsorURL) }}>
+                  赞助链接
+                </a>
+              </div>
+              <button className="details-close" onClick={() => setShowDetails(false)}>关闭</button>
             </div>
           </div>
         )}

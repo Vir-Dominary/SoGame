@@ -14,6 +14,8 @@ export function GetAboutInfo():Promise<app.AboutInfo>;
 
 export function GetConfig():Promise<app.ConfigInfo>;
 
+export function GetConnectionDetails():Promise<app.ConnectionDetails>;
+
 export function GetErrorMessage():Promise<string>;
 
 export function GetLogContent():Promise<string>;
