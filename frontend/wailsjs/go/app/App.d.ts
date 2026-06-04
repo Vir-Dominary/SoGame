@@ -20,6 +20,8 @@ export function GetLogContent():Promise<string>;
 
 export function GetNodes():Promise<Array<app.NodeInfo>>;
 
+export function GetNodesWithLatency():Promise<Array<app.NodeLatencyInfo>>;
+
 export function GetState():Promise<string>;
 
 export function IsNetworkAdapterReady():Promise<boolean>;

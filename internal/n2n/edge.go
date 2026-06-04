@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -110,7 +111,6 @@ var knownNodes = map[string]string{
 	"117.72.86.224:10090":                         "临时节点——中国北京",
 	"8.148.244.159:10090":                         "临时节点——中国深圳",
 	"111.225.98.22:10090":                         "临时节点——中国河北",
-	"n2n.vvcd.win:10090":                          "临时节点——中国苏州",
 }
 
 func lookupNodeName(address string) string {
@@ -912,4 +912,102 @@ func (e *Edge) configureTapInterface(cfg *config.Config) {
 	}
 
 	logger.Infof(">>> TAP 适配器配置完成 <<<")
+}
+
+// NodeLatencyInfo 节点延迟信息
+type NodeLatencyInfo struct {
+	Name    string `json:"name"`
+	Address string `json:"address"`
+	Latency int    `json:"latency"` // 毫秒，-1 表示不可用
+}
+
+// MeasureNodeLatency 测量到指定 supernode 的 UDP RTT
+// 连续测试 3 次，取平均值
+func MeasureNodeLatency(address string) int {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return -1
+	}
+
+	udpAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, port))
+	if err != nil {
+		return -1
+	}
+
+	const attempts = 3
+	var totalRTT time.Duration
+	successCount := 0
+
+	for i := 0; i < attempts; i++ {
+		conn, err := net.DialUDP("udp", nil, udpAddr)
+		if err != nil {
+			continue
+		}
+
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+
+		// 发送 n2n 格式的注册探测包
+		start := time.Now()
+		_, writeErr := conn.Write([]byte("N2N_PING"))
+		if writeErr != nil {
+			conn.Close()
+			continue
+		}
+
+		buf := make([]byte, 1500)
+		_, readErr := conn.Read(buf)
+		elapsed := time.Since(start)
+		conn.Close()
+
+		if readErr == nil {
+			totalRTT += elapsed
+			successCount++
+		}
+		// 间隔 200ms 避免拥塞
+		if i < attempts-1 {
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+
+	if successCount == 0 {
+		return -1
+	}
+
+	avgMs := int(totalRTT.Milliseconds() / int64(successCount))
+	return avgMs
+}
+
+// MeasureAllNodesLatency 测量所有已知节点的延迟
+func MeasureAllNodesLatency() []NodeLatencyInfo {
+	nodes := GetKnownNodes()
+	results := make([]NodeLatencyInfo, 0, len(nodes))
+
+	logger.Infof("Node latency test:")
+
+	for _, node := range nodes {
+		latency := MeasureNodeLatency(node.Address)
+		info := NodeLatencyInfo{
+			Name:    node.Name,
+			Address: node.Address,
+			Latency: latency,
+		}
+		if latency >= 0 {
+			logger.Infof("  %s: %dms", node.Name, latency)
+		} else {
+			logger.Infof("  %s: 不可用", node.Name)
+		}
+		results = append(results, info)
+	}
+
+	// 按延迟排序：可用节点按延迟升序，不可用节点排最后
+	sort.Slice(results, func(i, j int) bool {
+		iAvail := results[i].Latency >= 0
+		jAvail := results[j].Latency >= 0
+		if iAvail != jAvail {
+			return iAvail
+		}
+		return results[i].Latency < results[j].Latency
+	})
+
+	return results
 }

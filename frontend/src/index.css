@@ -196,6 +196,10 @@ body {
   cursor: pointer;
   transition: all 0.2s ease;
   outline: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
 }
 
 .node-chip:hover {
@@ -209,6 +213,44 @@ body {
   border-color: #3ddc84;
   color: #3ddc84;
   box-shadow: 0 0 12px rgba(61, 220, 132, 0.08);
+}
+
+.node-chip.unavailable {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.node-chip.unavailable:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: #21262d;
+  color: #8b949e;
+}
+
+.node-name {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.node-latency {
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.3px;
+}
+
+.node-latency.fast {
+  color: #3ddc84;
+}
+
+.node-latency.medium {
+  color: #f0a030;
+}
+
+.node-latency.slow {
+  color: #ff5252;
+}
+
+.node-latency.unavailable {
+  color: #484f58;
 }
 
 .power-btn {

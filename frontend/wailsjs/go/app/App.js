@@ -38,6 +38,10 @@ export function GetNodes() {
   return window['go']['app']['App']['GetNodes']();
 }
 
+export function GetNodesWithLatency() {
+  return window['go']['app']['App']['GetNodesWithLatency']();
+}
+
 export function GetState() {
   return window['go']['app']['App']['GetState']();
 }
