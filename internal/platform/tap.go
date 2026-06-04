@@ -205,6 +205,16 @@ func IsNetworkAdapterReady() bool {
 // EnsureSoGameAdapter 确保存在 SoGame 专属 TAP 适配器
 // 如果不存在，则将现有 TAP 适配器重命名或创建新的
 func EnsureSoGameAdapter() (TapInstallStatus, error) {
+	resolved, resolveErr := tapadapter.ResolveKnownAdapter(SoGameAdapterName)
+	if resolveErr != nil {
+		logger.Warnf("解析已知 TAP 适配器失败，将继续使用旧流程: %v", resolveErr)
+	} else if resolved.Status == tapadapter.ResolveFound && resolved.Info != nil {
+		logger.Infof("已通过 GUID 找到 SoGame 专属适配器 '%s'", resolved.Info.FriendlyName)
+		EnableTapInterface(resolved.Info.FriendlyName)
+		rememberKnownTapAdapter(resolved)
+		return TapAlreadyInstalled, nil
+	}
+
 	if IsSoGameAdapterExists() {
 		logger.Infof("SoGame 专属适配器 '%s' 已存在", SoGameAdapterName)
 		EnableTapInterface(SoGameAdapterName)
@@ -352,4 +362,18 @@ func createSoGameAdapter() (TapInstallStatus, error) {
 // InstallTapAdapter 兼容旧接口：确保 SoGame 专属适配器存在
 func InstallTapAdapter() (TapInstallStatus, error) {
 	return EnsureSoGameAdapter()
+}
+
+func rememberKnownTapAdapter(resolved tapadapter.ResolveResult) {
+	if resolved.Info == nil || resolved.NetCfgInstanceID == "" {
+		return
+	}
+	if err := tapadapter.SaveKnownAdapter(tapadapter.KnownAdapter{
+		NetCfgInstanceID: resolved.NetCfgInstanceID,
+		LUID:             resolved.Info.Luid,
+		FriendlyName:     resolved.Info.FriendlyName,
+		Description:      resolved.Info.Description,
+	}); err != nil {
+		logger.Warnf("保存已知 TAP 适配器失败: %v", err)
+	}
 }
