@@ -69,23 +69,20 @@ func isTapAdapterInstalled() bool {
 	return tapadapter.HasAnyAdapter(SoGameAdapterName)
 }
 
-// FindTapInterfaceName 查找 TAP 接口名，优先返回 SoGame 专属适配器
+// FindTapInterfaceName 通过已知 GUID 查找 SoGame TAP 当前接口名
 func FindTapInterfaceName() string {
 	if !IsWindows() {
 		return ""
 	}
 
-	// 优先查找 SoGame 专属适配器
-	if IsSoGameAdapterExists() {
-		logger.Debugf("found SoGame dedicated adapter: %s", SoGameAdapterName)
-		return SoGameAdapterName
+	resolved, err := tapadapter.ResolveKnownAdapter(SoGameAdapterName)
+	if err != nil {
+		logger.Warnf("按 GUID 查找 TAP 接口失败: %v", err)
+		return ""
 	}
-
-	// 回退：查找任何可用的 TAP 适配器（优先选择没有 IP 的）
-	name, err := tapadapter.FindFallbackInterfaceName(SoGameAdapterName)
-	if err == nil && name != "" {
-		logger.Debugf("found TAP interface (fallback): %s", name)
-		return name
+	if resolved.Status == tapadapter.ResolveFound && resolved.Info != nil {
+		logger.Debugf("found SoGame TAP by GUID: %s", resolved.Info.FriendlyName)
+		return resolved.Info.FriendlyName
 	}
 
 	return ""
