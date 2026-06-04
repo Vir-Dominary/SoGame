@@ -35,6 +35,8 @@ func run(args []string) error {
 		return setStatus(args[1:], true)
 	case "disable":
 		return setStatus(args[1:], false)
+	case "rename":
+		return renameAdapter(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -49,12 +51,14 @@ func usage() {
   nicctl status <网卡名称>
   nicctl enable [--wait 10s] <网卡名称>
   nicctl disable --yes [--wait 10s] [--auto-enable 20s] <网卡名称>
+  nicctl rename --yes <当前网卡名称> <新网卡名称>
 
 示例:
   go run ./cmd/nicctl list
   go run ./cmd/nicctl status "SoGame-VPN"
   go run ./cmd/nicctl disable --yes --auto-enable 20s "SoGame-VPN"
-  go run ./cmd/nicctl enable "SoGame-VPN"`)
+  go run ./cmd/nicctl enable "SoGame-VPN"
+  go run ./cmd/nicctl rename --yes "本地连接" "SoGame-VPN"`)
 }
 
 func listAdapters() error {
@@ -125,6 +129,42 @@ func setStatus(args []string, enable bool) error {
 			return err
 		}
 	}
+	return nil
+}
+
+func renameAdapter(args []string) error {
+	fs := flag.NewFlagSet("rename", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	yes := fs.Bool("yes", false, "确认执行改名操作")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	oldName := strings.TrimSpace(fs.Arg(0))
+	newName := strings.TrimSpace(fs.Arg(1))
+	if oldName == "" || newName == "" {
+		return fmt.Errorf("用法: nicctl rename --yes <当前网卡名称> <新网卡名称>")
+	}
+	if !*yes {
+		return fmt.Errorf("改名网卡需要显式传入 --yes")
+	}
+
+	info, err := nic.FindByFriendlyName(oldName)
+	if err != nil {
+		return err
+	}
+	fmt.Println("目标网卡:")
+	printAdapter(*info)
+	fmt.Printf("执行改名: %q -> %q\n", oldName, newName)
+
+	if err := nic.RenameConnection(info.Luid, newName); err != nil {
+		return err
+	}
+	updated, err := nic.FindByFriendlyName(newName)
+	if err != nil {
+		return fmt.Errorf("改名已执行，但验证新名称失败: %w", err)
+	}
+	fmt.Println("改名完成:")
+	printAdapter(*updated)
 	return nil
 }
 
