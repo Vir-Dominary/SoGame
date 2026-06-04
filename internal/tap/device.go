@@ -13,8 +13,8 @@ const (
 )
 
 var (
-	setDeviceStatus = nic.SetDeviceStatus
-	waitAdminStatus = nic.WaitAdminStatus
+	setDeviceStatusByNetCfgID = nic.SetDeviceStatusByNetCfgID
+	waitAdminStatusByNetCfgID = nic.WaitAdminStatusByNetCfgID
 )
 
 func EnableAdapterByName(name string) error {
@@ -29,10 +29,14 @@ func EnableAdapter(info nic.Info) error {
 	if info.AdminStatus == nic.AdminUp {
 		return nil
 	}
-	if err := setDeviceStatus(info.Luid, true); err != nil {
+	netCfgID, err := netCfgIDFromLuid(info.Luid)
+	if err != nil {
 		return err
 	}
-	return waitAdminStatus(context.Background(), info.Luid, nic.AdminUp, devicePollInterval, deviceWaitTimeout)
+	if err := setDeviceStatusByNetCfgID(netCfgID, true); err != nil {
+		return err
+	}
+	return waitAdminStatusByNetCfgID(context.Background(), netCfgID, nic.AdminUp, devicePollInterval, deviceWaitTimeout)
 }
 
 func RestartAdapterByName(name string) error {
@@ -44,14 +48,18 @@ func RestartAdapterByName(name string) error {
 }
 
 func RestartAdapter(info nic.Info) error {
-	if err := setDeviceStatus(info.Luid, false); err != nil {
+	netCfgID, err := netCfgIDFromLuid(info.Luid)
+	if err != nil {
 		return err
 	}
-	if err := waitAdminStatus(context.Background(), info.Luid, nic.AdminDown, devicePollInterval, deviceWaitTimeout); err != nil {
+	if err := setDeviceStatusByNetCfgID(netCfgID, false); err != nil {
 		return err
 	}
-	if err := setDeviceStatus(info.Luid, true); err != nil {
+	if err := waitAdminStatusByNetCfgID(context.Background(), netCfgID, nic.AdminDown, devicePollInterval, deviceWaitTimeout); err != nil {
 		return err
 	}
-	return waitAdminStatus(context.Background(), info.Luid, nic.AdminUp, devicePollInterval, deviceWaitTimeout)
+	if err := setDeviceStatusByNetCfgID(netCfgID, true); err != nil {
+		return err
+	}
+	return waitAdminStatusByNetCfgID(context.Background(), netCfgID, nic.AdminUp, devicePollInterval, deviceWaitTimeout)
 }

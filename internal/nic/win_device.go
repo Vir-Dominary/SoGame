@@ -19,7 +19,11 @@ func SetDeviceStatus(luid uint64, enable bool) error {
 	if err != nil {
 		return err
 	}
+	return SetDeviceStatusByNetCfgID(netCfgID, enable)
+}
 
+// SetDeviceStatusByNetCfgID 在设备层按 NetCfgInstanceId 启用或禁用网卡。
+func SetDeviceStatusByNetCfgID(netCfgID string, enable bool) error {
 	devInfo, devInfoData, err := findDeviceByNetCfgID(netCfgID)
 	if err != nil {
 		return err

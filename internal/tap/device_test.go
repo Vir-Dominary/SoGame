@@ -9,6 +9,8 @@ import (
 	"netjoin/internal/nic"
 )
 
+const testNetCfgID = "{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}"
+
 func TestEnableAdapterAlreadyUp(t *testing.T) {
 	stubDeviceOps(t)
 
@@ -24,10 +26,10 @@ func TestEnableAdapterSetsDeviceUp(t *testing.T) {
 		t.Fatalf("EnableAdapter: %v", err)
 	}
 
-	if got := fmt.Sprint(stub.statusCalls); got != "[{11 true}]" {
+	if got := fmt.Sprint(stub.statusCalls); got != "[{"+testNetCfgID+" true}]" {
 		t.Fatalf("status calls = %s", got)
 	}
-	if got := fmt.Sprint(stub.waitCalls); got != "[{11 1}]" {
+	if got := fmt.Sprint(stub.waitCalls); got != "[{"+testNetCfgID+" 1}]" {
 		t.Fatalf("wait calls = %s", got)
 	}
 }
@@ -39,10 +41,10 @@ func TestRestartAdapterTogglesDevice(t *testing.T) {
 		t.Fatalf("RestartAdapter: %v", err)
 	}
 
-	if got := fmt.Sprint(stub.statusCalls); got != "[{11 false} {11 true}]" {
+	if got := fmt.Sprint(stub.statusCalls); got != "[{"+testNetCfgID+" false} {"+testNetCfgID+" true}]" {
 		t.Fatalf("status calls = %s", got)
 	}
-	if got := fmt.Sprint(stub.waitCalls); got != "[{11 2} {11 1}]" {
+	if got := fmt.Sprint(stub.waitCalls); got != "[{"+testNetCfgID+" 2} {"+testNetCfgID+" 1}]" {
 		t.Fatalf("wait calls = %s", got)
 	}
 }
@@ -54,7 +56,7 @@ func TestEnableAdapterByName(t *testing.T) {
 	if err := EnableAdapterByName(testAdapterName); err != nil {
 		t.Fatalf("EnableAdapterByName: %v", err)
 	}
-	if got := fmt.Sprint(stub.statusCalls); got != "[{11 true}]" {
+	if got := fmt.Sprint(stub.statusCalls); got != "[{"+testNetCfgID+" true}]" {
 		t.Fatalf("status calls = %s", got)
 	}
 }
@@ -62,12 +64,12 @@ func TestEnableAdapterByName(t *testing.T) {
 type deviceOpsStub struct {
 	byName      map[string]nic.Info
 	statusCalls []struct {
-		luid   uint64
-		enable bool
+		netCfgID string
+		enable   bool
 	}
 	waitCalls []struct {
-		luid uint64
-		want uint32
+		netCfgID string
+		want     uint32
 	}
 }
 
@@ -75,8 +77,9 @@ func stubDeviceOps(t *testing.T) *deviceOpsStub {
 	t.Helper()
 	stub := &deviceOpsStub{byName: make(map[string]nic.Info)}
 	oldFindByFriendlyName := findByFriendlyName
-	oldSetDeviceStatus := setDeviceStatus
-	oldWaitAdminStatus := waitAdminStatus
+	oldNetCfgIDFromLuid := netCfgIDFromLuid
+	oldSetDeviceStatusByNetCfgID := setDeviceStatusByNetCfgID
+	oldWaitAdminStatusByNetCfgID := waitAdminStatusByNetCfgID
 
 	findByFriendlyName = func(name string) (*nic.Info, error) {
 		info, ok := stub.byName[name]
@@ -85,25 +88,32 @@ func stubDeviceOps(t *testing.T) *deviceOpsStub {
 		}
 		return &info, nil
 	}
-	setDeviceStatus = func(luid uint64, enable bool) error {
+	netCfgIDFromLuid = func(luid uint64) (string, error) {
+		if luid != 11 {
+			return "", fmt.Errorf("%w: luid=%d", nic.ErrNotFound, luid)
+		}
+		return testNetCfgID, nil
+	}
+	setDeviceStatusByNetCfgID = func(netCfgID string, enable bool) error {
 		stub.statusCalls = append(stub.statusCalls, struct {
-			luid   uint64
-			enable bool
-		}{luid: luid, enable: enable})
+			netCfgID string
+			enable   bool
+		}{netCfgID: netCfgID, enable: enable})
 		return nil
 	}
-	waitAdminStatus = func(_ context.Context, luid uint64, want uint32, _, _ time.Duration) error {
+	waitAdminStatusByNetCfgID = func(_ context.Context, netCfgID string, want uint32, _, _ time.Duration) error {
 		stub.waitCalls = append(stub.waitCalls, struct {
-			luid uint64
-			want uint32
-		}{luid: luid, want: want})
+			netCfgID string
+			want     uint32
+		}{netCfgID: netCfgID, want: want})
 		return nil
 	}
 
 	t.Cleanup(func() {
 		findByFriendlyName = oldFindByFriendlyName
-		setDeviceStatus = oldSetDeviceStatus
-		waitAdminStatus = oldWaitAdminStatus
+		netCfgIDFromLuid = oldNetCfgIDFromLuid
+		setDeviceStatusByNetCfgID = oldSetDeviceStatusByNetCfgID
+		waitAdminStatusByNetCfgID = oldWaitAdminStatusByNetCfgID
 	})
 	return stub
 }
