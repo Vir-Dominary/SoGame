@@ -7,6 +7,13 @@ import (
 	"syscall"
 )
 
+const notFoundResult = "NOT_FOUND"
+
+func IsWindowsAdapterDescription(description string) bool {
+	desc := strings.ToLower(strings.TrimSpace(description))
+	return strings.Contains(desc, "tap-windows") || strings.Contains(desc, "tap0901")
+}
+
 func ExistsByName(name string) bool {
 	cmd := exec.Command("powershell", "-Command",
 		fmt.Sprintf("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; try { $a = Get-NetAdapter -Name '%s' -ErrorAction Stop; if ($a.Status -ne $null) { Write-Output 'EXISTS' } else { Write-Output 'EXISTS' } } catch { Write-Output 'NOT_FOUND' }", name))
@@ -53,7 +60,7 @@ func FindFallbackInterfaceName(excludeName string) (string, error) {
 
 func RenameFirstWindowsAdapter(newName string) (string, error) {
 	cmd := exec.Command("powershell", "-Command",
-		fmt.Sprintf(`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $tap = Get-NetAdapter | Where-Object { $_.InterfaceDescription -match 'TAP-Windows|tap0901|tap-windows' -and $_.Name -ne '%s' } | Select-Object -First 1; if ($tap) { Rename-NetAdapter -Name $tap.Name -NewName '%s' -PassThru | Select-Object -ExpandProperty Name } else { Write-Output 'NOT_FOUND' }`, newName, newName))
+		fmt.Sprintf(`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $tap = Get-NetAdapter | Where-Object { $_.InterfaceDescription -match 'TAP-Windows|tap0901|tap-windows' -and $_.Name -ne '%s' } | Select-Object -First 1; if ($tap) { Rename-NetAdapter -Name $tap.Name -NewName '%s' -PassThru | Select-Object -ExpandProperty Name } else { Write-Output '%s' }`, newName, newName, notFoundResult))
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
