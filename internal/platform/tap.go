@@ -20,6 +20,16 @@ import (
 
 const SoGameAdapterName = "SoGame-VPN"
 
+const (
+	// tapinstall 返回时，Windows 可能还没有完成 TAP 设备的 PnP 刷新。
+	// 真实环境测试里，过早采集安装后快照会选到临时 TAP 实例，随后
+	// HrRenameConnection 仍可能返回 "Incorrect function"。6 秒是干净环境和
+	// 少量 TAP 场景下观察到的最小稳定基础等待；现有 TAP 越多，Windows
+	// 刷新 TAP-Windows 实例的耗时越长，因此每张现有 TAP 额外增加 1 秒。
+	tapCreateBaseWait               = 6 * time.Second
+	tapCreateWaitPerExistingAdapter = time.Second
+)
+
 func IsWindows() bool {
 	return runtime.GOOS == "windows"
 }
@@ -251,7 +261,9 @@ func createSoGameAdapter() (TapInstallStatus, error) {
 		}
 	}
 
-	time.Sleep(3 * time.Second)
+	wait := tapCreateBaseWait + time.Duration(len(before))*tapCreateWaitPerExistingAdapter
+	logger.Infof("  等待 TAP 设备刷新稳定: %s (当前 TAP 数=%d)", wait, len(before))
+	time.Sleep(wait)
 
 	after, err := tapadapter.ListWindowsAdapters()
 	if err != nil {
