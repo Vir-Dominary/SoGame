@@ -145,8 +145,12 @@ func EnsureSoGameAdapter() (TapInstallStatus, error) {
 		logger.Warnf("解析已知 TAP 适配器失败，将继续使用旧流程: %v", resolveErr)
 	} else if resolved.Status == tapadapter.ResolveFound && resolved.Info != nil {
 		logger.Infof("已通过 GUID 找到 SoGame 专属适配器 '%s'", resolved.Info.FriendlyName)
-		restartTapInterface(resolved.Info.FriendlyName)
-		rememberKnownTapAdapter(resolved)
+		if err := restartTapInterface(resolved.Info.FriendlyName); err != nil {
+			return TapInstallFailed, err
+		}
+		if err := rememberKnownTapAdapter(resolved); err != nil {
+			return TapInstallFailed, err
+		}
 		return TapAlreadyInstalled, nil
 	} else if shouldForgetKnownAdapter(resolved.Status) {
 		forgetKnownTapAdapter(resolved.Status)
@@ -154,8 +158,12 @@ func EnsureSoGameAdapter() (TapInstallStatus, error) {
 
 	if IsSoGameAdapterExists() {
 		logger.Infof("SoGame 专属适配器 '%s' 已存在", SoGameAdapterName)
-		restartTapInterface(SoGameAdapterName)
-		rememberCurrentSoGameAdapter()
+		if err := restartTapInterface(SoGameAdapterName); err != nil {
+			return TapInstallFailed, err
+		}
+		if err := rememberCurrentSoGameAdapter(); err != nil {
+			return TapInstallFailed, err
+		}
 		return TapAlreadyInstalled, nil
 	}
 
@@ -281,16 +289,19 @@ func createSoGameAdapter() (TapInstallStatus, error) {
 	logger.Infof("  TAP 适配器已重命名为 '%s'", SoGameAdapterName)
 
 	// 启用适配器并设置跃点数
-	restartTapInterface(SoGameAdapterName)
+	if err := restartTapInterface(SoGameAdapterName); err != nil {
+		return TapInstallFailed, err
+	}
 
 	if IsSoGameAdapterExists() {
 		logger.Infof("SoGame 专属适配器 '%s' 创建成功", SoGameAdapterName)
-		rememberCurrentSoGameAdapter()
+		if err := rememberCurrentSoGameAdapter(); err != nil {
+			return TapInstallFailed, err
+		}
 		return TapInstallSuccess, nil
 	}
 
-	logger.Warnf("SoGame 专属适配器创建完成但验证未通过，将尝试继续连接")
-	return TapInstallSuccess, nil
+	return TapInstallFailed, fmt.Errorf("SoGame 专属适配器创建完成但验证未通过")
 }
 
 // InstallTapAdapter 兼容旧接口：确保 SoGame 专属适配器存在
@@ -298,27 +309,29 @@ func InstallTapAdapter() (TapInstallStatus, error) {
 	return EnsureSoGameAdapter()
 }
 
-func rememberKnownTapAdapter(resolved tapadapter.ResolveResult) {
+func rememberKnownTapAdapter(resolved tapadapter.ResolveResult) error {
 	if resolved.Info == nil || resolved.NetCfgInstanceID == "" {
-		return
+		return fmt.Errorf("保存已知 TAP 适配器失败: 缺少适配器信息")
 	}
 	if err := tapadapter.RememberKnownAdapter(*resolved.Info, resolved.NetCfgInstanceID); err != nil {
-		logger.Warnf("保存已知 TAP 适配器失败: %v", err)
+		return fmt.Errorf("保存已知 TAP 适配器失败: %w", err)
 	}
+	return nil
 }
 
-func restartTapInterface(ifName string) {
+func restartTapInterface(ifName string) error {
 	if err := tapadapter.RestartAdapterByName(ifName); err != nil {
-		logger.Warnf("重启 TAP 适配器 '%s' 失败: %v", ifName, err)
-		return
+		return fmt.Errorf("重启 TAP 适配器 '%s' 失败: %w", ifName, err)
 	}
 	logger.Infof("TAP 适配器 '%s' 已重启", ifName)
+	return nil
 }
 
-func rememberCurrentSoGameAdapter() {
+func rememberCurrentSoGameAdapter() error {
 	if _, err := tapadapter.RememberKnownAdapterByFriendlyName(SoGameAdapterName); err != nil {
-		logger.Warnf("保存当前 SoGame TAP 适配器失败: %v", err)
+		return fmt.Errorf("保存当前 SoGame TAP 适配器失败: %w", err)
 	}
+	return nil
 }
 
 func forgetKnownTapAdapter(status tapadapter.ResolveStatus) {
