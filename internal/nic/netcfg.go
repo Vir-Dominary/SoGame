@@ -19,20 +19,15 @@ func NetCfgIDFromLuid(luid uint64) (string, error) {
 	}
 	defer runtime.KeepAlive(buf)
 
-	foundLUID := false
 	for adapter := first; adapter != nil; adapter = adapter.Next {
 		if adapter.Luid != luid {
 			continue
 		}
-		foundLUID = true
 		id := normalizeNetCfgID(windows.BytePtrToString(adapter.AdapterName))
 		if id == "" {
 			return "", fmt.Errorf("%w: luid=%d 无 NetCfgInstanceId", ErrNotFound, luid)
 		}
 		return id, nil
-	}
-	if foundLUID {
-		return "", fmt.Errorf("%w: luid=%d 无 NetCfgInstanceId", ErrNotFound, luid)
 	}
 	return "", fmt.Errorf("%w: luid=%d", ErrNotFound, luid)
 }
