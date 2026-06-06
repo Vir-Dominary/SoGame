@@ -210,7 +210,12 @@ func installTapDriver() (TapInstallStatus, error) {
 		pnputilCmd2.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 		pnputilOutput2, pnputilErr2 := pnputilCmd2.CombinedOutput()
 		if pnputilErr2 != nil {
-			logger.Warnf("  pnputil /add-driver /force 也失败: %v, 输出: %s", pnputilErr2, strings.TrimSpace(string(pnputilOutput2)))
+			return TapInstallFailed, fmt.Errorf("添加 TAP 驱动到驱动存储失败: %v, 输出: %s; /force 重试失败: %v, 输出: %s",
+				pnputilErr,
+				strings.TrimSpace(string(pnputilOutput)),
+				pnputilErr2,
+				strings.TrimSpace(string(pnputilOutput2)),
+			)
 		} else {
 			logger.Infof("  pnputil /add-driver /force 成功")
 		}
