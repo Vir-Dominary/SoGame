@@ -253,6 +253,16 @@ body {
   color: #484f58;
 }
 
+.node-latency.measuring {
+  color: #f0a030;
+  animation: pulse-opacity 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-opacity {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 .power-btn {
   background: none;
   border: none;
