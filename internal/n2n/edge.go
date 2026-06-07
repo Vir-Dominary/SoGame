@@ -2,6 +2,7 @@ package n2n
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"net"
 	"os"
@@ -926,7 +927,6 @@ type NodeLatencyInfo struct {
 func MeasureNodeLatency(address string) int {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
-		// 可能是纯主机名，直接使用
 		host = address
 	}
 
@@ -950,14 +950,7 @@ func MeasureNodeLatency(address string) int {
 	successCount := 0
 
 	for i := 0; i < attempts; i++ {
-		cmd := exec.Command("ping", "-n", "1", "-w", "2000", pingTarget)
-		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			continue
-		}
-
-		ms := parsePingOutput(string(output))
+		ms := pingHost(pingTarget)
 		if ms >= 0 {
 			totalMs += ms
 			successCount++
@@ -971,56 +964,61 @@ func MeasureNodeLatency(address string) int {
 	return totalMs / successCount
 }
 
-// parsePingOutput 从 Windows ping 输出中解析延迟毫秒数
-// 例如: "来自 8.148.244.159 的回复: 字节=32 时间=35ms TTL=52"
-// 或者: "Reply from 8.148.244.159: bytes=32 time=35ms TTL=52"
-func parsePingOutput(output string) int {
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		lineLower := strings.ToLower(line)
-		if strings.Contains(lineLower, "time=") || strings.Contains(lineLower, "时间=") {
-			// 提取 time=XXms 部分
-			timeIdx := strings.Index(lineLower, "time=")
-			if timeIdx == -1 {
-				timeIdx = strings.Index(lineLower, "时间=")
-			}
-			if timeIdx == -1 {
-				continue
-			}
+// pingHost 对目标主机执行一次 ICMP ping，返回延迟毫秒数
+// 使用 Windows 系统 ping 命令，解析输出中的延迟值
+func pingHost(host string) int {
+	cmd := exec.Command("ping", "-n", "1", "-w", "2000", host)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return -1
+	}
 
-			// 从 time= 后面提取数字
-			sub := line[timeIdx:]
-			// 跳过 "time=" 或 "时间="
-			eqIdx := strings.Index(sub, "=")
-			if eqIdx == -1 {
-				continue
-			}
-			sub = sub[eqIdx+1:]
+	return parsePingLatency(output)
+}
 
-			// 提取数字部分
-			numStr := ""
-			for _, ch := range sub {
-				if ch >= '0' && ch <= '9' {
-					numStr += string(ch)
-				} else if ch == '.' {
-					numStr += string(ch)
-				} else {
-					break
-				}
-			}
+// parsePingLatency 从 ping 输出中解析延迟毫秒数
+// Windows 中文/英文 ping 输出使用 GBK 编码，不能直接按 UTF-8 解析中文
+// 改用字节级模式匹配：查找 "time=" 或 "时间=" 后面的数字
+// GBK 编码中 "时间=" 的字节序列为: 0xCA 0xB1 0xBC 0xE4 0x3D
+func parsePingLatency(data []byte) int {
+	// 搜索 "time=" (ASCII，英文 Windows)
+	timePattern := []byte("time=")
+	// 搜索 "时间=" 的 GBK 编码 (中文 Windows)
+	timePatternGBK := []byte{0xCA, 0xB1, 0xBC, 0xE4, 0x3D}
 
-			if numStr == "" {
-				continue
-			}
+	patterns := [][]byte{timePattern, timePatternGBK}
 
+	for _, pattern := range patterns {
+		idx := bytes.Index(data, pattern)
+		if idx == -1 {
+			continue
+		}
+
+		// 跳过 "time=" 或 "时间="，提取后面的数字
+		after := data[idx+len(pattern):]
+
+		// 跳过可能的空格
+		i := 0
+		for i < len(after) && after[i] == ' ' {
+			i++
+		}
+
+		// 提取数字（支持小数，如 29.5ms）
+		numStart := i
+		for i < len(after) && ((after[i] >= '0' && after[i] <= '9') || after[i] == '.') {
+			i++
+		}
+
+		if i > numStart {
+			numStr := string(after[numStart:i])
 			val, err := strconv.ParseFloat(numStr, 64)
-			if err != nil {
-				continue
+			if err == nil {
+				return int(val)
 			}
-
-			return int(val)
 		}
 	}
+
 	return -1
 }
 
