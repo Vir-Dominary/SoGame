@@ -21,11 +21,17 @@ import (
 const SoGameAdapterName = "SoGame-VPN"
 
 const (
-	// tapinstall 返回时，Windows 可能还没有完成 TAP 设备的 PnP 刷新。
-	// 真实环境测试里，过早采集安装后快照会选到临时 TAP 实例，随后
-	// HrRenameConnection 仍可能返回 "Incorrect function"。6 秒是干净环境和
-	// 少量 TAP 场景下观察到的最小稳定基础等待；现有 TAP 越多，Windows
-	// 刷新 TAP-Windows 实例的耗时越长，因此每张现有 TAP 额外增加 1 秒。
+	// tapinstall install 返回时，只能说明创建设备实例的命令已经结束，不能说明
+	// Windows 已经完成 TAP-Windows 设备的 PnP 枚举、网络接口表刷新和友好名可改名状态同步。
+	// 如果立刻采集安装后快照，真实环境里可能会看到一个尚未稳定的临时 TAP 实例：
+	// 它已经出现在 GetIfTable2Ex/GetAdaptersAddresses 结果中，但 netshell 还不能可靠改名，
+	// 随后的 HrRenameConnection 可能返回 "Incorrect function"，或者改名后设备继续重枚举。
+	// 因此这里需要在 tapinstall 后等待一段时间，再做 before/after 快照差分并改名新实例。
+	//
+	// 等待时间采用“基础等待 + 当前 TAP 数量增量”的经验规则：
+	// 1. 6 秒是干净环境和少量 TAP 场景下，通过真实网卡测试观察到的最小稳定基础等待；
+	// 2. 同类型 TAP-Windows 实例越多，tapinstall 越容易触发更多旧设备刷新和接口表重排；
+	// 3. 每张现有 TAP 额外增加 1 秒，用来吸收多 TAP 环境下 Windows PnP 刷新的额外耗时。
 	tapCreateBaseWait               = 6 * time.Second
 	tapCreateWaitPerExistingAdapter = time.Second
 )
@@ -274,6 +280,9 @@ func createSoGameAdapter() (TapInstallStatus, error) {
 		}
 	}
 
+	// before 是 tapinstall 之前已有的 TAP-Windows 集合。等待时间按 before 数量计算，
+	// 目的是让 Windows 完成本轮 tapinstall 引发的全局 TAP 刷新，再采集 after 快照。
+	// 这样 FindNewWindowsAdapter 更可能拿到稳定的新实例，避免误选尚不可改名的临时接口。
 	wait := tapCreateBaseWait + time.Duration(len(before))*tapCreateWaitPerExistingAdapter
 	logger.Infof("  等待 TAP 设备刷新稳定: %s (当前 TAP 数=%d)", wait, len(before))
 	time.Sleep(wait)
