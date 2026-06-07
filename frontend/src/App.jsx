@@ -267,7 +267,7 @@ function App() {
                           onClick={() => setSelectedNode(n.name)}
                           disabled={n.latency < 0 && n.latency !== -2}
                         >
-                          <span className="node-name">{n.name}</span>
+                          <span className="node-name">{n.name.replace(/公用节点——/, '').replace(/临时节点——/, '')}</span>
                           <span className={`node-latency ${n.latency === -2 ? 'measuring' : n.latency < 0 ? 'unavailable' : n.latency < 50 ? 'fast' : n.latency < 150 ? 'medium' : 'slow'}`}>
                             {n.latency === -2 ? '测量中' : n.latency < 0 ? '不可用' : `${n.latency}ms`}
                           </span>
