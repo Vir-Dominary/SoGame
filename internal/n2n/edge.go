@@ -968,51 +968,46 @@ type NodeLatencyInfo struct {
 	Latency int    `json:"latency"` // 毫秒，-1 表示不可用
 }
 
-// MeasureNodeLatency 测量到指定 supernode 的 UDP RTT
+// MeasureNodeLatency 测量到指定 supernode 的网络延迟（ICMP ping）
 // 连续测试 3 次，取平均值
 func MeasureNodeLatency(address string) int {
-	host, port, err := net.SplitHostPort(address)
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		// 可能是纯主机名，直接使用
+		host = address
+	}
+
+	// 解析主机名，处理 IPv6 地址
+	addrs, err := net.LookupHost(host)
 	if err != nil {
 		return -1
 	}
 
-	udpAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, port))
-	if err != nil {
-		return -1
+	// 优先使用 IPv4 地址
+	pingTarget := host
+	for _, addr := range addrs {
+		if !strings.Contains(addr, ":") {
+			pingTarget = addr
+			break
+		}
 	}
 
 	const attempts = 3
-	var totalRTT time.Duration
+	var totalMs int
 	successCount := 0
 
 	for i := 0; i < attempts; i++ {
-		conn, err := net.DialUDP("udp", nil, udpAddr)
+		cmd := exec.Command("ping", "-n", "1", "-w", "2000", pingTarget)
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		output, err := cmd.CombinedOutput()
 		if err != nil {
 			continue
 		}
 
-		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-
-		// 发送 n2n 格式的注册探测包
-		start := time.Now()
-		_, writeErr := conn.Write([]byte("N2N_PING"))
-		if writeErr != nil {
-			conn.Close()
-			continue
-		}
-
-		buf := make([]byte, 1500)
-		_, readErr := conn.Read(buf)
-		elapsed := time.Since(start)
-		conn.Close()
-
-		if readErr == nil {
-			totalRTT += elapsed
+		ms := parsePingOutput(string(output))
+		if ms >= 0 {
+			totalMs += ms
 			successCount++
-		}
-		// 间隔 200ms 避免拥塞
-		if i < attempts-1 {
-			time.Sleep(200 * time.Millisecond)
 		}
 	}
 
@@ -1020,8 +1015,60 @@ func MeasureNodeLatency(address string) int {
 		return -1
 	}
 
-	avgMs := int(totalRTT.Milliseconds() / int64(successCount))
-	return avgMs
+	return totalMs / successCount
+}
+
+// parsePingOutput 从 Windows ping 输出中解析延迟毫秒数
+// 例如: "来自 8.148.244.159 的回复: 字节=32 时间=35ms TTL=52"
+// 或者: "Reply from 8.148.244.159: bytes=32 time=35ms TTL=52"
+func parsePingOutput(output string) int {
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		lineLower := strings.ToLower(line)
+		if strings.Contains(lineLower, "time=") || strings.Contains(lineLower, "时间=") {
+			// 提取 time=XXms 部分
+			timeIdx := strings.Index(lineLower, "time=")
+			if timeIdx == -1 {
+				timeIdx = strings.Index(lineLower, "时间=")
+			}
+			if timeIdx == -1 {
+				continue
+			}
+
+			// 从 time= 后面提取数字
+			sub := line[timeIdx:]
+			// 跳过 "time=" 或 "时间="
+			eqIdx := strings.Index(sub, "=")
+			if eqIdx == -1 {
+				continue
+			}
+			sub = sub[eqIdx+1:]
+
+			// 提取数字部分
+			numStr := ""
+			for _, ch := range sub {
+				if ch >= '0' && ch <= '9' {
+					numStr += string(ch)
+				} else if ch == '.' {
+					numStr += string(ch)
+				} else {
+					break
+				}
+			}
+
+			if numStr == "" {
+				continue
+			}
+
+			val, err := strconv.ParseFloat(numStr, 64)
+			if err != nil {
+				continue
+			}
+
+			return int(val)
+		}
+	}
+	return -1
 }
 
 // MeasureAllNodesLatency 测量所有已知节点的延迟
