@@ -257,8 +257,8 @@ func (e *Edge) Start(cfg *config.Config) error {
 		scanner := bufio.NewScanner(stdoutPipe)
 		for scanner.Scan() {
 			line := scanner.Text()
+			logger.Infof("[EDGE] %s", line)
 			e.parseEdgeOutput(line)
-			logger.Debugf("[EDGE stdout] %s", line)
 		}
 	}()
 
@@ -271,6 +271,7 @@ func (e *Edge) Start(cfg *config.Config) error {
 			stderrBuf.WriteString(line)
 			stderrBuf.WriteString("\n")
 			logger.Infof("[EDGE stderr] %s", line)
+			e.parseEdgeOutput(line)
 		}
 	}()
 
@@ -676,17 +677,32 @@ func KillOrphanEdgeProcess() {
 func (e *Edge) parseEdgeOutput(line string) {
 	lineLower := strings.ToLower(line)
 
+	// 优先检测注册成功状态（这是最终成功状态）
+	// n2n edge v3 多种输出格式：
+	//   [OK] edge <<< ================ >>> supernode
+	//   registered with supernode
+	//   successfully registered
+	//   连接状态: 已成功注册到中心节点
 	if strings.Contains(lineLower, "registered with supernode") ||
 		strings.Contains(lineLower, "successfully registered") ||
-		(strings.Contains(lineLower, "<<<") && strings.Contains(lineLower, ">>>") && strings.Contains(lineLower, "supernode")) {
+		(strings.Contains(lineLower, "<<<") && strings.Contains(lineLower, ">>>") && strings.Contains(lineLower, "supernode")) ||
+		strings.Contains(lineLower, "连接状态: 已成功注册到中心节点") ||
+		strings.Contains(lineLower, "edge_operate") && strings.Contains(lineLower, "supernode") && !strings.Contains(lineLower, "error") ||
+		strings.Contains(lineLower, "supernode0:") && strings.Contains(lineLower, "ok") ||
+		(strings.Contains(lineLower, "ok") && strings.Contains(lineLower, "edge") && strings.Contains(lineLower, "supernode")) {
 		e.mu.Lock()
 		if e.connectionState == StateRegistered {
 			e.mu.Unlock()
 			return
 		}
+		prevState := e.connectionState
 		e.connectionState = StateRegistered
 		cb := e.connectionStateCallback
 		e.mu.Unlock()
+
+		if prevState != StateRegistered {
+			logger.Infof("状态转换: %s -> Connected (已成功注册到中心节点)", prevState.String())
+		}
 		logger.Infof(">>> 连接状态: 已成功注册到中心节点 <<<")
 		logger.Infof("    虚拟网络已建立，可以与同群组内其他节点通信")
 
@@ -698,66 +714,81 @@ func (e *Edge) parseEdgeOutput(line string) {
 		return
 	}
 
+	// 检测 TCP 连接成功（中间状态，不是最终成功）
+	if strings.Contains(lineLower, "connected to supernode") ||
+		strings.Contains(lineLower, "supernode connection established") {
+		e.mu.Lock()
+		// 只有在 Connecting 状态下才升级为 Connected
+		// 如果已经 Registered，不降级
+		if e.connectionState != StateRegistered {
+			prevState := e.connectionState
+			e.connectionState = StateConnected
+			cb := e.connectionStateCallback
+			e.mu.Unlock()
+			logger.Infof("状态转换: %s -> Connected (已连接到中心节点)", prevState.String())
+			if cb != nil {
+				cb(StateConnected)
+			}
+		} else {
+			e.mu.Unlock()
+		}
+		return
+	}
+
+	// 检测正在连接
 	if strings.Contains(lineLower, "connecting to supernode") ||
 		strings.Contains(lineLower, "resolving supernode") {
 		e.mu.Lock()
+		prevState := e.connectionState
 		e.connectionState = StateConnecting
 		cb := e.connectionStateCallback
 		e.mu.Unlock()
-		logger.Infof(">>> 连接状态: 正在连接中心节点... <<<")
+		logger.Infof("状态转换: %s -> Connecting", prevState.String())
 
 		if cb != nil {
 			cb(StateConnecting)
 		}
+		return
 	}
 
-	if strings.Contains(lineLower, "connected to supernode") ||
-		strings.Contains(lineLower, "supernode connection established") {
-		e.mu.Lock()
-		e.connectionState = StateConnected
-		cb := e.connectionStateCallback
-		e.mu.Unlock()
-		logger.Infof(">>> 连接状态: 已连接到中心节点 <<<")
-
-		if cb != nil {
-			cb(StateConnected)
-		}
-	}
-
+	// 检测节点发现
 	if strings.Contains(lineLower, "peer") && strings.Contains(lineLower, "added") {
 		e.mu.Lock()
 		e.registeredPeers++
 		peers := e.registeredPeers
 		e.mu.Unlock()
 		logger.Infof(">>> 节点发现: 发现新节点 (当前群内共 %d 个节点) <<<", peers)
+		return
 	}
 
-	if strings.Contains(lineLower, "error") ||
-		strings.Contains(lineLower, "failed") ||
-		strings.Contains(lineLower, "cannot") {
-		logger.Warnf(">>> 连接警告: %s <<<", line)
-
+	// 检测错误——仅在未注册成功时才标记为错误
+	// 注册成功后，edge 可能输出包含 "error" 的非关键日志（如心跳超时重试）
+	if strings.Contains(lineLower, "error") || strings.Contains(lineLower, "failed") || strings.Contains(lineLower, "cannot") {
 		e.mu.Lock()
 		if e.connectionState != StateRegistered && e.connectionState != StateConnected {
+			prevState := e.connectionState
 			e.connectionState = StateError
 			cb := e.connectionStateCallback
 			e.mu.Unlock()
-
+			logger.Warnf("状态转换: %s -> Error (%s)", prevState.String(), line)
 			if cb != nil {
 				cb(StateError)
 			}
 		} else {
 			e.mu.Unlock()
+			logger.Debugf("[EDGE 非关键警告] %s", line)
 		}
+		return
 	}
 
-	if strings.Contains(lineLower, "disconnected") ||
-		strings.Contains(lineLower, "connection lost") {
+	// 检测断开连接
+	if strings.Contains(lineLower, "disconnected") || strings.Contains(lineLower, "connection lost") {
 		e.mu.Lock()
+		prevState := e.connectionState
 		e.connectionState = StateDisconnected
 		cb := e.connectionStateCallback
 		e.mu.Unlock()
-		logger.Warnf(">>> 连接状态: 已断开连接 <<<")
+		logger.Warnf("状态转换: %s -> Disconnected", prevState.String())
 
 		if cb != nil {
 			cb(StateDisconnected)
@@ -871,7 +902,7 @@ func (e *Edge) LogConnectionStatus() {
 	logger.Infof("  状态:         %s", e.connectionState.String())
 	logger.Infof("  进程:         %s", processStatus)
 	logger.Infof("  已注册:       %s", func() string {
-		if e.isHealthy {
+		if e.connectionState == StateRegistered {
 			return "是"
 		}
 		return "否"
@@ -909,6 +940,22 @@ func (e *Edge) configureTapInterface(cfg *config.Config) {
 		logger.Errorf("  配置 TAP 适配器失败: %v", err)
 	} else {
 		logger.Infof("  配置 TAP 适配器成功: %s/16, MTU=1290", cfg.IP)
+
+		// TAP 配置成功意味着 edge 已经建立了虚拟网络
+		// 如果 parseEdgeOutput 尚未检测到注册成功，在此推断为已连接
+		e.mu.Lock()
+		if e.connectionState == StateConnecting || e.connectionState == StateConnected {
+			prevState := e.connectionState
+			e.connectionState = StateRegistered
+			cb := e.connectionStateCallback
+			e.mu.Unlock()
+			logger.Infof("状态转换: %s -> Connected (TAP 配置成功，推断已注册)", prevState.String())
+			if cb != nil {
+				cb(StateRegistered)
+			}
+		} else {
+			e.mu.Unlock()
+		}
 	}
 
 	logger.Infof(">>> TAP 适配器配置完成 <<<")
