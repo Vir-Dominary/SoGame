@@ -1,6 +1,8 @@
 package platform
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +14,8 @@ import (
 	"unsafe"
 
 	"sogame/internal/logger"
+	"sogame/internal/nic"
+	tapadapter "sogame/internal/tap"
 
 	"golang.org/x/sys/windows"
 )
@@ -51,27 +55,41 @@ func IsSoGameAdapterExists() bool {
 		return true
 	}
 
-	cmd := exec.Command("powershell", "-Command",
-		fmt.Sprintf("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; try { $a = Get-NetAdapter -Name '%s' -ErrorAction Stop; if ($a.Status -ne $null) { Write-Output 'EXISTS' } else { Write-Output 'EXISTS' } } catch { Write-Output 'NOT_FOUND' }", SoGameAdapterName))
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return false
+	_, err := nic.FindByFriendlyName(SoGameAdapterName)
+	if err == nil {
+		return true
 	}
-
-	return strings.TrimSpace(string(output)) == "EXISTS"
+	if !errors.Is(err, nic.ErrNotFound) {
+		logger.Warnf("查找 SoGame 专属适配器 '%s' 失败: %v", SoGameAdapterName, err)
+	}
+	return false
 }
 
-// isTapDriverInstalled 检查 TAP 驱动是否已安装到系统中（不一定有 SoGame 适配器实例）
-func isTapDriverInstalled() bool {
-	cmd := exec.Command("powershell", "-Command",
-		`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; (Get-NetAdapter -IncludeHidden | Where-Object { $_.InterfaceDescription -match 'TAP-Windows|tap0901' } | Measure-Object).Count`)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := cmd.CombinedOutput()
+func renameTapAdapterByNic() bool {
+	info, err := tapadapter.RenameCandidate(SoGameAdapterName, 3*time.Second)
 	if err != nil {
+		if !errors.Is(err, nic.ErrNotFound) {
+			logger.Warnf("重命名 TAP 适配器为 '%s' 失败: %v", SoGameAdapterName, err)
+		}
 		return false
 	}
-	return strings.TrimSpace(string(output)) != "0"
+
+	logger.Infof("已将 TAP 适配器 '%s' 重命名为 '%s'", info.FriendlyName, SoGameAdapterName)
+	return true
+}
+
+// isTapDriverInstalled 检查系统中是否已有 TAP-Windows 适配器实例。
+func isTapDriverInstalled() bool {
+	if !IsWindows() {
+		return true
+	}
+
+	ok, err := tapadapter.HasWindowsAdapter()
+	if err != nil {
+		logger.Warnf("查询 TAP 驱动实例失败: %v", err)
+		return false
+	}
+	return ok
 }
 
 // isTapAdapterInstalled 检查是否存在任何 TAP 适配器
@@ -80,18 +98,13 @@ func isTapAdapterInstalled() bool {
 		return true
 	}
 
-	if IsSoGameAdapterExists() {
+	_, err := tapadapter.FindAdapter(SoGameAdapterName)
+	if err == nil {
 		return true
 	}
-
-	cmd := exec.Command("powershell", "-Command",
-		`Get-NetAdapter | Where-Object { $_.InterfaceDescription -match 'tap|wintun|tun' } | Select-Object -First 1 -ExpandProperty Name`)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := cmd.CombinedOutput()
-	if err == nil && len(strings.TrimSpace(string(output))) > 0 {
-		return true
+	if !errors.Is(err, nic.ErrNotFound) {
+		logger.Warnf("查找 TAP 适配器失败: %v", err)
 	}
-
 	return false
 }
 
@@ -101,66 +114,51 @@ func FindTapInterfaceName() string {
 		return ""
 	}
 
-	// 优先查找 SoGame 专属适配器
-	if IsSoGameAdapterExists() {
-		logger.Debugf("found SoGame dedicated adapter: %s", SoGameAdapterName)
-		return SoGameAdapterName
-	}
-
-	// 回退：查找任何可用的 TAP 适配器（优先选择没有 IP 的）
-	cmd := exec.Command("powershell", "-Command",
-		fmt.Sprintf(`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $adapters = Get-NetAdapter | Where-Object { $_.InterfaceDescription -match 'tap|wintun|tun' -and $_.Name -ne '%s' }; foreach ($a in $adapters) { $ip = (Get-NetIPAddress -InterfaceAlias $a.Name -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress; if (-not $ip) { Write-Output $a.Name; break } }; if (-not $?) { foreach ($a in $adapters) { Write-Output $a.Name; break } }`, SoGameAdapterName))
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := cmd.CombinedOutput()
-	if err == nil {
-		name := strings.TrimSpace(string(output))
-		if name != "" {
-			logger.Debugf("found TAP interface (fallback): %s", name)
-			return name
+	info, err := tapadapter.FindAdapter(SoGameAdapterName)
+	if err != nil {
+		if !errors.Is(err, nic.ErrNotFound) {
+			logger.Warnf("查找 TAP 接口失败: %v", err)
 		}
+		return ""
 	}
 
-	return ""
+	if strings.EqualFold(info.FriendlyName, SoGameAdapterName) {
+		logger.Debugf("found SoGame dedicated adapter by nic: %s", info.FriendlyName)
+	} else {
+		logger.Debugf("found TAP interface by nic: %s", info.FriendlyName)
+	}
+	return info.FriendlyName
 }
 
-// EnableTapInterface 启用可能被禁用的 TAP 网络适配器
-func EnableTapInterface(ifName string) {
+// RestartTapInterface 重启 TAP 网络适配器以清空设备层残留状态。
+func RestartTapInterface(ifName string) error {
 	if !IsWindows() || ifName == "" {
-		return
+		return nil
 	}
 
-	checkCmd := exec.Command("powershell", "-Command",
-		fmt.Sprintf("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; (Get-NetAdapter -Name '%s' -ErrorAction SilentlyContinue).Status", ifName))
-	checkCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := checkCmd.CombinedOutput()
-	if err == nil {
-		status := strings.TrimSpace(string(output))
-		if strings.EqualFold(status, "Up") {
-			return
+	const attempts = 2
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		logger.Infof("正在通过设备层 API 重启 TAP 适配器 '%s' (%d/%d)...", ifName, attempt, attempts)
+		if err := tapadapter.RestartAdapter(context.Background(), ifName, 10*time.Second); err != nil {
+			lastErr = err
+			if attempt < attempts {
+				logger.Warnf("设备层重启 TAP 适配器 '%s' 失败，将重试: %v", ifName, err)
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			logger.Warnf("设备层重启 TAP 适配器 '%s' 失败: %v", ifName, err)
+			return err
 		}
-		logger.Infof("TAP 适配器 '%s' 当前状态: %s，正在启用...", ifName, status)
+		logger.Infof("TAP 适配器 '%s' 已通过设备层 API 重启", ifName)
+		return nil
 	}
+	return lastErr
+}
 
-	enableCmd := exec.Command("netsh", "interface", "set", "interface", ifName, "enable")
-	enableCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	enableOutput, enableErr := enableCmd.CombinedOutput()
-	if enableErr != nil {
-		logger.Warnf("netsh enable interface failed: %v, %s", enableErr, strings.TrimSpace(string(enableOutput)))
-
-		psCmd := exec.Command("powershell", "-Command",
-			fmt.Sprintf("Enable-NetAdapter -Name '%s' -Confirm:$false", ifName))
-		psCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-		psOutput, psErr := psCmd.CombinedOutput()
-		if psErr != nil {
-			logger.Warnf("PowerShell Enable-NetAdapter failed: %v, %s", psErr, strings.TrimSpace(string(psOutput)))
-		} else {
-			logger.Infof("TAP 适配器 '%s' 已通过 PowerShell 启用", ifName)
-		}
-	} else {
-		logger.Infof("TAP 适配器 '%s' 已通过 netsh 启用", ifName)
-	}
-
-	time.Sleep(1 * time.Second)
+// EnableTapInterface 兼容旧接口；当前实现会执行设备层重启。
+func EnableTapInterface(ifName string) {
+	_ = RestartTapInterface(ifName)
 }
 
 // SetInterfaceMetric 设置网卡的跃点数（优先级），值越小优先级越高
@@ -186,8 +184,6 @@ func ConfigureTapInterface(ifName, ip string) error {
 	if !IsWindows() {
 		return nil
 	}
-
-	EnableTapInterface(ifName)
 
 	resetCmd := exec.Command("netsh", "interface", "ip", "set", "address",
 		ifName, "dhcp")
@@ -239,27 +235,20 @@ func IsNetworkAdapterReady() bool {
 func EnsureSoGameAdapter() (TapInstallStatus, error) {
 	if IsSoGameAdapterExists() {
 		logger.Infof("SoGame 专属适配器 '%s' 已存在", SoGameAdapterName)
-		EnableTapInterface(SoGameAdapterName)
+		if err := RestartTapInterface(SoGameAdapterName); err != nil {
+			return TapInstallFailed, fmt.Errorf("重启 SoGame 专属适配器失败: %w", err)
+		}
 		return TapAlreadyInstalled, nil
 	}
 
 	logger.Infof("正在创建 SoGame 专属 TAP 适配器 '%s'...", SoGameAdapterName)
 
 	// 尝试1：将现有的未命名 TAP 适配器重命名为 SoGame-VPN
-	renameCmd := exec.Command("powershell", "-Command",
-		fmt.Sprintf(`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $tap = Get-NetAdapter | Where-Object { $_.InterfaceDescription -match 'TAP-Windows|tap0901|tap-windows' -and $_.Name -ne '%s' } | Select-Object -First 1; if ($tap) { Rename-NetAdapter -Name $tap.Name -NewName '%s' -PassThru | Select-Object -ExpandProperty Name } else { Write-Output 'NOT_FOUND' }`, SoGameAdapterName, SoGameAdapterName))
-	renameCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	renameOutput, renameErr := renameCmd.CombinedOutput()
-
-	if renameErr == nil {
-		renamedName := strings.TrimSpace(string(renameOutput))
-		if renamedName == SoGameAdapterName {
-			logger.Infof("已将现有 TAP 适配器重命名为 '%s'", SoGameAdapterName)
-			EnableTapInterface(SoGameAdapterName)
-			return TapInstallSuccess, nil
+	if renameTapAdapterByNic() {
+		if err := RestartTapInterface(SoGameAdapterName); err != nil {
+			return TapInstallFailed, fmt.Errorf("重启 SoGame 专属适配器失败: %w", err)
 		}
-	} else {
-		logger.Warnf("重命名现有适配器失败: %v, %s", renameErr, strings.TrimSpace(string(renameOutput)))
+		return TapInstallSuccess, nil
 	}
 
 	// 尝试2：如果没有 TAP 驱动，先安装驱动
@@ -415,26 +404,14 @@ func createSoGameAdapter() (TapInstallStatus, error) {
 	time.Sleep(3 * time.Second)
 
 	// 查找新创建的 TAP 适配器并重命名为 SoGame-VPN
-	renameCmd := exec.Command("powershell", "-Command",
-		fmt.Sprintf(`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $tap = Get-NetAdapter | Where-Object { $_.InterfaceDescription -match 'TAP-Windows|tap0901' -and $_.Name -ne '%s' } | Select-Object -First 1; if ($tap) { Rename-NetAdapter -Name $tap.Name -NewName '%s' -PassThru | Select-Object -ExpandProperty Name } else { Write-Output 'NOT_FOUND' }`, SoGameAdapterName, SoGameAdapterName))
-	renameCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	renameOutput, renameErr := renameCmd.CombinedOutput()
-
-	if renameErr != nil {
-		logger.Warnf("  重命名适配器失败: %v, %s", renameErr, strings.TrimSpace(string(renameOutput)))
-	} else {
-		renamedName := strings.TrimSpace(string(renameOutput))
-		if renamedName == SoGameAdapterName {
-			logger.Infof("  TAP 适配器已重命名为 '%s'", SoGameAdapterName)
-		} else if renamedName == "NOT_FOUND" {
-			logger.Warnf("  未找到可重命名的 TAP 适配器")
-		} else {
-			logger.Warnf("  重命名结果异常: %s", renamedName)
-		}
+	if !renameTapAdapterByNic() {
+		logger.Warnf("  未能将 TAP 适配器重命名为 '%s'", SoGameAdapterName)
 	}
 
-	// 启用适配器并设置跃点数
-	EnableTapInterface(SoGameAdapterName)
+	// 重启适配器以清空残留状态
+	if err := RestartTapInterface(SoGameAdapterName); err != nil {
+		return TapInstallFailed, fmt.Errorf("重启 SoGame 专属适配器失败: %w", err)
+	}
 
 	if IsSoGameAdapterExists() {
 		logger.Infof("SoGame 专属适配器 '%s' 创建成功", SoGameAdapterName)
