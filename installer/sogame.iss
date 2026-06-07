@@ -44,7 +44,7 @@ chinese.FinishedRestartLabel=要完成安装，需要重新启动计算机。是
 chinese.ConfirmUninstall=确定要卸载 {#MyAppName} 吗？
 
 [Files]
-Source: "..\SoGame.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\build\bin\SoGame.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\bin\edge.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "tap\OemWin2k.inf"; DestDir: "{app}\tap"; Flags: ignoreversion
 Source: "tap\tap0901.cat"; DestDir: "{app}\tap"; Flags: ignoreversion
@@ -76,7 +76,7 @@ begin
   Result := False;
   if Exec('powershell', '-Command "Get-NetAdapter -IncludeHidden | Where-Object { $_.InterfaceDescription -match ''tap0901|TAP-Windows'' } | Measure-Object | Select-Object -ExpandProperty Count"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
   begin
-    if ResultCode = 0 then
+    if (ResultCode = 0) and (Output <> '') and (StrToIntDef(Output, 0) > 0) then
       Result := True;
   end;
 end;
