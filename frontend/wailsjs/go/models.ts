@@ -28,11 +28,11 @@ export namespace app {
 	    key_masked: string;
 	    key_set: boolean;
 	    supernode: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ConfigInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.community = source["community"];
@@ -48,11 +48,11 @@ export namespace app {
 	    nodeName: string;
 	    status: string;
 	    sponsorURL: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ConnectionDetails(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.connected = source["connected"];

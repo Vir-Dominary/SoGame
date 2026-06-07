@@ -439,9 +439,20 @@ function App() {
               </div>
               <div className="details-divider" />
               <div className="details-sponsor">
-                <span className="details-sponsor-label">支持开发者团队</span>
+                <div className="details-sponsor-text">
+                  <span className="details-sponsor-title">如果这个项目帮助你和朋友顺利联机，欢迎支持该项目</span>
+                  <div className="details-sponsor-usage">
+                    <span className="details-sponsor-usage-label">赞助费用将用于：</span>
+                    <ul className="details-sponsor-list">
+                    <li>节点服务器</li>
+                    <li>网络带宽</li>
+                    <li>域名与基础设施</li>
+                    <li>后续开发</li>
+                    </ul>
+                  </div>
+                </div>
                 <a className="details-sponsor-link" href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(connDetails.sponsorURL) }}>
-                  赞助链接
+                  赞助支持
                 </a>
               </div>
               <button className="details-close" onClick={() => setShowDetails(false)}>关闭</button>
