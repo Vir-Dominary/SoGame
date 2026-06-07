@@ -1,5 +1,5 @@
 export namespace app {
-
+	
 	export class AboutInfo {
 	    appName: string;
 	    appVersion: string;
@@ -7,11 +7,11 @@ export namespace app {
 	    appURL: string;
 	    bilibiliURL: string;
 	    appDesc: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new AboutInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.appName = source["appName"];
@@ -28,11 +28,11 @@ export namespace app {
 	    key_masked: string;
 	    key_set: boolean;
 	    supernode: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ConfigInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.community = source["community"];
@@ -45,11 +45,11 @@ export namespace app {
 	export class NodeInfo {
 	    name: string;
 	    address: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new NodeInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -60,11 +60,11 @@ export namespace app {
 	    name: string;
 	    address: string;
 	    latency: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new NodeLatencyInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
