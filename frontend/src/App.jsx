@@ -258,7 +258,12 @@ function App() {
               {mode === 'create' && (
                 <div className="invite-section">
                   <div className="field">
-                    <label>中心节点</label>
+                    <div className="field-header">
+                      <label>中心节点</label>
+                      <button className="refresh-latency-btn" onClick={loadNodesWithLatency} disabled={latencyLoading}>
+                        {latencyLoading ? '测速中...' : '测速'}
+                      </button>
+                    </div>
                     <div className="node-chips">
                       {nodes.map(n => (
                         <button
