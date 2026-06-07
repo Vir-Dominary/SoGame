@@ -72,6 +72,22 @@ export namespace app {
 	        this.latency = source["latency"];
 	    }
 	}
+	export class NodeLatencyInfo {
+	    name: string;
+	    address: string;
+	    latency: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new NodeLatencyInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.address = source["address"];
+	        this.latency = source["latency"];
+	    }
+	}
 
 }
 
