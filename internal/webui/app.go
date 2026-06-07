@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"sync"
 
+	"github.com/wailsapp/wails/v2/pkg/runtime"
+
 	"sogame/internal/config"
 	"sogame/internal/logger"
 	"sogame/internal/n2n"
@@ -135,15 +137,37 @@ func (a *App) GetNodes() []NodeInfo {
 }
 
 func (a *App) GetNodesWithLatency() []NodeLatencyInfo {
-	results := n2n.MeasureAllNodesLatency()
-	out := make([]NodeLatencyInfo, 0, len(results))
-	for _, r := range results {
+	// 先获取节点列表（不测量延迟），确保 UI 能立即显示
+	nodes := n2n.GetKnownNodes()
+	out := make([]NodeLatencyInfo, 0, len(nodes))
+	for _, node := range nodes {
 		out = append(out, NodeLatencyInfo{
-			Name:    r.Name,
-			Address: r.Address,
-			Latency: r.Latency,
+			Name:    node.Name,
+			Address: node.Address,
+			Latency: -2, // -2 表示尚未测量
 		})
 	}
+
+	// 异步测量延迟，通过事件通知前端更新
+	go func() {
+		results := n2n.MeasureAllNodesLatency()
+		updated := make([]NodeLatencyInfo, 0, len(results))
+		for _, r := range results {
+			updated = append(updated, NodeLatencyInfo{
+				Name:    r.Name,
+				Address: r.Address,
+				Latency: r.Latency,
+			})
+		}
+		// 通过 Wails 事件系统通知前端延迟数据已更新
+		a.mu.Lock()
+		ctx := a.ctx
+		a.mu.Unlock()
+		if ctx != nil {
+			runtime.EventsEmit(ctx, "nodeLatencyUpdated", updated)
+		}
+	}()
+
 	return out
 }
 

@@ -9,7 +9,7 @@ import {
   OpenLogs,
   GetAboutInfo,
 } from '../wailsjs/go/app/App'
-import { BrowserOpenURL, ClipboardSetText } from '../wailsjs/runtime/runtime'
+import { BrowserOpenURL, ClipboardSetText, EventsOn } from '../wailsjs/runtime/runtime'
 
 const STATES = {
   disconnected: { label: '未连接', color: '#666', ring: '#333' },
@@ -43,6 +43,21 @@ function App() {
     GetState().then(s => {
       if (s && s !== 'disconnected') setStatus(s)
     }).catch(e => console.error('GetState failed:', e))
+
+    // 监听后端异步推送的延迟数据
+    EventsOn('nodeLatencyUpdated', (data) => {
+      if (data && data.length > 0) {
+        setNodes(data)
+        setLatencyLoading(false)
+        // 如果当前选中的节点不可用，自动切换到延迟最低的可用节点
+        const current = data.find(n => n.name === selectedNode)
+        if (!current || current.latency < 0) {
+          const best = data.find(n => n.latency >= 0)
+          if (best) setSelectedNode(best.name)
+        }
+      }
+    })
+
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
       if (timerRef.current) clearInterval(timerRef.current)
@@ -106,13 +121,12 @@ function App() {
     try {
       const n = await GetNodesWithLatency()
       setNodes(n || [])
-      if (n && n.length > 0) {
-        // 优先选择延迟最低的可用节点
-        const best = n.find(item => item.latency >= 0)
-        setSelectedNode(best ? best.name : n[0].name)
+      if (n && n.length > 0 && !selectedNode) {
+        // 初始选择第一个节点（延迟数据稍后通过事件更新）
+        setSelectedNode(n[0].name)
       }
     } catch (e) { console.error('loadNodesWithLatency failed:', e) }
-    setLatencyLoading(false)
+    // latencyLoading 由事件回调设为 false
   }
 
   // 每 60 秒自动刷新延迟
@@ -249,13 +263,13 @@ function App() {
                       {nodes.map(n => (
                         <button
                           key={n.name}
-                          className={`node-chip ${selectedNode === n.name ? 'active' : ''} ${n.latency < 0 ? 'unavailable' : ''}`}
+                          className={`node-chip ${selectedNode === n.name ? 'active' : ''} ${n.latency < 0 && n.latency !== -2 ? 'unavailable' : ''}`}
                           onClick={() => setSelectedNode(n.name)}
-                          disabled={n.latency < 0}
+                          disabled={n.latency < 0 && n.latency !== -2}
                         >
                           <span className="node-name">{n.name}</span>
-                          <span className={`node-latency ${n.latency < 0 ? 'unavailable' : n.latency < 50 ? 'fast' : n.latency < 150 ? 'medium' : 'slow'}`}>
-                            {latencyLoading ? '...' : n.latency < 0 ? '不可用' : `${n.latency}ms`}
+                          <span className={`node-latency ${n.latency === -2 ? 'measuring' : n.latency < 0 ? 'unavailable' : n.latency < 50 ? 'fast' : n.latency < 150 ? 'medium' : 'slow'}`}>
+                            {n.latency === -2 ? '测量中' : n.latency < 0 ? '不可用' : `${n.latency}ms`}
                           </span>
                         </button>
                       ))}
