@@ -12,6 +12,7 @@ import (
 	"unsafe"
 
 	"sogame/internal/logger"
+	tapadapter "sogame/internal/tap"
 
 	"golang.org/x/sys/windows"
 )
@@ -51,27 +52,12 @@ func IsSoGameAdapterExists() bool {
 		return true
 	}
 
-	cmd := exec.Command("powershell", "-Command",
-		fmt.Sprintf("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; try { $a = Get-NetAdapter -Name '%s' -ErrorAction Stop; if ($a.Status -ne $null) { Write-Output 'EXISTS' } else { Write-Output 'EXISTS' } } catch { Write-Output 'NOT_FOUND' }", SoGameAdapterName))
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return false
-	}
-
-	return strings.TrimSpace(string(output)) == "EXISTS"
+	return tapadapter.ExistsByName(SoGameAdapterName)
 }
 
 // isTapDriverInstalled 检查 TAP 驱动是否已安装到系统中（不一定有 SoGame 适配器实例）
 func isTapDriverInstalled() bool {
-	cmd := exec.Command("powershell", "-Command",
-		`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; (Get-NetAdapter -IncludeHidden | Where-Object { $_.InterfaceDescription -match 'TAP-Windows|tap0901' } | Measure-Object).Count`)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return false
-	}
-	return strings.TrimSpace(string(output)) != "0"
+	return tapadapter.HasWindowsAdapter()
 }
 
 // isTapAdapterInstalled 检查是否存在任何 TAP 适配器
@@ -80,19 +66,7 @@ func isTapAdapterInstalled() bool {
 		return true
 	}
 
-	if IsSoGameAdapterExists() {
-		return true
-	}
-
-	cmd := exec.Command("powershell", "-Command",
-		`Get-NetAdapter | Where-Object { $_.InterfaceDescription -match 'tap|wintun|tun' } | Select-Object -First 1 -ExpandProperty Name`)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := cmd.CombinedOutput()
-	if err == nil && len(strings.TrimSpace(string(output))) > 0 {
-		return true
-	}
-
-	return false
+	return tapadapter.HasAnyAdapter(SoGameAdapterName)
 }
 
 // FindTapInterfaceName 查找 TAP 接口名，优先返回 SoGame 专属适配器
@@ -108,16 +82,10 @@ func FindTapInterfaceName() string {
 	}
 
 	// 回退：查找任何可用的 TAP 适配器（优先选择没有 IP 的）
-	cmd := exec.Command("powershell", "-Command",
-		fmt.Sprintf(`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $adapters = Get-NetAdapter | Where-Object { $_.InterfaceDescription -match 'tap|wintun|tun' -and $_.Name -ne '%s' }; foreach ($a in $adapters) { $ip = (Get-NetIPAddress -InterfaceAlias $a.Name -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress; if (-not $ip) { Write-Output $a.Name; break } }; if (-not $?) { foreach ($a in $adapters) { Write-Output $a.Name; break } }`, SoGameAdapterName))
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := cmd.CombinedOutput()
-	if err == nil {
-		name := strings.TrimSpace(string(output))
-		if name != "" {
-			logger.Debugf("found TAP interface (fallback): %s", name)
-			return name
-		}
+	name, err := tapadapter.FindFallbackInterfaceName(SoGameAdapterName)
+	if err == nil && name != "" {
+		logger.Debugf("found TAP interface (fallback): %s", name)
+		return name
 	}
 
 	return ""
@@ -246,20 +214,15 @@ func EnsureSoGameAdapter() (TapInstallStatus, error) {
 	logger.Infof("正在创建 SoGame 专属 TAP 适配器 '%s'...", SoGameAdapterName)
 
 	// 尝试1：将现有的未命名 TAP 适配器重命名为 SoGame-VPN
-	renameCmd := exec.Command("powershell", "-Command",
-		fmt.Sprintf(`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $tap = Get-NetAdapter | Where-Object { $_.InterfaceDescription -match 'TAP-Windows|tap0901|tap-windows' -and $_.Name -ne '%s' } | Select-Object -First 1; if ($tap) { Rename-NetAdapter -Name $tap.Name -NewName '%s' -PassThru | Select-Object -ExpandProperty Name } else { Write-Output 'NOT_FOUND' }`, SoGameAdapterName, SoGameAdapterName))
-	renameCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	renameOutput, renameErr := renameCmd.CombinedOutput()
-
+	renamedName, renameErr := tapadapter.RenameFirstWindowsAdapter(SoGameAdapterName)
 	if renameErr == nil {
-		renamedName := strings.TrimSpace(string(renameOutput))
 		if renamedName == SoGameAdapterName {
 			logger.Infof("已将现有 TAP 适配器重命名为 '%s'", SoGameAdapterName)
 			EnableTapInterface(SoGameAdapterName)
 			return TapInstallSuccess, nil
 		}
 	} else {
-		logger.Warnf("重命名现有适配器失败: %v, %s", renameErr, strings.TrimSpace(string(renameOutput)))
+		logger.Warnf("重命名现有适配器失败: %v", renameErr)
 	}
 
 	// 尝试2：如果没有 TAP 驱动，先安装驱动
@@ -283,29 +246,9 @@ func installTapDriver() (TapInstallStatus, error) {
 	baseDir := filepath.Dir(exePath)
 	wd, _ := os.Getwd()
 
-	tapDirCandidates := []string{
-		filepath.Join(baseDir, "tap"),
-		filepath.Join(baseDir, "installer", "tap"),
-		filepath.Join(baseDir, "..", "installer", "tap"),
-	}
-	if wd != "" && wd != baseDir {
-		tapDirCandidates = append(tapDirCandidates,
-			filepath.Join(wd, "tap"),
-			filepath.Join(wd, "installer", "tap"),
-		)
-	}
-
-	var tapDir string
-	for _, p := range tapDirCandidates {
-		abs, _ := filepath.Abs(p)
-		if _, err := os.Stat(filepath.Join(abs, "OemWin2k.inf")); err == nil {
-			tapDir = abs
-			break
-		}
-	}
-
-	if tapDir == "" {
-		return TapInstallFailed, fmt.Errorf("未找到 TAP 驱动文件目录 (OemWin2k.inf)")
+	tapDir, err := tapadapter.FindDriverDir(baseDir, wd)
+	if err != nil {
+		return TapInstallFailed, err
 	}
 
 	logger.Infof("正在安装 TAP 驱动，驱动目录: %s", tapDir)
@@ -343,50 +286,16 @@ func createSoGameAdapter() (TapInstallStatus, error) {
 	baseDir := filepath.Dir(exePath)
 	wd, _ := os.Getwd()
 
-	tapDirCandidates := []string{
-		filepath.Join(baseDir, "tap"),
-		filepath.Join(baseDir, "installer", "tap"),
-		filepath.Join(baseDir, "..", "installer", "tap"),
-	}
-	if wd != "" && wd != baseDir {
-		tapDirCandidates = append(tapDirCandidates,
-			filepath.Join(wd, "tap"),
-			filepath.Join(wd, "installer", "tap"),
-		)
-	}
-
-	var tapDir string
-	for _, p := range tapDirCandidates {
-		abs, _ := filepath.Abs(p)
-		if _, err := os.Stat(filepath.Join(abs, "OemWin2k.inf")); err == nil {
-			tapDir = abs
-			break
-		}
-	}
-
-	if tapDir == "" {
-		return TapInstallFailed, fmt.Errorf("未找到 TAP 驱动文件目录 (OemWin2k.inf)")
+	tapDir, err := tapadapter.FindDriverDir(baseDir, wd)
+	if err != nil {
+		return TapInstallFailed, err
 	}
 
 	infPath := filepath.Join(tapDir, "OemWin2k.inf")
 
-	tapinstallCandidates := []string{
-		filepath.Join(tapDir, "tapinstall.exe"),
-		filepath.Join(tapDir, "devcon.exe"),
-		`C:\Program Files\TAP-Windows\bin\tapinstall.exe`,
-		`C:\Program Files\OpenVPN\bin\tapinstall.exe`,
-	}
-
-	var tapinstallPath string
-	for _, p := range tapinstallCandidates {
-		if _, err := os.Stat(p); err == nil {
-			tapinstallPath = p
-			break
-		}
-	}
-
-	if tapinstallPath == "" {
-		return TapInstallFailed, fmt.Errorf("未找到 tapinstall.exe")
+	tapinstallPath, err := tapadapter.FindTapinstall(tapDir)
+	if err != nil {
+		return TapInstallFailed, err
 	}
 
 	logger.Infof("  创建 TAP 适配器实例: %s", tapinstallPath)
@@ -415,15 +324,10 @@ func createSoGameAdapter() (TapInstallStatus, error) {
 	time.Sleep(3 * time.Second)
 
 	// 查找新创建的 TAP 适配器并重命名为 SoGame-VPN
-	renameCmd := exec.Command("powershell", "-Command",
-		fmt.Sprintf(`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $tap = Get-NetAdapter | Where-Object { $_.InterfaceDescription -match 'TAP-Windows|tap0901' -and $_.Name -ne '%s' } | Select-Object -First 1; if ($tap) { Rename-NetAdapter -Name $tap.Name -NewName '%s' -PassThru | Select-Object -ExpandProperty Name } else { Write-Output 'NOT_FOUND' }`, SoGameAdapterName, SoGameAdapterName))
-	renameCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	renameOutput, renameErr := renameCmd.CombinedOutput()
-
+	renamedName, renameErr := tapadapter.RenameFirstWindowsAdapter(SoGameAdapterName)
 	if renameErr != nil {
-		logger.Warnf("  重命名适配器失败: %v, %s", renameErr, strings.TrimSpace(string(renameOutput)))
+		logger.Warnf("  重命名适配器失败: %v", renameErr)
 	} else {
-		renamedName := strings.TrimSpace(string(renameOutput))
 		if renamedName == SoGameAdapterName {
 			logger.Infof("  TAP 适配器已重命名为 '%s'", SoGameAdapterName)
 		} else if renamedName == "NOT_FOUND" {
