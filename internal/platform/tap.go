@@ -11,6 +11,7 @@ import (
 	"time"
 	"unsafe"
 
+	"sogame/internal/ipconfig"
 	"sogame/internal/logger"
 	tapadapter "sogame/internal/tap"
 
@@ -103,58 +104,12 @@ func EnableTapInterface(ifName string) {
 
 // SetInterfaceMetric 设置网卡的跃点数（优先级），值越小优先级越高
 func SetInterfaceMetric(ifName string, metric int) error {
-	if !IsWindows() {
-		return nil
-	}
-
-	cmd := exec.Command("netsh", "interface", "ipv4", "set", "interface",
-		ifName, fmt.Sprintf("metric=%d", metric))
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("设置跃点数失败: %v, %s", err, strings.TrimSpace(string(output)))
-	}
-
-	logger.Infof("TAP 适配器 '%s' 跃点数已设置为 %d", ifName, metric)
-	return nil
+	return ipconfig.SetInterfaceMetric(ifName, metric)
 }
 
 // ConfigureTapInterface 配置 TAP 适配器的 IP 地址和 MTU
 func ConfigureTapInterface(ifName, ip string) error {
-	if !IsWindows() {
-		return nil
-	}
-
-	EnableTapInterface(ifName)
-
-	resetCmd := exec.Command("netsh", "interface", "ip", "set", "address",
-		ifName, "dhcp")
-	resetCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	resetCmd.CombinedOutput()
-
-	time.Sleep(500 * time.Millisecond)
-
-	cmd := exec.Command("netsh", "interface", "ip", "set", "address",
-		ifName, "static", ip, "255.255.0.0")
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(output)))
-	}
-
-	cmd = exec.Command("netsh", "interface", "ipv4", "set", "subinterface",
-		ifName, "mtu=1290", "store=persistent")
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err = cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(output)))
-	}
-
-	if err := SetInterfaceMetric(ifName, 1); err != nil {
-		logger.Warnf("设置跃点数失败: %v", err)
-	}
-
-	return nil
+	return ipconfig.ConfigureTapInterface(ifName, ip)
 }
 
 type TapInstallStatus int
