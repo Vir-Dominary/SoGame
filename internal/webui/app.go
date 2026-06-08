@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"sync"
 
+	"github.com/wailsapp/wails/v2/pkg/runtime"
+
 	"sogame/internal/config"
 	"sogame/internal/logger"
 	"sogame/internal/n2n"
@@ -119,17 +121,54 @@ type NodeInfo struct {
 	Address string `json:"address"`
 }
 
+type NodeLatencyInfo struct {
+	Name    string `json:"name"`
+	Address string `json:"address"`
+	Latency int    `json:"latency"`
+}
+
 func (a *App) GetNodes() []NodeInfo {
-	return []NodeInfo{
-		{Name: "公用节点——中国成都", Address: "119.6.178.183:10090"},
-		{Name: "公用节点——英国", Address: "146.56.108.91:10090"},
-		{Name: "公用节点——中国中山", Address: "116.28.76.77:10090"},
-		{Name: "公用节点——韩国", Address: "[2603:c024:5:5f5f:203d:234:6c3d:593c]:10090"},
-		{Name: "临时节点——中国北京", Address: "117.72.86.224:10090"},
-		{Name: "临时节点——中国深圳", Address: "8.148.244.159:10090"},
-		{Name: "临时节点——中国河北", Address: "111.225.98.22:10090"},
-		{Name: "临时节点——中国苏州", Address: "n2n.vvcd.win:10090"},
+	nodes := n2n.GetKnownNodes()
+	result := make([]NodeInfo, 0, len(nodes))
+	for _, node := range nodes {
+		result = append(result, NodeInfo{Name: node.Name, Address: node.Address})
 	}
+	return result
+}
+
+func (a *App) GetNodesWithLatency() []NodeLatencyInfo {
+	// 先获取节点列表（不测量延迟），确保 UI 能立即显示
+	nodes := n2n.GetKnownNodes()
+	out := make([]NodeLatencyInfo, 0, len(nodes))
+	for _, node := range nodes {
+		out = append(out, NodeLatencyInfo{
+			Name:    node.Name,
+			Address: node.Address,
+			Latency: -2, // -2 表示尚未测量
+		})
+	}
+
+	// 异步测量延迟，通过事件通知前端更新
+	go func() {
+		results := n2n.MeasureAllNodesLatency()
+		updated := make([]NodeLatencyInfo, 0, len(results))
+		for _, r := range results {
+			updated = append(updated, NodeLatencyInfo{
+				Name:    r.Name,
+				Address: r.Address,
+				Latency: r.Latency,
+			})
+		}
+		// 通过 Wails 事件系统通知前端延迟数据已更新
+		a.mu.Lock()
+		ctx := a.ctx
+		a.mu.Unlock()
+		if ctx != nil {
+			runtime.EventsEmit(ctx, "nodeLatencyUpdated", updated)
+		}
+	}()
+
+	return out
 }
 
 type inviteData struct {
@@ -282,7 +321,7 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 			a.state = StateConnecting
 			a.errMsg = ""
 		case n2n.StateRegistered:
-			a.state = StateConnected
+			a.state = StateConnected // 注册成功才是真正连接成功
 			a.errMsg = ""
 		case n2n.StateError:
 			a.state = StateFailed

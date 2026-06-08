@@ -2,12 +2,14 @@ package n2n
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -128,6 +130,19 @@ func lookupNodeName(address string) string {
 
 func LookupNodeName(address string) string {
 	return knownNodes[address]
+}
+
+type KnownNode struct {
+	Name    string
+	Address string
+}
+
+func GetKnownNodes() []KnownNode {
+	nodes := make([]KnownNode, 0, len(knownNodes))
+	for addr, name := range knownNodes {
+		nodes = append(nodes, KnownNode{Name: name, Address: addr})
+	}
+	return nodes
 }
 
 func BuildArgs(cfg *config.Config, mgmtPort int) []string {
@@ -1107,4 +1122,118 @@ func (e *Edge) configureTapInterface(cfg *config.Config) {
 	}
 
 	logger.Infof(">>> TAP 适配器配置完成 <<<")
+}
+
+type NodeLatencyInfo struct {
+	Name    string `json:"name"`
+	Address string `json:"address"`
+	Latency int    `json:"latency"`
+}
+
+func MeasureNodeLatency(address string) int {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		host = address
+	}
+
+	addrs, err := net.LookupHost(host)
+	if err != nil {
+		return -1
+	}
+
+	pingTarget := host
+	for _, addr := range addrs {
+		if !strings.Contains(addr, ":") {
+			pingTarget = addr
+			break
+		}
+	}
+
+	const attempts = 3
+	totalMs := 0
+	successCount := 0
+	for i := 0; i < attempts; i++ {
+		ms := pingHost(pingTarget)
+		if ms >= 0 {
+			totalMs += ms
+			successCount++
+		}
+	}
+
+	if successCount == 0 {
+		return -1
+	}
+	return totalMs / successCount
+}
+
+func pingHost(host string) int {
+	cmd := exec.Command("ping", "-n", "1", "-w", "2000", host)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return -1
+	}
+	return parsePingLatency(output)
+}
+
+func parsePingLatency(data []byte) int {
+	patterns := [][]byte{
+		[]byte("time="),
+		{0xCA, 0xB1, 0xBC, 0xE4, 0x3D},
+	}
+
+	for _, pattern := range patterns {
+		idx := bytes.Index(data, pattern)
+		if idx == -1 {
+			continue
+		}
+
+		after := data[idx+len(pattern):]
+		i := 0
+		for i < len(after) && after[i] == ' ' {
+			i++
+		}
+
+		numStart := i
+		for i < len(after) && ((after[i] >= '0' && after[i] <= '9') || after[i] == '.') {
+			i++
+		}
+
+		if i > numStart {
+			val, err := strconv.ParseFloat(string(after[numStart:i]), 64)
+			if err == nil {
+				return int(val)
+			}
+		}
+	}
+
+	return -1
+}
+
+func MeasureAllNodesLatency() []NodeLatencyInfo {
+	nodes := GetKnownNodes()
+	results := make([]NodeLatencyInfo, 0, len(nodes))
+
+	logger.Infof("Node latency test:")
+	for _, node := range nodes {
+		latency := MeasureNodeLatency(node.Address)
+		info := NodeLatencyInfo{Name: node.Name, Address: node.Address, Latency: latency}
+		if latency >= 0 {
+			logger.Infof("  %s: %dms", node.Name, latency)
+		} else {
+			logger.Infof("  %s: unavailable", node.Name)
+		}
+		results = append(results, info)
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		iAvailable := results[i].Latency >= 0
+		jAvailable := results[j].Latency >= 0
+		if iAvailable != jAvailable {
+			return iAvailable
+		}
+		return results[i].Latency < results[j].Latency
+	})
+
+	return results
 }

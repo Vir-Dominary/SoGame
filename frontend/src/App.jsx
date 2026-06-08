@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   GetState,
   GetErrorMessage,
-  GetNodes,
+  GetNodesWithLatency,
   GenerateInvite,
   ConnectWithInvite,
   Disconnect,
@@ -10,7 +10,7 @@ import {
   GetAboutInfo,
   GetConnectionDetails,
 } from '../wailsjs/go/app/App'
-import { BrowserOpenURL, ClipboardSetText } from '../wailsjs/runtime/runtime'
+import { BrowserOpenURL, ClipboardSetText, EventsOn } from '../wailsjs/runtime/runtime'
 
 const STATES = {
   disconnected: { label: '未连接', color: '#666', ring: '#333' },
@@ -37,17 +37,33 @@ function App() {
   const [showDetails, setShowDetails] = useState(false)
   const [connDetails, setConnDetails] = useState(null)
   const [ipCopied, setIpCopied] = useState(false)
+  const [latencyLoading, setLatencyLoading] = useState(false)
   const pollRef = useRef(null)
   const timerRef = useRef(null)
+  const latencyRef = useRef(null)
 
   useEffect(() => {
-    loadNodes()
+    loadNodesWithLatency()
     GetState().then(s => {
       if (s && s !== 'disconnected') setStatus(s)
     }).catch(e => console.error('GetState failed:', e))
+    EventsOn('nodeLatencyUpdated', (data) => {
+      if (data && data.length > 0) {
+        setNodes(data)
+        setLatencyLoading(false)
+        // 如果当前选中的节点不可用，自动切换到延迟最低的可用节点
+        const current = data.find(n => n.name === selectedNode)
+        if (!current || current.latency < 0) {
+          const best = data.find(n => n.latency >= 0)
+          if (best) setSelectedNode(best.name)
+        }
+      }
+    })
+
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
       if (timerRef.current) clearInterval(timerRef.current)
+      if (latencyRef.current) clearInterval(latencyRef.current)
     }
   }, [])
 
@@ -102,13 +118,27 @@ function App() {
     }, interval)
   }, [])
 
-  const loadNodes = async () => {
+  const loadNodesWithLatency = async () => {
+    setLatencyLoading(true)
     try {
-      const n = await GetNodes()
+      const n = await GetNodesWithLatency()
       setNodes(n || [])
-      if (n && n.length > 0) setSelectedNode(n[0].name)
-    } catch (e) { console.error('loadNodes failed:', e) }
+      if (n && n.length > 0 && !selectedNode) {
+        setSelectedNode(n[0].name)
+      }
+    } catch (e) { console.error('loadNodesWithLatency failed:', e) }
   }
+
+  // 每 60 秒自动刷新延迟
+  useEffect(() => {
+    if (latencyRef.current) clearInterval(latencyRef.current)
+    latencyRef.current = setInterval(() => {
+      loadNodesWithLatency()
+    }, 60000)
+    return () => {
+      if (latencyRef.current) clearInterval(latencyRef.current)
+    }
+  }, [])
 
   const handleGenerate = async () => {
     const node = nodes.find(n => n.name === selectedNode)
@@ -245,15 +275,24 @@ function App() {
               {mode === 'create' && (
                 <div className="invite-section">
                   <div className="field">
-                    <label>中心节点</label>
+                    <div className="field-header">
+                      <label>中心节点</label>
+                      <button className="refresh-latency-btn" onClick={loadNodesWithLatency} disabled={latencyLoading}>
+                        {latencyLoading ? '测速中...' : '测速'}
+                      </button>
+                    </div>
                     <div className="node-chips">
                       {nodes.map(n => (
                         <button
                           key={n.name}
-                          className={`node-chip ${selectedNode === n.name ? 'active' : ''}`}
+                          className={`node-chip ${selectedNode === n.name ? 'active' : ''} ${n.latency < 0 && n.latency !== -2 ? 'unavailable' : ''}`}
                           onClick={() => setSelectedNode(n.name)}
+                          disabled={n.latency < 0 && n.latency !== -2}
                         >
-                          {n.name}
+                          <span className="node-name">{n.name.replace(/公用节点——/, '').replace(/临时节点——/, '')}</span>
+                          <span className={`node-latency ${n.latency === -2 ? 'measuring' : n.latency < 0 ? 'unavailable' : n.latency < 50 ? 'fast' : n.latency < 150 ? 'medium' : 'slow'}`}>
+                            {n.latency === -2 ? '测量中' : n.latency < 0 ? '不可用' : `${n.latency}ms`}
+                          </span>
                         </button>
                       ))}
                     </div>
