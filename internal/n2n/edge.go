@@ -161,8 +161,8 @@ func BuildArgs(cfg *config.Config, mgmtPort int) []string {
 	}
 
 	// 指定使用 SoGame 专属 TAP 适配器
-	if platform.IsSoGameAdapterExists() {
-		args = append(args, "-d", platform.SoGameAdapterName)
+	if tapName := platform.FindTapInterfaceName(); tapName != "" {
+		args = append(args, "-d", tapName)
 	}
 
 	return args

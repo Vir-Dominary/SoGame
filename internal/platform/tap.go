@@ -69,20 +69,20 @@ func isTapAdapterInstalled() bool {
 	return tapadapter.HasAnyAdapter(SoGameAdapterName)
 }
 
-// FindTapInterfaceName 查找 SoGame 认领的 TAP 接口名。
+// FindTapInterfaceName 通过已知 GUID 查找 SoGame TAP 当前接口名
 func FindTapInterfaceName() string {
 	if !IsWindows() {
 		return ""
 	}
 
-	if resolved, err := tapadapter.ResolveKnownAdapter(SoGameAdapterName); err == nil && resolved.Status == tapadapter.ResolveFound && resolved.Info != nil {
-		logger.Debugf("found SoGame known adapter: %s", resolved.Info.FriendlyName)
-		return resolved.Info.FriendlyName
+	resolved, err := tapadapter.ResolveKnownAdapter(SoGameAdapterName)
+	if err != nil {
+		logger.Warnf("按 GUID 查找 TAP 接口失败: %v", err)
+		return ""
 	}
-
-	if IsSoGameAdapterExists() {
-		logger.Debugf("found SoGame dedicated adapter: %s", SoGameAdapterName)
-		return SoGameAdapterName
+	if resolved.Status == tapadapter.ResolveFound && resolved.Info != nil {
+		logger.Debugf("found SoGame TAP by GUID: %s", resolved.Info.FriendlyName)
+		return resolved.Info.FriendlyName
 	}
 
 	return ""
@@ -94,38 +94,11 @@ func EnableTapInterface(ifName string) {
 		return
 	}
 
-	checkCmd := exec.Command("powershell", "-Command",
-		fmt.Sprintf("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; (Get-NetAdapter -Name '%s' -ErrorAction SilentlyContinue).Status", ifName))
-	checkCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := checkCmd.CombinedOutput()
-	if err == nil {
-		status := strings.TrimSpace(string(output))
-		if strings.EqualFold(status, "Up") {
-			return
-		}
-		logger.Infof("TAP 适配器 '%s' 当前状态: %s，正在启用...", ifName, status)
+	if err := tapadapter.EnableAdapterByName(ifName); err != nil {
+		logger.Warnf("启用 TAP 适配器 '%s' 失败: %v", ifName, err)
+		return
 	}
-
-	enableCmd := exec.Command("netsh", "interface", "set", "interface", ifName, "enable")
-	enableCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	enableOutput, enableErr := enableCmd.CombinedOutput()
-	if enableErr != nil {
-		logger.Warnf("netsh enable interface failed: %v, %s", enableErr, strings.TrimSpace(string(enableOutput)))
-
-		psCmd := exec.Command("powershell", "-Command",
-			fmt.Sprintf("Enable-NetAdapter -Name '%s' -Confirm:$false", ifName))
-		psCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-		psOutput, psErr := psCmd.CombinedOutput()
-		if psErr != nil {
-			logger.Warnf("PowerShell Enable-NetAdapter failed: %v, %s", psErr, strings.TrimSpace(string(psOutput)))
-		} else {
-			logger.Infof("TAP 适配器 '%s' 已通过 PowerShell 启用", ifName)
-		}
-	} else {
-		logger.Infof("TAP 适配器 '%s' 已通过 netsh 启用", ifName)
-	}
-
-	time.Sleep(1 * time.Second)
+	logger.Infof("TAP 适配器 '%s' 已启用", ifName)
 }
 
 // SetInterfaceMetric 设置网卡的跃点数（优先级），值越小优先级越高
@@ -207,7 +180,7 @@ func EnsureSoGameAdapter() (TapInstallStatus, error) {
 		logger.Warnf("解析已知 TAP 适配器失败，将继续使用旧流程: %v", resolveErr)
 	} else if resolved.Status == tapadapter.ResolveFound && resolved.Info != nil {
 		logger.Infof("已通过 GUID 找到 SoGame 专属适配器 '%s'", resolved.Info.FriendlyName)
-		EnableTapInterface(resolved.Info.FriendlyName)
+		restartTapInterface(resolved.Info.FriendlyName)
 		rememberKnownTapAdapter(resolved)
 		return TapAlreadyInstalled, nil
 	} else if shouldForgetKnownAdapter(resolved.Status) {
@@ -216,7 +189,7 @@ func EnsureSoGameAdapter() (TapInstallStatus, error) {
 
 	if IsSoGameAdapterExists() {
 		logger.Infof("SoGame 专属适配器 '%s' 已存在", SoGameAdapterName)
-		EnableTapInterface(SoGameAdapterName)
+		restartTapInterface(SoGameAdapterName)
 		rememberCurrentSoGameAdapter()
 		return TapAlreadyInstalled, nil
 	}
@@ -341,7 +314,7 @@ func createSoGameAdapter() (TapInstallStatus, error) {
 	logger.Infof("  TAP 适配器已重命名为 '%s'", SoGameAdapterName)
 
 	// 启用适配器并设置跃点数
-	EnableTapInterface(SoGameAdapterName)
+	restartTapInterface(SoGameAdapterName)
 
 	if IsSoGameAdapterExists() {
 		logger.Infof("SoGame 专属适配器 '%s' 创建成功", SoGameAdapterName)
@@ -365,6 +338,14 @@ func rememberKnownTapAdapter(resolved tapadapter.ResolveResult) {
 	if err := tapadapter.RememberKnownAdapter(*resolved.Info, resolved.NetCfgInstanceID); err != nil {
 		logger.Warnf("保存已知 TAP 适配器失败: %v", err)
 	}
+}
+
+func restartTapInterface(ifName string) {
+	if err := tapadapter.RestartAdapterByName(ifName); err != nil {
+		logger.Warnf("重启 TAP 适配器 '%s' 失败: %v", ifName, err)
+		return
+	}
+	logger.Infof("TAP 适配器 '%s' 已重启", ifName)
 }
 
 func rememberCurrentSoGameAdapter() {
