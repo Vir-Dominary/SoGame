@@ -203,7 +203,7 @@ func IsNetworkAdapterReady() bool {
 }
 
 // EnsureSoGameAdapter 确保存在 SoGame 专属 TAP 适配器
-// 如果不存在，则将现有 TAP 适配器重命名或创建新的
+// 如果不存在，则认领同名 TAP 适配器或创建新的
 func EnsureSoGameAdapter() (TapInstallStatus, error) {
 	resolved, resolveErr := tapadapter.ResolveKnownAdapter(SoGameAdapterName)
 	if resolveErr != nil {
@@ -224,22 +224,9 @@ func EnsureSoGameAdapter() (TapInstallStatus, error) {
 		return TapAlreadyInstalled, nil
 	}
 
-	logger.Infof("正在创建 SoGame 专属 TAP 适配器 '%s'...", SoGameAdapterName)
+	logger.Infof("未找到可认领的 SoGame 专属适配器 '%s'，将创建新 TAP 实例", SoGameAdapterName)
 
-	// 尝试1：将现有的未命名 TAP 适配器重命名为 SoGame-VPN
-	renamedName, renameErr := tapadapter.RenameFirstWindowsAdapter(SoGameAdapterName)
-	if renameErr == nil {
-		if renamedName == SoGameAdapterName {
-			logger.Infof("已将现有 TAP 适配器重命名为 '%s'", SoGameAdapterName)
-			EnableTapInterface(SoGameAdapterName)
-			rememberCurrentSoGameAdapter()
-			return TapInstallSuccess, nil
-		}
-	} else {
-		logger.Warnf("重命名现有适配器失败: %v", renameErr)
-	}
-
-	// 尝试2：如果没有 TAP 驱动，先安装驱动
+	// 如果没有 TAP 驱动，先安装驱动
 	if !isTapDriverInstalled() {
 		status, err := installTapDriver()
 		if err != nil {
@@ -247,7 +234,7 @@ func EnsureSoGameAdapter() (TapInstallStatus, error) {
 		}
 	}
 
-	// 尝试3：创建新的 TAP 适配器实例并重命名
+	// 创建新的 TAP 适配器实例并重命名
 	return createSoGameAdapter()
 }
 
@@ -313,6 +300,10 @@ func createSoGameAdapter() (TapInstallStatus, error) {
 	}
 
 	logger.Infof("  创建 TAP 适配器实例: %s", tapinstallPath)
+	before, err := tapadapter.ListWindowsAdapters()
+	if err != nil {
+		return TapInstallFailed, fmt.Errorf("获取 TAP 安装前快照失败: %w", err)
+	}
 
 	installCmd := exec.Command(tapinstallPath, "install", infPath, "tap0901")
 	installCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
@@ -337,19 +328,20 @@ func createSoGameAdapter() (TapInstallStatus, error) {
 
 	time.Sleep(3 * time.Second)
 
-	// 查找新创建的 TAP 适配器并重命名为 SoGame-VPN
-	renamedName, renameErr := tapadapter.RenameFirstWindowsAdapter(SoGameAdapterName)
-	if renameErr != nil {
-		logger.Warnf("  重命名适配器失败: %v", renameErr)
-	} else {
-		if renamedName == SoGameAdapterName {
-			logger.Infof("  TAP 适配器已重命名为 '%s'", SoGameAdapterName)
-		} else if renamedName == "NOT_FOUND" {
-			logger.Warnf("  未找到可重命名的 TAP 适配器")
-		} else {
-			logger.Warnf("  重命名结果异常: %s", renamedName)
-		}
+	after, err := tapadapter.ListWindowsAdapters()
+	if err != nil {
+		return TapInstallFailed, fmt.Errorf("获取 TAP 安装后快照失败: %w", err)
 	}
+	created, err := tapadapter.FindNewWindowsAdapter(before, after)
+	if err != nil {
+		return TapInstallFailed, err
+	}
+
+	logger.Infof("  新建 TAP 适配器: %s (LUID=%d)", created.FriendlyName, created.Luid)
+	if err := tapadapter.RenameAdapter(created.Luid, SoGameAdapterName); err != nil {
+		return TapInstallFailed, fmt.Errorf("重命名新建 TAP 适配器失败: %w", err)
+	}
+	logger.Infof("  TAP 适配器已重命名为 '%s'", SoGameAdapterName)
 
 	// 启用适配器并设置跃点数
 	EnableTapInterface(SoGameAdapterName)
