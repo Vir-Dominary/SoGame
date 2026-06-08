@@ -9,9 +9,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"netjoin/internal/nic"
-	"netjoin/internal/platform"
-	"netjoin/internal/tap"
+	"sogame/internal/nic"
+	"sogame/internal/platform"
+	"sogame/internal/tap"
 )
 
 type adapterSnapshot struct {
