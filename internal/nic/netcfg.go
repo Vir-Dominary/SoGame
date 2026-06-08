@@ -50,6 +50,37 @@ func NetCfgGUIDFromLuid(luid uint64) (windows.GUID, error) {
 	return guid, nil
 }
 
+// LuidFromNetCfgID returns the interface LUID for a NetCfgInstanceId.
+func LuidFromNetCfgID(netCfgID string) (uint64, error) {
+	target := normalizeNetCfgID(netCfgID)
+	if target == "" {
+		return 0, fmt.Errorf("%w: empty NetCfgInstanceId", ErrNotFound)
+	}
+
+	buf, first, err := adapterAddresses()
+	if err != nil {
+		return 0, err
+	}
+	defer runtime.KeepAlive(buf)
+
+	for adapter := first; adapter != nil; adapter = adapter.Next {
+		id := normalizeNetCfgID(windows.BytePtrToString(adapter.AdapterName))
+		if id == target {
+			return adapter.Luid, nil
+		}
+	}
+	return 0, fmt.Errorf("%w: NetCfgInstanceId=%s", ErrNotFound, target)
+}
+
+// FindByNetCfgID finds an adapter by NetCfgInstanceId.
+func FindByNetCfgID(netCfgID string) (*Info, error) {
+	luid, err := LuidFromNetCfgID(netCfgID)
+	if err != nil {
+		return nil, err
+	}
+	return FindByLuid(luid)
+}
+
 func adapterAddresses() ([]byte, *windows.IpAdapterAddresses, error) {
 	var size uint32
 	err := windows.GetAdaptersAddresses(

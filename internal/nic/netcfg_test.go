@@ -73,6 +73,65 @@ func TestNetCfgFromLuid_NotFound(t *testing.T) {
 	}
 }
 
+func TestLuidFromNetCfgID(t *testing.T) {
+	info := sampleWithNetCfgID(t)
+	id, err := NetCfgIDFromLuid(info.Luid)
+	if err != nil {
+		t.Fatalf("NetCfgIDFromLuid(%d): %v", info.Luid, err)
+	}
+
+	luid, err := LuidFromNetCfgID(id)
+	if err != nil {
+		t.Fatalf("LuidFromNetCfgID(%q): %v", id, err)
+	}
+	if luid != info.Luid {
+		t.Fatalf("LuidFromNetCfgID(%q) = %d, want %d", id, luid, info.Luid)
+	}
+
+	withoutBraces := strings.Trim(id, "{}")
+	luid, err = LuidFromNetCfgID(strings.ToLower(withoutBraces))
+	if err != nil {
+		t.Fatalf("LuidFromNetCfgID(lowercase without braces): %v", err)
+	}
+	if luid != info.Luid {
+		t.Fatalf("LuidFromNetCfgID(lowercase without braces) = %d, want %d", luid, info.Luid)
+	}
+}
+
+func TestFindByNetCfgID(t *testing.T) {
+	info := sampleWithNetCfgID(t)
+	id, err := NetCfgIDFromLuid(info.Luid)
+	if err != nil {
+		t.Fatalf("NetCfgIDFromLuid(%d): %v", info.Luid, err)
+	}
+
+	found, err := FindByNetCfgID(id)
+	if err != nil {
+		t.Fatalf("FindByNetCfgID(%q): %v", id, err)
+	}
+	if found.Luid != info.Luid {
+		t.Fatalf("FindByNetCfgID(%q) LUID = %d, want %d", id, found.Luid, info.Luid)
+	}
+}
+
+func TestLuidFromNetCfgID_NotFound(t *testing.T) {
+	_, err := LuidFromNetCfgID("{00000000-0000-0000-0000-000000000000}")
+	if err == nil {
+		t.Fatal("expected error for non-existent NetCfgInstanceId")
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got: %v", err)
+	}
+
+	_, err = FindByNetCfgID("")
+	if err == nil {
+		t.Fatal("expected error for empty NetCfgInstanceId")
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got: %v", err)
+	}
+}
+
 func sampleWithNetCfgID(t *testing.T) Info {
 	t.Helper()
 
