@@ -50,7 +50,6 @@ Source: "tap\OemWin2k.inf"; DestDir: "{app}\tap"; Flags: ignoreversion
 Source: "tap\tap0901.cat"; DestDir: "{app}\tap"; Flags: ignoreversion
 Source: "tap\tap0901.sys"; DestDir: "{app}\tap"; Flags: ignoreversion
 Source: "tap\tapinstall.exe"; DestDir: "{app}\tap"; Flags: ignoreversion
-Source: "tap\install_tap.bat"; DestDir: "{app}\tap"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -66,7 +65,7 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if (CurStep = ssPostInstall) then
   begin
-    Log('Installation completed. TAP driver installation is handled by the application runtime.');
+    Log('Installation completed. TAP driver installation is handled by the application at runtime.');
   end;
 end;
 
