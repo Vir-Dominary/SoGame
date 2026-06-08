@@ -7,15 +7,16 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"sync"
 
-	"netjoin/internal/config"
-	"netjoin/internal/logger"
-	"netjoin/internal/n2n"
-	"netjoin/internal/platform"
+	"sogame/internal/config"
+	"sogame/internal/logger"
+	"sogame/internal/n2n"
+	"sogame/internal/platform"
 )
 
 type AppState string
@@ -245,7 +246,7 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 		a.state = StateFailed
 		a.errMsg = fmt.Sprintf("保存配置失败: %v", err)
 		a.mu.Unlock()
-		return fmt.Errorf(a.errMsg)
+		return errors.New(a.errMsg)
 	}
 
 	if a.cfg.Key == "" {
@@ -253,7 +254,7 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 		a.state = StateFailed
 		a.errMsg = "请先设置密码"
 		a.mu.Unlock()
-		return fmt.Errorf(a.errMsg)
+		return errors.New(a.errMsg)
 	}
 
 	if !platform.IsSoGameAdapterExists() {
@@ -263,7 +264,7 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 			a.state = StateFailed
 			a.errMsg = fmt.Sprintf("网络适配器安装失败: %v", err)
 			a.mu.Unlock()
-			return fmt.Errorf(a.errMsg)
+			return errors.New(a.errMsg)
 		}
 	} else {
 		platform.EnableTapInterface(platform.SoGameAdapterName)
@@ -305,7 +306,7 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 		a.state = StateFailed
 		a.errMsg = fmt.Sprintf("连接失败: %v", err)
 		a.mu.Unlock()
-		return fmt.Errorf(a.errMsg)
+		return errors.New(a.errMsg)
 	}
 
 	return nil

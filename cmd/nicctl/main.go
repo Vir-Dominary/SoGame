@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"netjoin/internal/nic"
+	"sogame/internal/nic"
 )
 
 func main() {

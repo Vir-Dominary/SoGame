@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"netjoin/internal/poll"
+	"sogame/internal/poll"
 )
 
 // WaitAdminStatus 等待网卡进入指定的管理状态。

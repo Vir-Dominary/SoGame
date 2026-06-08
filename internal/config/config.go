@@ -10,8 +10,8 @@ import (
 	"runtime"
 	"strconv"
 
-	"netjoin/internal/logger"
-	"netjoin/internal/security"
+	"sogame/internal/logger"
+	"sogame/internal/security"
 
 	"gopkg.in/yaml.v3"
 )
@@ -35,13 +35,17 @@ type Config struct {
 var encryptor *security.Encryptor
 
 func init() {
-	// 初始化加密器
 	key, err := security.GetOrCreateEncryptionKey()
 	if err != nil {
-		logger.Warnf("failed to get encryption key: %v, using default key", err)
-		key = "default-encryption-key-for-netjoin"
+		logger.Errorf("failed to get encryption key: %v, generating a new one", err)
+		key, err = security.GenerateAndSaveEncryptionKey()
+		if err != nil {
+			logger.Errorf("failed to generate new encryption key: %v, config encryption will be disabled", err)
+		}
 	}
-	encryptor, _ = security.NewEncryptor(key)
+	if key != "" {
+		encryptor, _ = security.NewEncryptor(key)
+	}
 }
 
 func DefaultConfig() *Config {
@@ -54,7 +58,7 @@ func DefaultConfig() *Config {
 		NodeName:  "my-node",
 		Community: generateRandomCommunity(),
 		Key:       "",
-		Supernode: "8.148.244.159:8080",
+		Supernode: "8.148.244.159:10090",
 		IP:        "10.10.10.10",
 	}
 }
@@ -63,7 +67,7 @@ func DefaultConfig() *Config {
 func generateRandomCommunity() string {
 	bytes := make([]byte, 4)
 	if _, err := rand.Read(bytes); err != nil {
-		return "netjoin"
+		return "sogame"
 	}
 	return "community-" + hex.EncodeToString(bytes)
 }

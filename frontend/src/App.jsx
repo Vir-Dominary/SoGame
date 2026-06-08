@@ -9,6 +9,7 @@ import {
   OpenLogs,
   GetAboutInfo,
 } from '../wailsjs/go/app/App'
+import { BrowserOpenURL, ClipboardSetText } from '../wailsjs/runtime/runtime'
 
 const STATES = {
   disconnected: { label: '未连接', color: '#666', ring: '#333' },
@@ -34,13 +35,12 @@ function App() {
   const [aboutInfo, setAboutInfo] = useState(null)
   const pollRef = useRef(null)
   const timerRef = useRef(null)
-  const disconnectingRef = useRef(false)
 
   useEffect(() => {
     loadNodes()
     GetState().then(s => {
       if (s && s !== 'disconnected') setStatus(s)
-    }).catch(() => {})
+    }).catch(e => console.error('GetState failed:', e))
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
       if (timerRef.current) clearInterval(timerRef.current)
@@ -94,7 +94,7 @@ function App() {
           clearInterval(pollRef.current)
           startPolling(3000, false)
         }
-      } catch (_) {}
+      } catch (e) { console.error('GetState polling failed:', e) }
     }, interval)
   }, [])
 
@@ -103,7 +103,7 @@ function App() {
       const n = await GetNodes()
       setNodes(n || [])
       if (n && n.length > 0) setSelectedNode(n[0].name)
-    } catch (_) {}
+    } catch (e) { console.error('loadNodes failed:', e) }
   }
 
   const handleGenerate = async () => {
@@ -120,7 +120,7 @@ function App() {
 
   const handleCopy = () => {
     if (generatedCode) {
-      navigator.clipboard.writeText(generatedCode).catch(() => {})
+      ClipboardSetText(generatedCode).catch(e => console.error('clipboard write failed:', e))
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     }
@@ -128,19 +128,13 @@ function App() {
 
   const handleConnect = async () => {
     if (status === 'connected') {
-      if (disconnectingRef.current) return
-      disconnectingRef.current = true
-      if (pollRef.current) {
-        clearInterval(pollRef.current)
-        pollRef.current = null
-      }
-      setStatus('disconnected')
-      setErrorMsg('')
-      Disconnect().catch(e => {
+      try {
+        await Disconnect()
+        setStatus('disconnected')
+        setErrorMsg('')
+      } catch (e) {
         setErrorMsg(String(e))
-      }).finally(() => {
-        disconnectingRef.current = false
-      })
+      }
       return
     }
 
@@ -163,7 +157,7 @@ function App() {
   }
 
   const handleOpenLogs = async () => {
-    try { await OpenLogs() } catch (_) {}
+    try { await OpenLogs() } catch (e) { console.error('OpenLogs failed:', e) }
   }
 
   const handleOpenAbout = async () => {
@@ -175,7 +169,7 @@ function App() {
       const info = await GetAboutInfo()
       setAboutInfo(info)
       setShowAbout(true)
-    } catch (_) {}
+    } catch (e) { console.error('GetAboutInfo failed:', e) }
   }
 
   const st = STATES[status] || STATES.disconnected
@@ -374,11 +368,11 @@ function App() {
                 </div>
                 <div className="about-row">
                   <span className="about-label">Github</span>
-                  <a className="about-link" href="#" onClick={(e) => { e.preventDefault(); window.runtime.BrowserOpenURL(aboutInfo.appURL) }}>{aboutInfo.appURL}</a>
+                  <a className="about-link" href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(aboutInfo.appURL) }}>{aboutInfo.appURL}</a>
                 </div>
                 <div className="about-row">
                   <span className="about-label">Bilibili</span>
-                  <a className="about-link" href="#" onClick={(e) => { e.preventDefault(); window.runtime.BrowserOpenURL(aboutInfo.bilibiliURL) }}>{aboutInfo.bilibiliURL}</a>
+                  <a className="about-link" href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(aboutInfo.bilibiliURL) }}>{aboutInfo.bilibiliURL}</a>
                 </div>
                 <div className="about-row">
                   <span className="about-label">引擎</span>

@@ -14,9 +14,9 @@ import (
 	"syscall"
 	"time"
 
-	"netjoin/internal/config"
-	"netjoin/internal/logger"
-	"netjoin/internal/platform"
+	"sogame/internal/config"
+	"sogame/internal/logger"
+	"sogame/internal/platform"
 )
 
 type StatusCallback func(isRunning bool, message string)

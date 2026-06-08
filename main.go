@@ -9,9 +9,9 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
 
-	"netjoin/internal/config"
-	"netjoin/internal/logger"
-	webui "netjoin/internal/webui"
+	"sogame/internal/config"
+	"sogame/internal/logger"
+	webui "sogame/internal/webui"
 )
 
 //go:embed all:frontend/dist
