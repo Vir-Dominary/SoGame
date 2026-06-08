@@ -407,7 +407,7 @@ func (a *App) GetConnectionDetails() ConnectionDetails {
 		Connected:  a.state == StateConnected,
 		VirtualIP:  a.cfg.IP,
 		NodeName:   n2n.LookupNodeName(a.cfg.Supernode),
-		SponsorURL: "https://afdian.com/a/vir_dominary",
+		SponsorURL: "https://www.ifdian.net/a/vir_dominary?utm_source=copylink&utm_medium=link",
 	}
 
 	if details.NodeName == "" {

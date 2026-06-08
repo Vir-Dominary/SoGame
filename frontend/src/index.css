@@ -730,14 +730,50 @@ body {
 
 .details-sponsor {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  gap: 10px;
 }
 
-.details-sponsor-label {
+.details-sponsor-text {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.details-sponsor-title {
   font-size: 12px;
-  color: #484f58;
+  color: #8b949e;
   font-weight: 500;
+  line-height: 1.5;
+}
+
+.details-sponsor-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.details-sponsor-usage-label {
+  font-size: 11px;
+  color: #6e7681;
+}
+
+.details-sponsor-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.details-sponsor-list li {
+  font-size: 11px;
+  color: #484f58;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid #21262d;
+  border-radius: 4px;
+  padding: 2px 8px;
 }
 
 .details-sponsor-link {
@@ -745,6 +781,7 @@ body {
   color: #3ddc84;
   text-decoration: none;
   transition: color 0.2s;
+  align-self: flex-start;
 }
 
 .details-sponsor-link:hover {
