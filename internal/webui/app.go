@@ -156,9 +156,10 @@ func generateStableIP(deviceID, community string) string {
 	h := sha256.New()
 	h.Write([]byte(deviceID + community))
 	hash := hex.EncodeToString(h.Sum(nil))
-	b, _ := hex.DecodeString(hash[:2])
-	host := b[0]%254 + 1
-	return fmt.Sprintf("10.10.10.%d", host)
+	b, _ := hex.DecodeString(hash[:4])
+	host3 := int(b[0])%254 + 1
+	host4 := int(b[1])%254 + 1
+	return fmt.Sprintf("10.10.%d.%d", host3, host4)
 }
 
 func (a *App) GenerateInvite(supernode string) (string, error) {
@@ -314,11 +315,6 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 }
 
 func (a *App) Disconnect() error {
-	a.mu.Lock()
-	a.state = StateDisconnected
-	a.errMsg = ""
-	a.mu.Unlock()
-
 	err := a.edge.Stop()
 	if err != nil {
 		a.mu.Lock()
@@ -326,6 +322,10 @@ func (a *App) Disconnect() error {
 		a.mu.Unlock()
 		return err
 	}
+	a.mu.Lock()
+	a.state = StateDisconnected
+	a.errMsg = ""
+	a.mu.Unlock()
 	return nil
 }
 
@@ -349,6 +349,43 @@ type AboutInfo struct {
 	AppURL      string `json:"appURL"`
 	AppBilibili string `json:"bilibiliURL"`
 	AppDesc     string `json:"appDesc"`
+}
+
+type ConnectionDetails struct {
+	Connected  bool   `json:"connected"`
+	VirtualIP  string `json:"virtualIP"`
+	NodeName   string `json:"nodeName"`
+	Status     string `json:"status"`
+	SponsorURL string `json:"sponsorURL"`
+}
+
+func (a *App) GetConnectionDetails() ConnectionDetails {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	details := ConnectionDetails{
+		Connected:  a.state == StateConnected,
+		VirtualIP:  a.cfg.IP,
+		NodeName:   n2n.LookupNodeName(a.cfg.Supernode),
+		SponsorURL: "https://afdian.com/a/vir_dominary",
+	}
+
+	if details.NodeName == "" {
+		details.NodeName = n2n.MaskSupernode(a.cfg.Supernode)
+	}
+
+	switch a.state {
+	case StateConnected:
+		details.Status = "正常"
+	case StateConnecting:
+		details.Status = "连接中"
+	case StateFailed:
+		details.Status = "异常"
+	default:
+		details.Status = "未连接"
+	}
+
+	return details
 }
 
 func (a *App) GetAboutInfo() AboutInfo {

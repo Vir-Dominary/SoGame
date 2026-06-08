@@ -26,6 +26,10 @@ export function GetConfig() {
   return window['go']['app']['App']['GetConfig']();
 }
 
+export function GetConnectionDetails() {
+  return window['go']['app']['App']['GetConnectionDetails']();
+}
+
 export function GetErrorMessage() {
   return window['go']['app']['App']['GetErrorMessage']();
 }

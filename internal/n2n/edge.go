@@ -123,6 +123,10 @@ var knownNodes = map[string]string{
 }
 
 func lookupNodeName(address string) string {
+	return LookupNodeName(address)
+}
+
+func LookupNodeName(address string) string {
 	return knownNodes[address]
 }
 
