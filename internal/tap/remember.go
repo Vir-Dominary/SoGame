@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"netjoin/internal/nic"
+	"sogame/internal/nic"
 )
 
 func RememberKnownAdapter(info nic.Info, netCfgID string) error {

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"strings"
 
-	"netjoin/internal/nic"
+	"sogame/internal/nic"
 )
 
 type ResolveStatus string

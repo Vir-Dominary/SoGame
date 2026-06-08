@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"netjoin/internal/nic"
+	"sogame/internal/nic"
 )
 
 func TestRememberKnownAdapterResolvesNetCfgID(t *testing.T) {
