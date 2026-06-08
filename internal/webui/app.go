@@ -274,6 +274,12 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		switch state {
+		case n2n.StateConnecting:
+			a.state = StateConnecting
+			a.errMsg = ""
+		case n2n.StateConnected:
+			a.state = StateConnecting
+			a.errMsg = ""
 		case n2n.StateRegistered:
 			a.state = StateConnected
 			a.errMsg = ""
@@ -282,6 +288,7 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 			a.errMsg = "连接过程中发生错误"
 		case n2n.StateDisconnected:
 			a.state = StateDisconnected
+			a.errMsg = ""
 		}
 	})
 
