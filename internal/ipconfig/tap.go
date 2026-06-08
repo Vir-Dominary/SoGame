@@ -8,8 +8,8 @@ import (
 	"syscall"
 	"time"
 
-	"netjoin/internal/logger"
-	"netjoin/internal/tap"
+	"sogame/internal/logger"
+	"sogame/internal/tap"
 )
 
 func SetInterfaceMetric(ifName string, metric int) error {
