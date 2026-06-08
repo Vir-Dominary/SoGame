@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -246,7 +245,7 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 		a.state = StateFailed
 		a.errMsg = fmt.Sprintf("保存配置失败: %v", err)
 		a.mu.Unlock()
-		return errors.New(a.errMsg)
+		return fmt.Errorf("保存配置失败: %w", err)
 	}
 
 	if a.cfg.Key == "" {
@@ -254,7 +253,7 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 		a.state = StateFailed
 		a.errMsg = "请先设置密码"
 		a.mu.Unlock()
-		return errors.New(a.errMsg)
+		return fmt.Errorf("请先设置密码")
 	}
 
 	if !platform.IsSoGameAdapterExists() {
@@ -264,7 +263,7 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 			a.state = StateFailed
 			a.errMsg = fmt.Sprintf("网络适配器安装失败: %v", err)
 			a.mu.Unlock()
-			return errors.New(a.errMsg)
+			return fmt.Errorf("网络适配器安装失败: %w", err)
 		}
 	} else {
 		platform.EnableTapInterface(platform.SoGameAdapterName)
@@ -295,18 +294,13 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 		}
 	})
 
-	// 保持 StateConnecting，实际连接是异步的，通过回调更新状态
-	a.mu.Lock()
-	a.state = StateConnecting
-	a.mu.Unlock()
-
 	err := a.edge.Start(a.cfg)
 	if err != nil {
 		a.mu.Lock()
 		a.state = StateFailed
 		a.errMsg = fmt.Sprintf("连接失败: %v", err)
 		a.mu.Unlock()
-		return errors.New(a.errMsg)
+		return fmt.Errorf("连接失败: %w", err)
 	}
 
 	return nil
