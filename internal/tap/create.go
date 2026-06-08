@@ -3,7 +3,7 @@ package tap
 import (
 	"fmt"
 
-	"netjoin/internal/nic"
+	"sogame/internal/nic"
 )
 
 func ListWindowsAdapters() ([]nic.Info, error) {

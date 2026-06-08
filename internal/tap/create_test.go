@@ -3,7 +3,7 @@ package tap
 import (
 	"testing"
 
-	"netjoin/internal/nic"
+	"sogame/internal/nic"
 )
 
 func TestFindNewWindowsAdapter(t *testing.T) {
