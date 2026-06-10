@@ -50,7 +50,6 @@ Source: "tap\OemWin2k.inf"; DestDir: "{app}\tap"; Flags: ignoreversion
 Source: "tap\tap0901.cat"; DestDir: "{app}\tap"; Flags: ignoreversion
 Source: "tap\tap0901.sys"; DestDir: "{app}\tap"; Flags: ignoreversion
 Source: "tap\tapinstall.exe"; DestDir: "{app}\tap"; Flags: ignoreversion
-Source: "tap\install_tap.bat"; DestDir: "{app}\tap"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -59,12 +58,6 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加选项:"; Flags: checkedonce
-
-[Run]
-Filename: "{app}\tap\install_tap.bat"; \
-  Flags: runhidden waituntilterminated; \
-  StatusMsg: "正在初始化网络组件..."; \
-  Check: ShouldInstallTap
 
 [Code]
 
@@ -90,7 +83,7 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if (CurStep = ssPostInstall) then
   begin
-    Log('Installation completed. TAP driver installation was handled in [Run] section.');
+    Log('Installation completed. TAP driver installation is handled by the application at runtime.');
   end;
 end;
 

@@ -27,6 +27,16 @@ func TestSetDeviceStatusByNameNotFound(t *testing.T) {
 	}
 }
 
+func TestSetDeviceStatusByNetCfgIDNotFound(t *testing.T) {
+	err := SetDeviceStatusByNetCfgID("{00000000-0000-0000-0000-000000000000}", true)
+	if err == nil {
+		t.Fatal("expected error for non-existent NetCfgInstanceId")
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
 func TestFindDeviceByNetCfgIDNotFound(t *testing.T) {
 	devInfo, _, err := findDeviceByNetCfgID("{00000000-0000-0000-0000-000000000000}")
 	if devInfo != 0 {

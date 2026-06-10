@@ -146,8 +146,8 @@ func BuildArgs(cfg *config.Config) []string {
 	}
 
 	// 指定使用 SoGame 专属 TAP 适配器
-	if platform.IsSoGameAdapterExists() {
-		args = append(args, "-d", platform.SoGameAdapterName)
+	if tapName := platform.FindTapInterfaceName(); tapName != "" {
+		args = append(args, "-d", tapName)
 	}
 
 	return args
@@ -758,7 +758,17 @@ func (e *Edge) parseEdgeOutput(line string) {
 
 	// 检测错误——仅在未注册成功时才标记为错误
 	// 注册成功后，edge 可能输出包含 "error" 的非关键日志（如心跳超时重试）
-	if strings.Contains(lineLower, "error") || strings.Contains(lineLower, "failed") || strings.Contains(lineLower, "cannot") {
+	// 注意：使用更精确的模式匹配，避免误判 "no error"、"error_count" 等非错误行
+	isError := strings.Contains(lineLower, "error:") ||
+		strings.Contains(lineLower, "error -") ||
+		strings.Contains(lineLower, "error: ") ||
+		strings.Contains(lineLower, "fatal error") ||
+		strings.Contains(lineLower, "connection failed") ||
+		strings.Contains(lineLower, "failed to") ||
+		strings.Contains(lineLower, "cannot connect") ||
+		strings.Contains(lineLower, "cannot resolve") ||
+		strings.Contains(lineLower, "cannot register")
+	if isError {
 		e.mu.Lock()
 		if e.connectionState != StateRegistered && e.connectionState != StateConnected {
 			prevState := e.connectionState

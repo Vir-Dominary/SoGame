@@ -60,6 +60,11 @@ func SetAppInfo(name, version, author, url string) {
 }
 
 func Init() error {
+	// 已初始化则直接返回，避免重复打开文件导致句柄泄漏
+	if globalLogger != nil && globalLogger.logFile != nil {
+		return nil
+	}
+
 	logDir, err := getLogDir()
 	if err != nil {
 		return fmt.Errorf("failed to get log directory: %w", err)

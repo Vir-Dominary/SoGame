@@ -22,6 +22,22 @@ import (
 
 const SoGameAdapterName = "SoGame-VPN"
 
+const (
+	// tapinstall install 返回时，只能说明创建设备实例的命令已经结束，不能说明
+	// Windows 已经完成 TAP-Windows 设备的 PnP 枚举、网络接口表刷新和友好名可改名状态同步。
+	// 如果立刻采集安装后快照，真实环境里可能会看到一个尚未稳定的临时 TAP 实例：
+	// 它已经出现在 GetIfTable2Ex/GetAdaptersAddresses 结果中，但 netshell 还不能可靠改名，
+	// 随后的 HrRenameConnection 可能返回 "Incorrect function"，或者改名后设备继续重枚举。
+	// 因此这里需要在 tapinstall 后等待一段时间，再做 before/after 快照差分并改名新实例。
+	//
+	// 等待时间采用“基础等待 + 当前 TAP 数量增量”的经验规则：
+	// 1. 6 秒是干净环境和少量 TAP 场景下，通过真实网卡测试观察到的最小稳定基础等待；
+	// 2. 同类型 TAP-Windows 实例越多，tapinstall 越容易触发更多旧设备刷新和接口表重排；
+	// 3. 每张现有 TAP 额外增加 1 秒，用来吸收多 TAP 环境下 Windows PnP 刷新的额外耗时。
+	tapCreateBaseWait               = 6 * time.Second
+	tapCreateWaitPerExistingAdapter = time.Second
+)
+
 func IsWindows() bool {
 	return runtime.GOOS == "windows"
 }
@@ -108,20 +124,25 @@ func isTapAdapterInstalled() bool {
 	return false
 }
 
-// FindTapInterfaceName 查找 TAP 接口名，优先返回 SoGame 专属适配器
+// FindTapInterfaceName 通过已知 GUID 查找 SoGame TAP 当前接口名
 func FindTapInterfaceName() string {
 	if !IsWindows() {
 		return ""
 	}
 
-	info, err := tapadapter.FindAdapter(SoGameAdapterName)
+	resolved, err := tapadapter.ResolveKnownAdapter(SoGameAdapterName)
 	if err != nil {
-		if !errors.Is(err, nic.ErrNotFound) {
-			logger.Warnf("查找 TAP 接口失败: %v", err)
-		}
-		return ""
+		logger.Warnf("按 GUID 查找 TAP 接口失败: %v", err)
+	} else if resolved.Status == tapadapter.ResolveFound && resolved.Info != nil {
+		logger.Debugf("found SoGame TAP by GUID: %s", resolved.Info.FriendlyName)
+		return resolved.Info.FriendlyName
 	}
 
+	// 回退：按友好名称查找
+	info, err := nic.FindByFriendlyName(SoGameAdapterName)
+	if err != nil {
+		return ""
+	}
 	if strings.EqualFold(info.FriendlyName, SoGameAdapterName) {
 		logger.Debugf("found SoGame dedicated adapter by nic: %s", info.FriendlyName)
 	} else {
@@ -185,6 +206,12 @@ func ConfigureTapInterface(ifName, ip string) error {
 		return nil
 	}
 
+	// 启用适配器
+	if err := nic.SetDeviceStatusByName(ifName, true); err != nil {
+		logger.Warnf("启用 TAP 适配器 '%s' 失败: %v", ifName, err)
+	}
+
+	// 先重置为 DHCP
 	resetCmd := exec.Command("netsh", "interface", "ip", "set", "address",
 		ifName, "dhcp")
 	resetCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
@@ -192,22 +219,25 @@ func ConfigureTapInterface(ifName, ip string) error {
 
 	time.Sleep(500 * time.Millisecond)
 
+	// 设置静态 IP
 	cmd := exec.Command("netsh", "interface", "ip", "set", "address",
 		ifName, "static", ip, "255.255.0.0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("配置 TAP IP 失败: %v, %s", err, strings.TrimSpace(string(output)))
 	}
 
-	cmd = exec.Command("netsh", "interface", "ipv4", "set", "subinterface",
+	// 设置 MTU
+	mtuCmd := exec.Command("netsh", "interface", "ipv4", "set", "subinterface",
 		ifName, "mtu=1290", "store=persistent")
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err = cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(output)))
+	mtuCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	mtuOutput, mtuErr := mtuCmd.CombinedOutput()
+	if mtuErr != nil {
+		return fmt.Errorf("设置 MTU 失败: %v, %s", mtuErr, strings.TrimSpace(string(mtuOutput)))
 	}
 
+	// 设置跃点数
 	if err := SetInterfaceMetric(ifName, 1); err != nil {
 		logger.Warnf("设置跃点数失败: %v", err)
 	}
@@ -231,23 +261,48 @@ func IsNetworkAdapterReady() bool {
 }
 
 // EnsureSoGameAdapter 确保存在 SoGame 专属 TAP 适配器
-// 如果不存在，则将现有 TAP 适配器重命名或创建新的
+// 如果不存在，则认领同名 TAP 适配器或创建新的
 func EnsureSoGameAdapter() (TapInstallStatus, error) {
+	resolved, resolveErr := tapadapter.ResolveKnownAdapter(SoGameAdapterName)
+	if resolveErr != nil {
+		logger.Warnf("解析已知 TAP 适配器失败，将继续使用旧流程: %v", resolveErr)
+	} else if resolved.Status == tapadapter.ResolveFound && resolved.Info != nil {
+		logger.Infof("已通过 GUID 找到 SoGame 专属适配器 '%s'", resolved.Info.FriendlyName)
+		if err := restartTapInterface(resolved.Info.FriendlyName); err != nil {
+			return TapInstallFailed, err
+		}
+		if err := rememberKnownTapAdapter(resolved); err != nil {
+			return TapInstallFailed, err
+		}
+		return TapAlreadyInstalled, nil
+	} else if shouldForgetKnownAdapter(resolved.Status) {
+		forgetKnownTapAdapter(resolved.Status)
+	}
+
 	if IsSoGameAdapterExists() {
 		logger.Infof("SoGame 专属适配器 '%s' 已存在", SoGameAdapterName)
+
 		if err := RestartTapInterface(SoGameAdapterName); err != nil {
 			return TapInstallFailed, fmt.Errorf("重启 SoGame 专属适配器失败: %w", err)
+		}
+		if err := rememberCurrentSoGameAdapter(); err != nil {
+			return TapInstallFailed, err
 		}
 		return TapAlreadyInstalled, nil
 	}
 
-	logger.Infof("正在创建 SoGame 专属 TAP 适配器 '%s'...", SoGameAdapterName)
+	logger.Infof("未找到可认领的 SoGame 专属适配器 '%s'，将创建新 TAP 实例", SoGameAdapterName)
 
 	// 尝试1：将现有的未命名 TAP 适配器重命名为 SoGame-VPN
 	if renameTapAdapterByNic() {
 		if err := RestartTapInterface(SoGameAdapterName); err != nil {
 			return TapInstallFailed, fmt.Errorf("重启 SoGame 专属适配器失败: %w", err)
 		}
+
+		if err := rememberCurrentSoGameAdapter(); err != nil {
+			return TapInstallFailed, err
+		}
+
 		return TapInstallSuccess, nil
 	}
 
@@ -259,7 +314,7 @@ func EnsureSoGameAdapter() (TapInstallStatus, error) {
 		}
 	}
 
-	// 尝试3：创建新的 TAP 适配器实例并重命名
+	// 创建新的 TAP 适配器实例并重命名
 	return createSoGameAdapter()
 }
 
@@ -272,29 +327,9 @@ func installTapDriver() (TapInstallStatus, error) {
 	baseDir := filepath.Dir(exePath)
 	wd, _ := os.Getwd()
 
-	tapDirCandidates := []string{
-		filepath.Join(baseDir, "tap"),
-		filepath.Join(baseDir, "installer", "tap"),
-		filepath.Join(baseDir, "..", "installer", "tap"),
-	}
-	if wd != "" && wd != baseDir {
-		tapDirCandidates = append(tapDirCandidates,
-			filepath.Join(wd, "tap"),
-			filepath.Join(wd, "installer", "tap"),
-		)
-	}
-
-	var tapDir string
-	for _, p := range tapDirCandidates {
-		abs, _ := filepath.Abs(p)
-		if _, err := os.Stat(filepath.Join(abs, "OemWin2k.inf")); err == nil {
-			tapDir = abs
-			break
-		}
-	}
-
-	if tapDir == "" {
-		return TapInstallFailed, fmt.Errorf("未找到 TAP 驱动文件目录 (OemWin2k.inf)")
+	tapDir, err := tapadapter.FindDriverDir(baseDir, wd)
+	if err != nil {
+		return TapInstallFailed, err
 	}
 
 	logger.Infof("正在安装 TAP 驱动，驱动目录: %s", tapDir)
@@ -312,7 +347,12 @@ func installTapDriver() (TapInstallStatus, error) {
 		pnputilCmd2.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 		pnputilOutput2, pnputilErr2 := pnputilCmd2.CombinedOutput()
 		if pnputilErr2 != nil {
-			logger.Warnf("  pnputil /add-driver /force 也失败: %v, 输出: %s", pnputilErr2, strings.TrimSpace(string(pnputilOutput2)))
+			return TapInstallFailed, fmt.Errorf("添加 TAP 驱动到驱动存储失败: %v, 输出: %s; /force 重试失败: %v, 输出: %s",
+				pnputilErr,
+				strings.TrimSpace(string(pnputilOutput)),
+				pnputilErr2,
+				strings.TrimSpace(string(pnputilOutput2)),
+			)
 		} else {
 			logger.Infof("  pnputil /add-driver /force 成功")
 		}
@@ -332,53 +372,23 @@ func createSoGameAdapter() (TapInstallStatus, error) {
 	baseDir := filepath.Dir(exePath)
 	wd, _ := os.Getwd()
 
-	tapDirCandidates := []string{
-		filepath.Join(baseDir, "tap"),
-		filepath.Join(baseDir, "installer", "tap"),
-		filepath.Join(baseDir, "..", "installer", "tap"),
-	}
-	if wd != "" && wd != baseDir {
-		tapDirCandidates = append(tapDirCandidates,
-			filepath.Join(wd, "tap"),
-			filepath.Join(wd, "installer", "tap"),
-		)
-	}
-
-	var tapDir string
-	for _, p := range tapDirCandidates {
-		abs, _ := filepath.Abs(p)
-		if _, err := os.Stat(filepath.Join(abs, "OemWin2k.inf")); err == nil {
-			tapDir = abs
-			break
-		}
-	}
-
-	if tapDir == "" {
-		return TapInstallFailed, fmt.Errorf("未找到 TAP 驱动文件目录 (OemWin2k.inf)")
+	tapDir, err := tapadapter.FindDriverDir(baseDir, wd)
+	if err != nil {
+		return TapInstallFailed, err
 	}
 
 	infPath := filepath.Join(tapDir, "OemWin2k.inf")
 
-	tapinstallCandidates := []string{
-		filepath.Join(tapDir, "tapinstall.exe"),
-		filepath.Join(tapDir, "devcon.exe"),
-		`C:\Program Files\TAP-Windows\bin\tapinstall.exe`,
-		`C:\Program Files\OpenVPN\bin\tapinstall.exe`,
-	}
-
-	var tapinstallPath string
-	for _, p := range tapinstallCandidates {
-		if _, err := os.Stat(p); err == nil {
-			tapinstallPath = p
-			break
-		}
-	}
-
-	if tapinstallPath == "" {
-		return TapInstallFailed, fmt.Errorf("未找到 tapinstall.exe")
+	tapinstallPath, err := tapadapter.FindTapinstall(tapDir)
+	if err != nil {
+		return TapInstallFailed, err
 	}
 
 	logger.Infof("  创建 TAP 适配器实例: %s", tapinstallPath)
+	before, err := tapadapter.ListWindowsAdapters()
+	if err != nil {
+		return TapInstallFailed, fmt.Errorf("获取 TAP 安装前快照失败: %w", err)
+	}
 
 	installCmd := exec.Command(tapinstallPath, "install", infPath, "tap0901")
 	installCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
@@ -401,16 +411,37 @@ func createSoGameAdapter() (TapInstallStatus, error) {
 		}
 	}
 
-	time.Sleep(3 * time.Second)
+	// before 是 tapinstall 之前已有的 TAP-Windows 集合。等待时间按 before 数量计算，
+	// 目的是让 Windows 完成本轮 tapinstall 引发的全局 TAP 刷新，再采集 after 快照。
+	// 这样 FindNewWindowsAdapter 更可能拿到稳定的新实例，避免误选尚不可改名的临时接口。
+	wait := tapCreateBaseWait + time.Duration(len(before))*tapCreateWaitPerExistingAdapter
+	logger.Infof("  等待 TAP 设备刷新稳定: %s (当前 TAP 数=%d)", wait, len(before))
+	time.Sleep(wait)
 
-	// 查找新创建的 TAP 适配器并重命名为 SoGame-VPN
-	if !renameTapAdapterByNic() {
-		logger.Warnf("  未能将 TAP 适配器重命名为 '%s'", SoGameAdapterName)
+	after, err := tapadapter.ListWindowsAdapters()
+	if err != nil {
+		return TapInstallFailed, fmt.Errorf("获取 TAP 安装后快照失败: %w", err)
 	}
 
-	// 重启适配器以清空残留状态
+	created, err := tapadapter.FindNewWindowsAdapter(before, after)
+	if err != nil {
+		return TapInstallFailed, err
+	}
+
+	logger.Infof("  新建 TAP 适配器: %s (LUID=%d)", created.FriendlyName, created.Luid)
+
+	if err := tapadapter.RenameAdapter(created.Luid, SoGameAdapterName); err != nil {
+		return TapInstallFailed, fmt.Errorf("重命名新建 TAP 适配器失败: %w", err)
+	}
+
+	logger.Infof("  TAP 适配器已重命名为 '%s'", SoGameAdapterName)
+
 	if err := RestartTapInterface(SoGameAdapterName); err != nil {
 		return TapInstallFailed, fmt.Errorf("重启 SoGame 专属适配器失败: %w", err)
+	}
+
+	if err := rememberCurrentSoGameAdapter(); err != nil {
+		return TapInstallFailed, err
 	}
 
 	if IsSoGameAdapterExists() {
@@ -418,11 +449,52 @@ func createSoGameAdapter() (TapInstallStatus, error) {
 		return TapInstallSuccess, nil
 	}
 
-	logger.Warnf("SoGame 专属适配器创建完成但验证未通过，将尝试继续连接")
-	return TapInstallSuccess, nil
+	return TapInstallFailed, fmt.Errorf("SoGame 专属适配器创建完成但验证未通过")
 }
 
 // InstallTapAdapter 兼容旧接口：确保 SoGame 专属适配器存在
 func InstallTapAdapter() (TapInstallStatus, error) {
 	return EnsureSoGameAdapter()
+}
+
+func rememberKnownTapAdapter(resolved tapadapter.ResolveResult) error {
+	if resolved.Info == nil || resolved.NetCfgInstanceID == "" {
+		return fmt.Errorf("保存已知 TAP 适配器失败: 缺少适配器信息")
+	}
+	if err := tapadapter.RememberKnownAdapter(*resolved.Info, resolved.NetCfgInstanceID); err != nil {
+		return fmt.Errorf("保存已知 TAP 适配器失败: %w", err)
+	}
+	return nil
+}
+
+func restartTapInterface(ifName string) error {
+	if err := tapadapter.RestartAdapter(context.Background(), ifName, 10*time.Second); err != nil {
+		return fmt.Errorf("重启 TAP 适配器 '%s' 失败: %w", ifName, err)
+	}
+	logger.Infof("TAP 适配器 '%s' 已重启", ifName)
+	return nil
+}
+
+func rememberCurrentSoGameAdapter() error {
+	if _, err := tapadapter.RememberKnownAdapterByFriendlyName(SoGameAdapterName); err != nil {
+		return fmt.Errorf("保存当前 SoGame TAP 适配器失败: %w", err)
+	}
+	return nil
+}
+
+func forgetKnownTapAdapter(status tapadapter.ResolveStatus) {
+	if err := tapadapter.DeleteKnownAdapter(); err != nil {
+		logger.Warnf("删除已知 TAP 适配器记录失败: %v", err)
+		return
+	}
+	logger.Infof("已清理失效 TAP 适配器记录: %s", status)
+}
+
+func shouldForgetKnownAdapter(status tapadapter.ResolveStatus) bool {
+	switch status {
+	case tapadapter.ResolveMissing, tapadapter.ResolveInvalid, tapadapter.ResolveNameMismatch:
+		return true
+	default:
+		return false
+	}
 }

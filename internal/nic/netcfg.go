@@ -19,20 +19,15 @@ func NetCfgIDFromLuid(luid uint64) (string, error) {
 	}
 	defer runtime.KeepAlive(buf)
 
-	foundLUID := false
 	for adapter := first; adapter != nil; adapter = adapter.Next {
 		if adapter.Luid != luid {
 			continue
 		}
-		foundLUID = true
 		id := normalizeNetCfgID(windows.BytePtrToString(adapter.AdapterName))
 		if id == "" {
 			return "", fmt.Errorf("%w: luid=%d 无 NetCfgInstanceId", ErrNotFound, luid)
 		}
 		return id, nil
-	}
-	if foundLUID {
-		return "", fmt.Errorf("%w: luid=%d 无 NetCfgInstanceId", ErrNotFound, luid)
 	}
 	return "", fmt.Errorf("%w: luid=%d", ErrNotFound, luid)
 }
@@ -48,6 +43,37 @@ func NetCfgGUIDFromLuid(luid uint64) (windows.GUID, error) {
 		return windows.GUID{}, fmt.Errorf("parse NetCfgInstanceId %q: %w", id, err)
 	}
 	return guid, nil
+}
+
+// LuidFromNetCfgID returns the interface LUID for a NetCfgInstanceId.
+func LuidFromNetCfgID(netCfgID string) (uint64, error) {
+	target := normalizeNetCfgID(netCfgID)
+	if target == "" {
+		return 0, fmt.Errorf("%w: empty NetCfgInstanceId", ErrNotFound)
+	}
+
+	buf, first, err := adapterAddresses()
+	if err != nil {
+		return 0, err
+	}
+	defer runtime.KeepAlive(buf)
+
+	for adapter := first; adapter != nil; adapter = adapter.Next {
+		id := normalizeNetCfgID(windows.BytePtrToString(adapter.AdapterName))
+		if id == target {
+			return adapter.Luid, nil
+		}
+	}
+	return 0, fmt.Errorf("%w: NetCfgInstanceId=%s", ErrNotFound, target)
+}
+
+// FindByNetCfgID finds an adapter by NetCfgInstanceId.
+func FindByNetCfgID(netCfgID string) (*Info, error) {
+	luid, err := LuidFromNetCfgID(netCfgID)
+	if err != nil {
+		return nil, err
+	}
+	return FindByLuid(luid)
 }
 
 func adapterAddresses() ([]byte, *windows.IpAdapterAddresses, error) {

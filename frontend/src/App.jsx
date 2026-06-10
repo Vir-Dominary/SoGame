@@ -41,6 +41,12 @@ function App() {
   const pollRef = useRef(null)
   const timerRef = useRef(null)
   const latencyRef = useRef(null)
+  const selectedNodeRef = useRef('')
+
+  // 保持 ref 与 state 同步
+  useEffect(() => {
+    selectedNodeRef.current = selectedNode
+  }, [selectedNode])
 
   useEffect(() => {
     loadNodesWithLatency()
@@ -54,7 +60,7 @@ function App() {
         setNodes(data)
         setLatencyLoading(false)
         // 如果当前选中的节点不可用，自动切换到延迟最低的可用节点
-        const current = data.find(n => n.name === selectedNode)
+        const current = data.find(n => n.name === selectedNodeRef.current)
         if (!current || current.latency < 0) {
           const best = data.find(n => n.latency >= 0)
           if (best) setSelectedNode(best.name)

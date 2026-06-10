@@ -296,17 +296,13 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 		return fmt.Errorf("请先设置密码")
 	}
 
-	if !platform.IsSoGameAdapterExists() {
-		status, err := platform.EnsureSoGameAdapter()
-		if err != nil || (status != platform.TapInstallSuccess && status != platform.TapAlreadyInstalled) {
-			a.mu.Lock()
-			a.state = StateFailed
-			a.errMsg = fmt.Sprintf("网络适配器安装失败: %v", err)
-			a.mu.Unlock()
-			return fmt.Errorf("网络适配器安装失败: %w", err)
-		}
-	} else {
-		platform.EnableTapInterface(platform.SoGameAdapterName)
+	status, err := platform.EnsureSoGameAdapter()
+	if err != nil || (status != platform.TapInstallSuccess && status != platform.TapAlreadyInstalled) {
+		a.mu.Lock()
+		a.state = StateFailed
+		a.errMsg = fmt.Sprintf("网络适配器安装失败: %v", err)
+		a.mu.Unlock()
+		return fmt.Errorf("网络适配器安装失败: %w", err)
 	}
 
 	// 在启动 edge 之前设置回调，因为 edge 可能在 Start() 返回前就输出注册成功
@@ -341,7 +337,12 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 		}
 	})
 
-	err := a.edge.Start(a.cfg)
+	// 保持 StateConnecting，实际连接是异步的，通过回调更新状态
+	a.mu.Lock()
+	a.state = StateConnecting
+	a.mu.Unlock()
+
+	err = a.edge.Start(a.cfg)
 	if err != nil {
 		a.mu.Lock()
 		a.state = StateFailed
