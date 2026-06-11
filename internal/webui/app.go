@@ -362,6 +362,12 @@ func (a *App) Disconnect() error {
 		a.mu.Unlock()
 		return err
 	}
+
+	// 断开连接时移除防火墙规则，不留残留
+	if fwErr := platform.RemoveFirewallRule(); fwErr != nil {
+		logger.Warnf("断开连接时移除防火墙规则失败: %v", fwErr)
+	}
+
 	a.mu.Lock()
 	a.state = StateDisconnected
 	a.errMsg = ""

@@ -69,6 +69,7 @@ type Edge struct {
 	manualStop              bool
 	connectionState         ConnectionState
 	registeredPeers         int
+	tapConfigured           bool // 标记 TAP 是否已配置，防止重复配置
 }
 
 func maskEdgeKey(key string) string {
@@ -373,7 +374,9 @@ func (e *Edge) Start(cfg *config.Config) error {
 
 	go e.startHealthCheck()
 
-	go e.configureTapInterface(cfg)
+	// TAP 配置延迟到注册成功后触发（见 parseEdgeOutput 中的触发逻辑）
+	// 同时启动一个兜底协程：如果 10 秒内未检测到注册成功，也尝试配置 TAP
+	go e.deferredTapConfig(cfg)
 
 	logger.Infof("edge process started successfully (PID: %d)", pid)
 	return nil
@@ -389,6 +392,7 @@ func (e *Edge) Reset() {
 	e.registeredPeers = 0
 	e.manualStop = false
 	e.restartCount = 0
+	e.tapConfigured = false
 }
 
 func (e *Edge) Stop() error {
@@ -706,6 +710,15 @@ func (e *Edge) parseEdgeOutput(line string) {
 		}
 
 		go e.postConnectCheck()
+
+		// 注册成功后触发 TAP 配置（包括 IP、MTU、防火墙规则、网络类别）
+		e.mu.Lock()
+		cfg := e.config
+		e.mu.Unlock()
+		if cfg != nil {
+			go e.configureTapInterface(cfg)
+		}
+
 		return
 	}
 
@@ -922,7 +935,14 @@ func (e *Edge) LogConnectionStatus() {
 }
 
 func (e *Edge) configureTapInterface(cfg *config.Config) {
-	time.Sleep(2 * time.Second)
+	// 防止重复配置
+	e.mu.Lock()
+	if e.tapConfigured {
+		e.mu.Unlock()
+		return
+	}
+	e.tapConfigured = true
+	e.mu.Unlock()
 
 	e.mu.Lock()
 	if e.cmd == nil || e.cmd.ProcessState != nil {
@@ -963,7 +983,34 @@ func (e *Edge) configureTapInterface(cfg *config.Config) {
 		}
 	}
 
+	// 添加防火墙入站规则，允许 TAP 适配器上的所有流量
+	if err := platform.AddFirewallRule(ifName); err != nil {
+		logger.Warnf("  添加防火墙规则失败: %v (可能影响双向连通性)", err)
+	}
+
+	// 将 TAP 适配器网络类别设置为"专用"，放宽入站限制
+	if err := platform.SetNetworkCategoryPrivate(ifName); err != nil {
+		logger.Warnf("  设置网络类别为专用失败: %v (可能影响双向连通性)", err)
+	}
+
 	logger.Infof(">>> TAP 适配器配置完成 <<<")
+}
+
+// deferredTapConfig 是兜底协程：如果 10 秒内 parseEdgeOutput 未检测到注册成功，
+// 仍然尝试配置 TAP。这覆盖了 edge 输出格式变化导致注册检测失败的场景。
+func (e *Edge) deferredTapConfig(cfg *config.Config) {
+	select {
+	case <-time.After(10 * time.Second):
+		e.mu.Lock()
+		configured := e.tapConfigured
+		e.mu.Unlock()
+		if !configured {
+			logger.Warnf("10 秒内未检测到注册成功，尝试兜底配置 TAP")
+			go e.configureTapInterface(cfg)
+		}
+	case <-e.done:
+		// edge 进程已退出，无需配置
+	}
 }
 
 // NodeLatencyInfo 节点延迟信息
