@@ -25,7 +25,9 @@ func IsWindowsDescription(description string) bool {
 		strings.Contains(desc, "tap0901")
 }
 
-// FindAdapter returns the named adapter first, then any TAP-like adapter.
+// FindAdapter returns the named adapter first, then any TAP-Windows adapter.
+// Note: fallback uses IsWindowsDescription (not IsLikeDescription) to avoid
+// matching WinTUN or other non-TAP-Windows adapters that n2n edge cannot use.
 func FindAdapter(name string) (*nic.Info, error) {
 	list, err := nic.List()
 	if err != nil {
@@ -41,7 +43,7 @@ func FindAdapter(name string) (*nic.Info, error) {
 		}
 	}
 	for i := range list {
-		if IsLikeDescription(list[i].Description) {
+		if IsWindowsDescription(list[i].Description) {
 			return &list[i], nil
 		}
 	}
@@ -84,6 +86,7 @@ func FindRenameCandidate(newName string) (*nic.Info, error) {
 }
 
 // RenameCandidate renames the first TAP-Windows candidate and verifies the new name.
+// Returns the adapter info with FriendlyName updated to the new name.
 func RenameCandidate(newName string, timeout time.Duration) (*nic.Info, error) {
 	target := strings.TrimSpace(newName)
 	if target == "" {
@@ -100,6 +103,8 @@ func RenameCandidate(newName string, timeout time.Duration) (*nic.Info, error) {
 	if err := waitFriendlyName(target, timeout); err != nil {
 		return nil, fmt.Errorf("verify renamed TAP adapter %q: %w", target, err)
 	}
+	// 返回更新后的 Info，FriendlyName 为新名称
+	info.FriendlyName = target
 	return info, nil
 }
 
