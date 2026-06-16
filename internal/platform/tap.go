@@ -275,6 +275,22 @@ func EnsureSoGameAdapter() (TapInstallStatus, error) {
 			return TapInstallFailed, err
 		}
 		return TapAlreadyInstalled, nil
+	} else if resolved.Status == tapadapter.ResolveNameMismatch && resolved.Info != nil {
+		// GUID 匹配但友好名称不匹配：尝试重新命名为 SoGame-VPN
+		logger.Infof("已知 TAP 适配器名称为 '%s'（期望 '%s'），尝试重命名...", resolved.Info.FriendlyName, SoGameAdapterName)
+		if err := tapadapter.RenameAdapter(resolved.Info.Luid, SoGameAdapterName); err != nil {
+			logger.Warnf("重命名已知 TAP 适配器失败: %v，将删除记录并继续", err)
+			forgetKnownTapAdapter(resolved.Status)
+		} else {
+			logger.Infof("已将 TAP 适配器重命名为 '%s'", SoGameAdapterName)
+			if err := restartTapInterface(SoGameAdapterName); err != nil {
+				return TapInstallFailed, err
+			}
+			if err := rememberKnownTapAdapter(resolved); err != nil {
+				return TapInstallFailed, err
+			}
+			return TapAlreadyInstalled, nil
+		}
 	} else if shouldForgetKnownAdapter(resolved.Status) {
 		forgetKnownTapAdapter(resolved.Status)
 	}
@@ -401,6 +417,13 @@ func createSoGameAdapter() (TapInstallStatus, error) {
 		logger.Infof("  重试 tapinstall install...")
 		time.Sleep(2 * time.Second)
 
+		// 重新采集 before 快照：第一次安装可能已创建半成品实例，
+		// 用旧快照差分会导致 FindNewWindowsAdapter 发现多个新适配器而报错。
+		before, err = tapadapter.ListWindowsAdapters()
+		if err != nil {
+			return TapInstallFailed, fmt.Errorf("获取 TAP 重试前快照失败: %w", err)
+		}
+
 		installCmd2 := exec.Command(tapinstallPath, "install", infPath, "tap0901")
 		installCmd2.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 		installOutput2, installErr2 := installCmd2.CombinedOutput()
@@ -492,7 +515,7 @@ func forgetKnownTapAdapter(status tapadapter.ResolveStatus) {
 
 func shouldForgetKnownAdapter(status tapadapter.ResolveStatus) bool {
 	switch status {
-	case tapadapter.ResolveMissing, tapadapter.ResolveInvalid, tapadapter.ResolveNameMismatch:
+	case tapadapter.ResolveMissing, tapadapter.ResolveInvalid:
 		return true
 	default:
 		return false
