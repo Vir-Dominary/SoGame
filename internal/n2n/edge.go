@@ -25,9 +25,9 @@ type ConnectionStateCallback func(state ConnectionState)
 type ConnectionState int
 
 const (
-	authRetryDelay         = 5 * time.Second
-	maxAuthConflictRetry   = 2
-	newProcessGroupFlag    = 0x00000200
+	authRetryDelay       = 5 * time.Second
+	maxAuthConflictRetry = 2
+	newProcessGroupFlag  = 0x00000200
 
 	StateDisconnected ConnectionState = iota
 	StateConnecting
@@ -57,25 +57,25 @@ func (s ConnectionState) String() string {
 }
 
 type Edge struct {
-	cmd                     *exec.Cmd
-	mu                      sync.Mutex
-	stopMu                  sync.Mutex
-	done                    chan struct{}
-	callback                StatusCallback
-	connectionStateCallback ConnectionStateCallback
-	isHealthy               bool
-	lastHealthCheck         time.Time
-	config                  *config.Config
-	autoRestart             bool
-	restartCount            int
-	maxRestarts             int
-	restartCooldown         time.Duration
-	manualStop              bool
-	connectionState         ConnectionState
-	registeredPeers         int
-	authConflictRetries     int
+	cmd                      *exec.Cmd
+	mu                       sync.Mutex
+	stopMu                   sync.Mutex
+	done                     chan struct{}
+	callback                 StatusCallback
+	connectionStateCallback  ConnectionStateCallback
+	isHealthy                bool
+	lastHealthCheck          time.Time
+	config                   *config.Config
+	autoRestart              bool
+	restartCount             int
+	maxRestarts              int
+	restartCooldown          time.Duration
+	manualStop               bool
+	connectionState          ConnectionState
+	registeredPeers          int
+	authConflictRetries      int
 	registrationRetryPending bool
-	mgmtPort                int
+	mgmtPort                 int
 }
 
 func maskEdgeKey(key string) string {
@@ -184,7 +184,15 @@ func (e *Edge) Start(cfg *config.Config) error {
 	e.manualStop = false
 	e.connectionState = StateConnecting
 	e.registeredPeers = 0
-	e.authConflictRetries = 0
+	// 注册冲突重试计数器管理：
+	// - 若本次 Start() 不是注册冲突重试（registrationRetryPending==false），
+	//   说明是新连接或用户手动重连，应清零计数器。
+	// - 若是注册冲突重试（registrationRetryPending==true），保留计数器，
+	//   让 scheduleRegistrationRetry 能正确累加到 maxAuthConflictRetry 后停止。
+	// - 无论哪种情况，Start() 已开始处理，registrationRetryPending 标志不再需要。
+	if !e.registrationRetryPending {
+		e.authConflictRetries = 0
+	}
 	e.registrationRetryPending = false
 	e.config = cfg
 
@@ -402,9 +410,10 @@ func (e *Edge) Reset() {
 	e.registeredPeers = 0
 	e.manualStop = false
 	e.restartCount = 0
-	e.authConflictRetries = 0
-	e.registrationRetryPending = false
 	e.mgmtPort = 0
+	// 注意：不清零 registrationRetryPending 和 authConflictRetries。
+	// 这两个字段由 Start() 在判断后管理，避免 Reset() 提前清零导致
+	// Start() 误把 authConflictRetries 重置为 0（注册冲突重试计数器归零 Bug）。
 }
 
 func (e *Edge) Stop() error {
