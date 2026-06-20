@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+	"time"
 
 	"sogame/internal/logger"
 )
@@ -99,6 +100,9 @@ func removeFirewallRuleInternal() error {
 // SetNetworkCategoryPrivate 将指定接口的网络类别设置为"专用"。
 // Windows 默认将新创建的 TAP 适配器归类为"公用网络"，该配置文件的
 // 入站规则非常严格，可能阻止 VPN 流量。设置为"专用"可以放宽限制。
+//
+// 注意：netsh 刚配置完 IP 后，Get-NetConnectionProfile 可能需要
+// 1-2 秒才能识别新接口。因此本函数包含重试逻辑。
 func SetNetworkCategoryPrivate(ifName string) error {
 	if !IsWindows() {
 		return nil
@@ -106,27 +110,40 @@ func SetNetworkCategoryPrivate(ifName string) error {
 
 	logger.Infof("正在将接口 '%s' 的网络类别设置为专用...", ifName)
 
-	// 使用 PowerShell 设置网络类别为 Private
-	// Set-NetConnectionProfile 需要管理员权限
-	psCmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
-		fmt.Sprintf(
-			"try { $profile = Get-NetConnectionProfile -InterfaceAlias '%s' -ErrorAction Stop; Set-NetConnectionProfile -InterfaceAlias '%s' -NetworkCategory Private; Write-Output 'OK' } catch { Write-Error $_.Exception.Message }",
-			ifName, ifName,
-		),
-	)
-	psCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := psCmd.CombinedOutput()
-	if err != nil {
-		logger.Warnf("设置网络类别为专用失败: %v, %s", err, strings.TrimSpace(string(output)))
-		return fmt.Errorf("设置网络类别为专用失败: %v", err)
+	// 重试 5 次，每次间隔 500ms，总等待时间最多 2.5 秒
+	// 这是为了应对 netsh 配置 IP 后 Get-NetConnectionProfile 的延迟
+	const maxRetries = 5
+	const retryDelay = 500 * time.Millisecond
+
+	var lastErr error
+	var lastOutput string
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		// 使用 PowerShell 设置网络类别为 Private
+		// Set-NetConnectionProfile 需要管理员权限
+		psCmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
+			fmt.Sprintf(
+				"try { $profile = Get-NetConnectionProfile -InterfaceAlias '%s' -ErrorAction Stop; Set-NetConnectionProfile -InterfaceAlias '%s' -NetworkCategory Private; Write-Output 'OK' } catch { Write-Error $_.Exception.Message }",
+				ifName, ifName,
+			),
+		)
+		psCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		output, err := psCmd.CombinedOutput()
+		outputStr := strings.TrimSpace(string(output))
+
+		if err == nil && outputStr == "OK" {
+			logger.Infof("接口 '%s' 的网络类别已设置为专用 (尝试 %d/%d)", ifName, attempt, maxRetries)
+			return nil
+		}
+
+		lastErr = err
+		lastOutput = outputStr
+		logger.Debugf("设置网络类别尝试 %d/%d 失败: %v, %s", attempt, maxRetries, err, outputStr)
+
+		if attempt < maxRetries {
+			time.Sleep(retryDelay)
+		}
 	}
 
-	outputStr := strings.TrimSpace(string(output))
-	if outputStr != "OK" {
-		logger.Warnf("设置网络类别为专用返回异常: %s", outputStr)
-		return fmt.Errorf("设置网络类别为专用返回异常: %s", outputStr)
-	}
-
-	logger.Infof("接口 '%s' 的网络类别已设置为专用", ifName)
-	return nil
+	logger.Warnf("设置网络类别为专用失败 (已重试 %d 次): %v, %s", maxRetries, lastErr, lastOutput)
+	return fmt.Errorf("设置网络类别为专用失败 (已重试 %d 次): %v", maxRetries, lastErr)
 }
