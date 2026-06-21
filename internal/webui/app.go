@@ -193,14 +193,16 @@ func getStableDeviceID() string {
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
+// generateStableIP 基于设备 ID 和社区名生成稳定的虚拟 IP。
+// 仅随机化最后 8 位（10.10.10.X），配合 /24 子网掩码，避免 Windows
+// 将子网掩码强制改为 255.255.255.0 导致不同网段用户无法通信的问题。
 func generateStableIP(deviceID, community string) string {
 	h := sha256.New()
 	h.Write([]byte(deviceID + community))
 	hash := hex.EncodeToString(h.Sum(nil))
 	b, _ := hex.DecodeString(hash[:4])
-	host3 := int(b[0])%254 + 1
-	host4 := int(b[1])%254 + 1
-	return fmt.Sprintf("10.10.%d.%d", host3, host4)
+	host := int(b[0])%254 + 1 // 1-254
+	return fmt.Sprintf("10.10.10.%d", host)
 }
 
 func (a *App) GenerateInvite(supernode string) (string, error) {

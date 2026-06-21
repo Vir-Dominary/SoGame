@@ -1032,7 +1032,7 @@ func (e *Edge) configureTapInterface(cfg *config.Config) {
 	if err := platform.ConfigureTapInterface(ifName, cfg.IP); err != nil {
 		logger.Errorf("  配置 TAP 适配器失败: %v", err)
 	} else {
-		logger.Infof("  配置 TAP 适配器成功: %s/16, MTU=1290", cfg.IP)
+		logger.Infof("  配置 TAP 适配器成功: %s/24, MTU=1290", cfg.IP)
 
 		// TAP 配置成功意味着 edge 已经建立了虚拟网络
 		// 如果 parseEdgeOutput 尚未检测到注册成功，在此推断为已连接
