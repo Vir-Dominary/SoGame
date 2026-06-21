@@ -3,6 +3,7 @@ package n2n
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -18,6 +19,8 @@ import (
 	"sogame/internal/config"
 	"sogame/internal/logger"
 	"sogame/internal/platform"
+
+	"golang.org/x/sys/windows"
 )
 
 type StatusCallback func(isRunning bool, message string)
@@ -159,6 +162,11 @@ func BuildArgs(cfg *config.Config) []string {
 		args = append(args, "-d", tapName)
 	}
 
+	// 管理端口（用于优雅退出发送 stop 命令）
+	if cfg.MgmtPort > 0 {
+		args = append(args, "-t", strconv.Itoa(cfg.MgmtPort))
+	}
+
 	return args
 }
 
@@ -188,7 +196,9 @@ func (e *Edge) Start(cfg *config.Config) error {
 
 	// 清理系统中可能残留的孤儿 edge 进程
 	e.mu.Unlock()
-	KillOrphanEdgeProcess()
+	if err := KillOrphanEdgeProcess(); err != nil {
+		logger.Warnf("failed to kill orphan edge process: %v", err)
+	}
 	e.mu.Lock()
 
 	e.manualStop = false
@@ -205,6 +215,15 @@ func (e *Edge) Start(cfg *config.Config) error {
 	}
 	e.registrationRetryPending = false
 	e.config = cfg
+
+	// 分配管理端口（用于优雅退出）
+	mgmtPort, err := allocateUDPPort()
+	if err != nil {
+		logger.Warnf("failed to allocate management port: %v, graceful shutdown may not work", err)
+		mgmtPort = 0
+	}
+	e.mgmtPort = mgmtPort
+	cfg.MgmtPort = mgmtPort
 
 	if e.maxRestarts == 0 {
 		e.maxRestarts = 3
@@ -241,8 +260,11 @@ func (e *Edge) Start(cfg *config.Config) error {
 
 	cmd := exec.Command(edgePath, args...)
 
+	// CREATE_NEW_PROCESS_GROUP：使 edge 进程独立于父进程的信号组，
+	// 允许后续通过 GenerateConsoleCtrlEvent 发送 CTRL_BREAK_EVENT。
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow: true,
+		HideWindow:    true,
+		CreationFlags: newProcessGroupFlag,
 	}
 
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -264,8 +286,8 @@ func (e *Edge) Start(cfg *config.Config) error {
 		return fmt.Errorf("failed to start edge process: %w", err)
 	}
 
-	// 保存 PID 到文件，用于清理孤儿进程
-	saveEdgePID(cmd.Process.Pid)
+	// 保存运行时状态到文件，用于清理孤儿进程（包含 PID、管理端口、启动时间戳）
+	saveEdgeRuntime(cmd.Process.Pid, mgmtPort)
 
 	go func() {
 		scanner := bufio.NewScanner(stdoutPipe)
@@ -418,6 +440,9 @@ func (e *Edge) Reset() {
 }
 
 func (e *Edge) Stop() error {
+	e.stopMu.Lock()
+	defer e.stopMu.Unlock()
+
 	e.mu.Lock()
 	if e.cmd == nil || e.cmd.ProcessState != nil {
 		e.mu.Unlock()
@@ -427,43 +452,17 @@ func (e *Edge) Stop() error {
 	e.manualStop = true
 	pid := e.cmd.Process.Pid
 	done := e.done
+	mgmtPort := e.mgmtPort
 	e.mu.Unlock()
 
-	logger.Infof("stopping edge process (PID: %d)", pid)
+	logger.Infof("stopping edge process (PID: %d, mgmtPort: %d)", pid, mgmtPort)
 
-	err := e.cmd.Process.Signal(os.Interrupt)
-	if err != nil {
-		logger.Warnf("failed to send interrupt signal: %v, attempting force kill", err)
-		killCmd := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F")
-		killCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-		if killErr := killCmd.Run(); killErr != nil {
-			return fmt.Errorf("failed to kill edge process: %w", killErr)
-		}
+	if err := terminateEdgeProcessWindows(pid, done, mgmtPort); err != nil {
+		logger.Warnf("terminateEdgeProcessWindows failed: %v", err)
+		return err
 	}
 
-	select {
-	case <-done:
-		logger.Infof("edge process terminated successfully (PID: %d)", pid)
-	case <-time.After(5 * time.Second):
-		e.mu.Lock()
-		stillRunning := e.cmd.ProcessState == nil
-		e.mu.Unlock()
-		if stillRunning {
-			logger.Warnf("graceful shutdown timeout, force killing process (PID: %d)", pid)
-			killCmd := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F")
-			killCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-			if killErr := killCmd.Run(); killErr != nil {
-				logger.Errorf("failed to force kill edge process (PID: %d): %v", pid, killErr)
-			}
-		}
-		select {
-		case <-done:
-			logger.Infof("edge process force terminated (PID: %d)", pid)
-		case <-time.After(2 * time.Second):
-			return fmt.Errorf("edge process did not terminate within 7 seconds (PID: %d)", pid)
-		}
-	}
-
+	logger.Infof("edge process terminated successfully (PID: %d)", pid)
 	return nil
 }
 
@@ -623,76 +622,113 @@ func edgePIDPath() (string, error) {
 	return filepath.Join(dir, "SoGame", "edge.pid"), nil
 }
 
-// saveEdgePID 保存 edge 进程 PID 到文件
-func saveEdgePID(pid int) {
+// edgeRuntimeState 保存 edge 进程运行时状态，用于孤儿进程清理和 PID 复用防护。
+type edgeRuntimeState struct {
+	PID       int   `json:"pid"`
+	MgmtPort  int   `json:"mgmt_port,omitempty"`
+	StartedAt int64 `json:"started_at,omitempty"` // 进程创建时间（纳秒），用于 PID 复用防护
+	Legacy    bool  `json:"-"`                    // 标记为旧格式（仅 PID，无时间戳）
+}
+
+// saveEdgeRuntime 保存 edge 进程运行时状态到文件
+func saveEdgeRuntime(pid, mgmtPort int) {
 	path, err := edgePIDPath()
 	if err != nil {
 		logger.Warnf("failed to get edge PID file path: %v", err)
 		return
 	}
 	_ = os.MkdirAll(filepath.Dir(path), 0700)
-	if err := os.WriteFile(path, []byte(fmt.Sprintf("%d", pid)), 0600); err != nil {
-		logger.Warnf("failed to save edge PID: %v", err)
+
+	state := edgeRuntimeState{PID: pid, MgmtPort: mgmtPort}
+	if startedAt, err := processStartTime(pid); err == nil && startedAt > 0 {
+		state.StartedAt = startedAt
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		logger.Warnf("failed to marshal edge runtime state: %v", err)
+		return
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		logger.Warnf("failed to save edge runtime state: %v", err)
 	}
 }
 
-// clearEdgePID 清除 edge 进程 PID 文件
-func clearEdgePID() {
+// loadEdgeRuntime 读取 edge 进程运行时状态
+func loadEdgeRuntime() *edgeRuntimeState {
 	path, err := edgePIDPath()
 	if err != nil {
-		return
+		return nil
 	}
-	_ = os.Remove(path)
-}
-
-// KillOrphanEdgeProcess 通过 PID 文件清理上次运行遗留的 edge 进程
-func KillOrphanEdgeProcess() {
-	path, err := edgePIDPath()
-	if err != nil {
-		return
-	}
-
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return // PID 文件不存在，无需清理
+		return nil
 	}
 
+	// 尝试 JSON 格式（新格式）
+	var state edgeRuntimeState
+	if err := json.Unmarshal(data, &state); err == nil && state.PID > 0 {
+		return &state
+	}
+
+	// 回退到旧格式（纯 PID 字符串）
 	pidStr := strings.TrimSpace(string(data))
 	if pidStr == "" {
-		return
+		return nil
 	}
-
 	pid, err := strconv.Atoi(pidStr)
+	if err != nil || pid <= 0 {
+		return nil
+	}
+	return &edgeRuntimeState{PID: pid, Legacy: true}
+}
+
+// clearEdgeRuntime 清除 edge 进程运行时状态文件
+func clearEdgeRuntime() {
+	path, err := edgePIDPath()
 	if err != nil {
-		_ = os.Remove(path)
 		return
 	}
-
-	// 检查进程是否仍在运行
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		_ = os.Remove(path)
-		return
-	}
-
-	// 尝试发送信号检查进程是否存在（Windows 上 FindProcess 总是成功）
-	if err := proc.Signal(os.Interrupt); err != nil {
-		// 进程不存在，清除 PID 文件
-		_ = os.Remove(path)
-		return
-	}
-
-	logger.Infof("found orphan edge process (PID: %d), terminating...", pid)
-	// 使用 taskkill 命令而非 proc.Kill()，避免被杀毒软件标记为可疑进程操作
-	killCmd := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F")
-	killCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	if err := killCmd.Run(); err != nil {
-		logger.Warnf("failed to kill orphan edge process (PID: %d): %v", pid, err)
-	} else {
-		logger.Infof("orphan edge process terminated (PID: %d)", pid)
-	}
-
 	_ = os.Remove(path)
+}
+
+// 兼容旧代码
+func saveEdgePID(pid int) { saveEdgeRuntime(pid, 0) }
+func clearEdgePID()       { clearEdgeRuntime() }
+
+// KillOrphanEdgeProcess 通过运行时状态文件清理上次运行遗留的 edge 进程。
+// 使用 PID 复用防护（进程启动时间戳），避免误杀 PID 被复用的其他进程。
+func KillOrphanEdgeProcess() error {
+	state := loadEdgeRuntime()
+	if state == nil || state.PID <= 0 {
+		return nil // 无运行时状态文件，无需清理
+	}
+
+	pid := state.PID
+
+	// 旧格式（仅 PID，无时间戳）：跳过终止，仅清除文件，避免误杀
+	if state.Legacy || state.StartedAt == 0 {
+		logger.Warnf("found legacy edge PID file (PID: %d), clearing without kill to avoid PID reuse risk", pid)
+		clearEdgeRuntime()
+		return nil
+	}
+
+	// 验证进程是否仍然是我们启动的 edge（PID 复用防护）
+	if !runtimeStateMatches(state) {
+		logger.Infof("edge PID %d no longer belongs to our edge process (PID reused), clearing state file", pid)
+		clearEdgeRuntime()
+		return nil
+	}
+
+	logger.Infof("found orphan edge process (PID: %d, mgmtPort: %d), terminating...", pid, state.MgmtPort)
+	if err := terminateEdgeProcessWindows(pid, nil, state.MgmtPort); err != nil {
+		logger.Warnf("failed to terminate orphan edge process (PID: %d): %v", pid, err)
+		clearEdgeRuntime()
+		return err
+	}
+
+	logger.Infof("orphan edge process terminated (PID: %d)", pid)
+	clearEdgeRuntime()
+	return nil
 }
 
 func (e *Edge) parseEdgeOutput(line string) {
@@ -804,15 +840,25 @@ func (e *Edge) parseEdgeOutput(line string) {
 		strings.Contains(lineLower, "cannot resolve") ||
 		strings.Contains(lineLower, "cannot register")
 	if isError {
+		// 检测认证冲突（IP/MAC 已被占用），触发自动重试
+		isAuthConflict := strings.Contains(lineLower, "authentication error") ||
+			(strings.Contains(lineLower, "already in use") && strings.Contains(lineLower, "supernode")) ||
+			strings.Contains(lineLower, "not released yet")
+
 		e.mu.Lock()
 		if e.connectionState != StateRegistered && e.connectionState != StateConnected {
 			prevState := e.connectionState
 			e.connectionState = StateError
 			cb := e.connectionStateCallback
+			shouldRetry := isAuthConflict && !e.registrationRetryPending
 			e.mu.Unlock()
 			logger.Warnf("状态转换: %s -> Error (%s)", prevState.String(), line)
 			if cb != nil {
 				cb(StateError)
+			}
+			// 认证冲突时自动重试（IP/MAC 可能因上次未优雅退出被占用，等待释放后重试）
+			if shouldRetry {
+				go e.scheduleRegistrationRetry()
 			}
 		} else {
 			e.mu.Unlock()
@@ -1175,4 +1221,184 @@ func MeasureAllNodesLatency() []NodeLatencyInfo {
 	})
 
 	return results
+}
+
+// allocateUDPPort 分配一个空闲的 UDP 端口（绑定到 0 端口让系统分配）
+func allocateUDPPort() (int, error) {
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+	return conn.LocalAddr().(*net.UDPAddr).Port, nil
+}
+
+// processStartTime 获取进程创建时间（纳秒），用于 PID 复用防护
+func processStartTime(pid int) (int64, error) {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return 0, err
+	}
+	defer windows.CloseHandle(h)
+
+	var creationTime, exitTime, kernelTime, userTime windows.Filetime
+	if err := windows.GetProcessTimes(h, &creationTime, &exitTime, &kernelTime, &userTime); err != nil {
+		return 0, err
+	}
+	return creationTime.Nanoseconds(), nil
+}
+
+// edgeProcessRunning 检查指定 PID 的进程是否仍在运行
+func edgeProcessRunning(pid int) bool {
+	cmd := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid), "/NH", "/FO", "CSV")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return false
+	}
+	// CSV 格式输出中 PID 带引号，如 "29316"
+	return strings.Contains(string(output), fmt.Sprintf("\"%d\"", pid))
+}
+
+// runtimeStateMatches 验证 PID 是否仍属于我们启动的 edge 进程（PID 复用防护）
+func runtimeStateMatches(state *edgeRuntimeState) bool {
+	if !edgeProcessRunning(state.PID) {
+		return false
+	}
+	if state.StartedAt == 0 {
+		// 无时间戳，仅信任 PID 存在
+		return true
+	}
+	startedAt, err := processStartTime(state.PID)
+	if err != nil {
+		return false
+	}
+	return startedAt == state.StartedAt
+}
+
+// sendMgmtStop 通过 UDP 向 edge 管理端口发送 stop 命令
+func sendMgmtStop(port int) bool {
+	if port <= 0 {
+		return false
+	}
+	addr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port}
+	conn, err := net.DialUDP("udp", nil, addr)
+	if err != nil {
+		logger.Warnf("failed to dial management port %d: %v", port, err)
+		return false
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("stop\r\n")); err != nil {
+		logger.Warnf("failed to send stop command: %v", err)
+		return false
+	}
+	return true
+}
+
+// waitForProcessExit 等待进程退出，支持 done channel 和超时
+func waitForProcessExit(pid int, done <-chan struct{}, timeout time.Duration) error {
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-done:
+			return nil
+		case <-deadline:
+			return fmt.Errorf("timeout waiting for process %d to exit", pid)
+		case <-ticker.C:
+			if !edgeProcessRunning(pid) {
+				return nil
+			}
+		}
+	}
+}
+
+// terminateEdgeProcessWindows 实现三层优雅退出策略：
+//  1. 管理端口 stop 命令（3s）—— 让 edge 正常注销并释放 IP/MAC
+//  2. CTRL_BREAK_EVENT 信号（2s）—— 控制台信号，GUI 应用可能无效
+//  3. taskkill /F 强制终止（3s）—— 最后手段
+func terminateEdgeProcessWindows(pid int, done <-chan struct{}, mgmtPort int) error {
+	// 第一层：管理端口 stop
+	if mgmtPort > 0 {
+		logger.Infof("graceful shutdown tier 1: sending stop via management port %d", mgmtPort)
+		if sendMgmtStop(mgmtPort) {
+			if err := waitForProcessExit(pid, done, 3*time.Second); err == nil {
+				logger.Infof("graceful shutdown tier 1 succeeded (mgmt port stop)")
+				return nil
+			}
+			logger.Warnf("graceful shutdown tier 1 timed out")
+		} else {
+			logger.Warnf("graceful shutdown tier 1 failed to send stop command")
+		}
+	}
+
+	// 检查进程是否已退出
+	select {
+	case <-done:
+		return nil
+	default:
+	}
+	if !edgeProcessRunning(pid) {
+		return nil
+	}
+
+	// 第二层：CTRL_BREAK_EVENT
+	logger.Infof("graceful shutdown tier 2: sending CTRL_BREAK_EVENT")
+	if err := windows.GenerateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, uint32(pid)); err != nil {
+		logger.Warnf("graceful shutdown tier 2 failed: %v", err)
+	} else {
+		if err := waitForProcessExit(pid, done, 2*time.Second); err == nil {
+			logger.Infof("graceful shutdown tier 2 succeeded (CTRL_BREAK)")
+			return nil
+		}
+		logger.Warnf("graceful shutdown tier 2 timed out")
+	}
+
+	// 检查进程是否已退出
+	select {
+	case <-done:
+		return nil
+	default:
+	}
+	if !edgeProcessRunning(pid) {
+		return nil
+	}
+
+	// 第三层：taskkill /F 强制终止
+	logger.Infof("graceful shutdown tier 3: taskkill /F (force kill)")
+	cmd := exec.Command("taskkill", "/F", "/T", "/PID", fmt.Sprintf("%d", pid))
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("force kill failed: %w, output: %s", err, strings.TrimSpace(string(output)))
+	}
+	if err := waitForProcessExit(pid, done, 3*time.Second); err != nil {
+		return fmt.Errorf("process did not exit after force kill: %w", err)
+	}
+	logger.Infof("graceful shutdown tier 3 succeeded (force kill)")
+	return nil
+}
+
+// scheduleRegistrationRetry 在检测到认证冲突（IP/MAC 已被占用）时自动重试
+func (e *Edge) scheduleRegistrationRetry() {
+	e.mu.Lock()
+	if e.authConflictRetries >= maxAuthConflictRetry {
+		e.mu.Unlock()
+		logger.Warnf("auth conflict retry limit reached (%d/%d), giving up", e.authConflictRetries, maxAuthConflictRetry)
+		return
+	}
+	e.authConflictRetries++
+	e.registrationRetryPending = true
+	cfg := e.config
+	e.mu.Unlock()
+
+	logger.Infof("scheduling auth conflict retry %d/%d after %v", e.authConflictRetries, maxAuthConflictRetry, authRetryDelay)
+
+	time.AfterFunc(authRetryDelay, func() {
+		if err := e.Start(cfg); err != nil {
+			logger.Errorf("auth conflict retry failed: %v", err)
+		}
+	})
 }

@@ -71,7 +71,9 @@ func (a *App) Shutdown(ctx context.Context) {
 		}
 	}
 	// 清理可能遗留的孤儿进程（仅清理本应用启动的）
-	n2n.KillOrphanEdgeProcess()
+	if err := n2n.KillOrphanEdgeProcess(); err != nil {
+		logger.Warnf("shutdown: failed to kill orphan edge process: %v", err)
+	}
 }
 
 func (a *App) GetState() string {
