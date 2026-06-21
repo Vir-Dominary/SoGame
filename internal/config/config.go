@@ -28,6 +28,7 @@ type Config struct {
 	Key       string `yaml:"key"`
 	Supernode string `yaml:"supernode"`
 	IP        string `yaml:"ip"`
+	MgmtPort  int    `yaml:"-"` // n2n edge 管理端口（运行时生成，不持久化）
 }
 
 // encryptor 全局加密器
