@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -179,6 +180,80 @@ type inviteData struct {
 	Supernode string `json:"s"`
 }
 
+// communityPrefix 是自动生成的社区名前缀。
+// v2 邀请码格式会省略此前缀以缩短长度，解码时再补回。
+const communityPrefix = "community-"
+
+// encodeInvite 将邀请数据编码为邀请码。
+// 优先使用 v2 紧凑格式（base64url + "|" 分隔），不满足条件时回退到 v1 JSON 格式。
+// v2 格式比 v1 短约 40%，通过省略 "community-" 前缀和用 base64url 编码密钥实现。
+func encodeInvite(data inviteData) (string, error) {
+	// 尝试 v2 格式：仅适用于标准 "community-XXX" 社区名 + hex 密钥
+	if strings.HasPrefix(data.Community, communityPrefix) {
+		keyBytes, err := hex.DecodeString(data.Key)
+		if err == nil {
+			communityShort := data.Community[len(communityPrefix):]
+			keyB64 := base64.RawURLEncoding.EncodeToString(keyBytes)
+			inner := communityShort + "|" + keyB64 + "|" + data.Supernode
+			return base64.RawURLEncoding.EncodeToString([]byte(inner)), nil
+		}
+	}
+
+	// 回退到 v1 JSON 格式
+	jsonBytes, err := json.Marshal(data)
+	if err != nil {
+		return "", fmt.Errorf("生成邀请码失败: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(jsonBytes), nil
+}
+
+// decodeInvite 解码邀请码，同时支持 v1（JSON + standard base64）和 v2（紧凑格式）。
+func decodeInvite(code string) (*inviteData, error) {
+	// 尝试 v1：standard base64 + JSON
+	if decoded, err := base64.StdEncoding.DecodeString(code); err == nil {
+		s := string(decoded)
+		if strings.HasPrefix(s, "{") {
+			var data inviteData
+			if err := json.Unmarshal(decoded, &data); err == nil {
+				return &data, nil
+			}
+		}
+		// 也可能是用 standard base64 编码的 v2 格式
+		if data, err := parseInviteV2(s); err == nil {
+			return data, nil
+		}
+	}
+
+	// 尝试 v2：base64url（无填充）
+	if decoded, err := base64.RawURLEncoding.DecodeString(code); err == nil {
+		if data, err := parseInviteV2(string(decoded)); err == nil {
+			return data, nil
+		}
+	}
+
+	return nil, fmt.Errorf("无效的邀请码格式")
+}
+
+// parseInviteV2 解析 v2 格式的邀请码内容（已 base64 解码后的字符串）。
+// 格式：<community_short>|<key_base64url>|<supernode>
+func parseInviteV2(s string) (*inviteData, error) {
+	parts := strings.SplitN(s, "|", 3)
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("v2 格式字段数不足")
+	}
+
+	keyBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("v2 密钥解码失败: %w", err)
+	}
+
+	return &inviteData{
+		Community: communityPrefix + parts[0],
+		Key:       hex.EncodeToString(keyBytes),
+		Supernode: parts[2],
+	}, nil
+}
+
 func getStableDeviceID() string {
 	hostname, err := os.Hostname()
 	if err != nil {
@@ -231,23 +306,12 @@ func (a *App) GenerateInvite(supernode string) (string, error) {
 		Supernode: supernode,
 	}
 
-	jsonBytes, err := json.Marshal(data)
-	if err != nil {
-		return "", fmt.Errorf("生成邀请码失败: %w", err)
-	}
-
-	encoded := base64.StdEncoding.EncodeToString(jsonBytes)
-	return encoded, nil
+	return encodeInvite(data)
 }
 
 func (a *App) ConnectWithInvite(code string) error {
-	decoded, err := base64.StdEncoding.DecodeString(code)
+	data, err := decodeInvite(code)
 	if err != nil {
-		return fmt.Errorf("无效的邀请码格式: %w", err)
-	}
-
-	var data inviteData
-	if err := json.Unmarshal(decoded, &data); err != nil {
 		return fmt.Errorf("邀请码解析失败: %w", err)
 	}
 
