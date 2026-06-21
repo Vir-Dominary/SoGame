@@ -283,6 +283,8 @@ func EnsureSoGameAdapter() (TapInstallStatus, error) {
 			forgetKnownTapAdapter(resolved.Status)
 		} else {
 			logger.Infof("已将 TAP 适配器重命名为 '%s'", SoGameAdapterName)
+			// 更新 resolved.Info.FriendlyName 为新名称，避免 rememberKnownTapAdapter 保存旧名称
+			resolved.Info.FriendlyName = SoGameAdapterName
 			if err := restartTapInterface(SoGameAdapterName); err != nil {
 				return TapInstallFailed, err
 			}
