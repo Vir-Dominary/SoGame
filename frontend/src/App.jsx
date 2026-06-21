@@ -32,12 +32,12 @@ function App() {
   const [hoverDisconnect, setHoverDisconnect] = useState(false)
   const [connectionTime, setConnectionTime] = useState(null)
   const [elapsed, setElapsed] = useState('')
-  const [showAbout, setShowAbout] = useState(false)
   const [aboutInfo, setAboutInfo] = useState(null)
   const [latencyLoading, setLatencyLoading] = useState(false)
-  const [showDetails, setShowDetails] = useState(false)
   const [connDetails, setConnDetails] = useState(null)
   const [ipCopied, setIpCopied] = useState(false)
+  const [showAuthor, setShowAuthor] = useState(false)
+  const [showSponsor, setShowSponsor] = useState(false)
   const pollRef = useRef(null)
   const timerRef = useRef(null)
   const latencyRef = useRef(null)
@@ -53,6 +53,9 @@ function App() {
     GetState().then(s => {
       if (s && s !== 'disconnected') setStatus(s)
     }).catch(e => console.error('GetState failed:', e))
+
+    // 预加载关于信息（作者链接、赞助链接）
+    GetAboutInfo().then(info => setAboutInfo(info)).catch(e => console.error('GetAboutInfo failed:', e))
 
     // 监听后端异步推送的延迟数据
     EventsOn('nodeLatencyUpdated', (data) => {
@@ -93,6 +96,8 @@ function App() {
           return t
         })
       }, 1000)
+      // 连接成功后获取连接详情（IP 地址）
+      GetConnectionDetails().then(d => setConnDetails(d)).catch(e => console.error('GetConnectionDetails failed:', e))
     }
     if (status !== 'connected') {
       if (timerRef.current) {
@@ -101,6 +106,7 @@ function App() {
       }
       setConnectionTime(null)
       setElapsed('')
+      setConnDetails(null)
     }
   }, [status])
 
@@ -202,27 +208,6 @@ function App() {
 
   const handleOpenLogs = async () => {
     try { await OpenLogs() } catch (e) { console.error('OpenLogs failed:', e) }
-  }
-
-  const handleOpenAbout = async () => {
-    if (showAbout) {
-      setShowAbout(false)
-      return
-    }
-    try {
-      const info = await GetAboutInfo()
-      setAboutInfo(info)
-      setShowAbout(true)
-    } catch (e) { console.error('GetAboutInfo failed:', e) }
-  }
-
-  const handleOpenDetails = async () => {
-    try {
-      const details = await GetConnectionDetails()
-      setConnDetails(details)
-      setShowDetails(true)
-      setIpCopied(false)
-    } catch (e) { console.error('GetConnectionDetails failed:', e) }
   }
 
   const handleCopyIP = () => {
@@ -373,10 +358,22 @@ function App() {
                 {isConnected && elapsed && (
                   <div className="elapsed">{elapsed}</div>
                 )}
-                {isConnected && (
-                  <button className="details-btn" onClick={handleOpenDetails}>详情</button>
-                )}
               </div>
+
+              {isConnected && connDetails && (
+                <div className="conn-info">
+                  <div className="conn-ip-row">
+                    <span className="conn-ip-label">本机 IP</span>
+                    <div className="conn-ip-value-group">
+                      <span className="conn-ip-value">{connDetails.virtualIP}</span>
+                      <button className="conn-copy-btn" onClick={handleCopyIP}>
+                        {ipCopied ? '已复制' : '复制'}
+                      </button>
+                    </div>
+                  </div>
+                  <p className="conn-desc">您已成功接入局域网，可以开始游戏了</p>
+                </div>
+              )}
             </>
           )}
 
@@ -397,12 +394,21 @@ function App() {
           </button>
           <button
             className="settings-toggle"
-            onClick={handleOpenAbout}
+            onClick={() => setShowAuthor(!showAuthor)}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+              <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/>
             </svg>
-            <span>关于</span>
+            <span>{showAuthor ? '收起' : '作者'}</span>
+          </button>
+          <button
+            className="settings-toggle"
+            onClick={() => setShowSponsor(!showSponsor)}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/>
+            </svg>
+            <span>{showSponsor ? '收起' : '赞助'}</span>
           </button>
         </div>
 
@@ -419,92 +425,56 @@ function App() {
           </div>
         )}
 
-        {showAbout && aboutInfo && (
-          <div className="about-panel">
-            <div className="about-inner">
-              <div className="about-header">
-                <div className="about-logo">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3ddc84" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-                  </svg>
-                </div>
-                <span className="about-title">{aboutInfo.appName}</span>
+        {showAuthor && aboutInfo && (
+          <div className="info-panel">
+            <div className="info-inner">
+              <div className="info-header">
+                <span className="info-title">关于 {aboutInfo.appName}</span>
+                <span className="info-version">v{aboutInfo.appVersion}</span>
               </div>
-              <div className="about-body">
-                <div className="about-row">
-                  <span className="about-label">版本</span>
-                  <span className="about-value">v{aboutInfo.appVersion}</span>
+              <div className="info-body">
+                <div className="info-row">
+                  <span className="info-label">作者</span>
+                  <span className="info-value">{aboutInfo.appAuthor}</span>
                 </div>
-                <div className="about-row">
-                  <span className="about-label">作者</span>
-                  <span className="about-value">{aboutInfo.appAuthor}</span>
+                <div className="info-row">
+                  <span className="info-label">GitHub</span>
+                  <a className="info-link" href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(aboutInfo.appURL) }}>{aboutInfo.appURL}</a>
                 </div>
-                <div className="about-row">
-                  <span className="about-label">Github</span>
-                  <a className="about-link" href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(aboutInfo.appURL) }}>{aboutInfo.appURL}</a>
+                <div className="info-row">
+                  <span className="info-label">Bilibili</span>
+                  <a className="info-link" href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(aboutInfo.bilibiliURL) }}>{aboutInfo.bilibiliURL}</a>
                 </div>
-                <div className="about-row">
-                  <span className="about-label">Bilibili</span>
-                  <a className="about-link" href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(aboutInfo.bilibiliURL) }}>{aboutInfo.bilibiliURL}</a>
-                </div>
-                <div className="about-row">
-                  <span className="about-label">引擎</span>
-                  <span className="about-value">Powered by n2n</span>
+                <div className="info-row">
+                  <span className="info-label">引擎</span>
+                  <span className="info-value">Powered by n2n</span>
                 </div>
               </div>
-              <button className="about-close" onClick={() => setShowAbout(false)}>关闭</button>
             </div>
           </div>
         )}
 
-        {showDetails && connDetails && (
-          <div className="details-panel">
-            <div className="details-inner">
-              <div className="details-header">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3ddc84" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="20 6 9 17 4 12"/>
-                </svg>
-                <span className="details-title">连接成功</span>
+        {showSponsor && aboutInfo && (
+          <div className="info-panel">
+            <div className="info-inner">
+              <div className="info-header">
+                <span className="info-title">支持开发</span>
               </div>
-              <p className="details-desc">您已经成功接入局域网，可以开始游戏了。</p>
-              <div className="details-body">
-                <div className="details-row">
-                  <span className="details-label">本机虚拟网络地址</span>
-                  <div className="details-value-group">
-                    <span className="details-value details-ip">{connDetails.virtualIP}</span>
-                    <button className="details-copy-btn" onClick={handleCopyIP}>
-                      {ipCopied ? '已复制' : '复制'}
-                    </button>
-                  </div>
-                </div>
-                <div className="details-row">
-                  <span className="details-label">当前节点</span>
-                  <span className="details-value">{connDetails.nodeName}</span>
-                </div>
-                <div className="details-row">
-                  <span className="details-label">连接状态</span>
-                  <span className="details-value" style={{ color: '#3ddc84' }}>{connDetails.status}</span>
-                </div>
-              </div>
-              <div className="details-divider" />
-              <div className="details-sponsor">
-                <div className="details-sponsor-text">
-                  <span className="details-sponsor-title">如果这个项目帮助你和朋友顺利联机，欢迎支持该项目</span>
-                  <div className="details-sponsor-usage">
-                    <span className="details-sponsor-usage-label">赞助费用将用于：</span>
-                    <ul className="details-sponsor-list">
+              <div className="info-body">
+                <p className="sponsor-text">如果这个项目帮助你和朋友顺利联机，欢迎支持该项目</p>
+                <div className="sponsor-usage">
+                  <span className="sponsor-usage-label">赞助费用将用于：</span>
+                  <ul className="sponsor-list">
                     <li>节点服务器</li>
                     <li>网络带宽</li>
                     <li>域名与基础设施</li>
                     <li>后续开发</li>
-                    </ul>
-                  </div>
+                  </ul>
                 </div>
-                <a className="details-sponsor-link" href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(connDetails.sponsorURL) }}>
+                <a className="sponsor-link-btn" href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(aboutInfo.sponsorURL) }}>
                   赞助支持
                 </a>
               </div>
-              <button className="details-close" onClick={() => setShowDetails(false)}>关闭</button>
             </div>
           </div>
         )}

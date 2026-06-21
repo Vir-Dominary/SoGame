@@ -393,6 +393,7 @@ body {
   flex-shrink: 0;
   display: flex;
   justify-content: center;
+  gap: 4px;
   padding: 10px 0 16px;
 }
 
@@ -529,184 +530,41 @@ body {
   color: #e6edf3;
 }
 
-.about-panel {
-  flex-shrink: 0;
-  border-top: 1px solid #21262d;
-  background: rgba(22, 27, 34, 0.8);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-}
-
-.about-inner {
-  padding: 20px 24px;
+.conn-info {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
 }
 
-.about-header {
+.conn-ip-row {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
-.about-logo {
-  display: flex;
-  align-items: center;
-}
-
-.about-title {
-  font-size: 18px;
-  font-weight: 600;
-  color: #e6edf3;
-  letter-spacing: 1px;
-}
-
-.about-body {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.about-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.about-label {
+.conn-ip-label {
   font-size: 12px;
-  color: #484f58;
+  color: #6e7681;
   font-weight: 500;
   letter-spacing: 0.5px;
 }
 
-.about-value {
-  font-size: 13px;
-  color: #8b949e;
-}
-
-.about-link {
-  font-size: 13px;
-  color: #3ddc84;
-  text-decoration: none;
-  transition: color 0.2s;
-}
-
-.about-link:hover {
-  color: #56d364;
-  text-decoration: underline;
-}
-
-.about-close {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid #21262d;
-  border-radius: 6px;
-  padding: 7px 0;
-  color: #8b949e;
-  font-size: 13px;
-  cursor: pointer;
-  transition: all 0.2s;
-  outline: none;
-  width: 100%;
-}
-
-.about-close:hover {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: #30363d;
-  color: #e6edf3;
-}
-
-.details-btn {
-  background: rgba(61, 220, 132, 0.08);
-  border: 1px solid rgba(61, 220, 132, 0.2);
-  border-radius: 6px;
-  padding: 4px 16px;
-  color: #3ddc84;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
-  outline: none;
-}
-
-.details-btn:hover {
-  background: rgba(61, 220, 132, 0.15);
-  border-color: #3ddc84;
-}
-
-.details-panel {
-  flex-shrink: 0;
-  border-top: 1px solid #21262d;
-  background: rgba(22, 27, 34, 0.95);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-}
-
-.details-inner {
-  padding: 20px 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.details-header {
+.conn-ip-value-group {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.details-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #3ddc84;
-  letter-spacing: 0.5px;
-}
-
-.details-desc {
-  font-size: 13px;
-  color: #8b949e;
-  line-height: 1.5;
-  margin: 0;
-}
-
-.details-body {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.details-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.details-label {
-  font-size: 12px;
-  color: #484f58;
-  font-weight: 500;
-  letter-spacing: 0.5px;
-}
-
-.details-value {
-  font-size: 13px;
-  color: #e6edf3;
-}
-
-.details-value-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.details-ip {
+.conn-ip-value {
   font-family: 'Cascadia Code', 'Consolas', monospace;
-  font-size: 13px;
+  font-size: 14px;
   color: #3ddc84;
+  font-weight: 600;
 }
 
-.details-copy-btn {
+.conn-copy-btn {
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid #21262d;
   border-radius: 4px;
@@ -718,47 +576,111 @@ body {
   outline: none;
 }
 
-.details-copy-btn:hover {
+.conn-copy-btn:hover {
   background: rgba(255, 255, 255, 0.08);
   color: #e6edf3;
 }
 
-.details-divider {
-  border-top: 1px solid #21262d;
-  margin: 2px 0;
-}
-
-.details-sponsor {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.details-sponsor-text {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.details-sponsor-title {
+.conn-desc {
   font-size: 12px;
   color: #8b949e;
-  font-weight: 500;
   line-height: 1.5;
+  margin: 0;
+  text-align: center;
 }
 
-.details-sponsor-usage {
+.info-panel {
+  flex-shrink: 0;
+  border-top: 1px solid #21262d;
+  background: rgba(22, 27, 34, 0.8);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.info-inner {
+  padding: 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.info-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.info-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e6edf3;
+  letter-spacing: 0.5px;
+}
+
+.info-version {
+  font-size: 12px;
+  color: #6e7681;
+}
+
+.info-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.info-label {
+  font-size: 12px;
+  color: #484f58;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+}
+
+.info-value {
+  font-size: 13px;
+  color: #8b949e;
+}
+
+.info-link {
+  font-size: 12px;
+  color: #3ddc84;
+  text-decoration: none;
+  transition: color 0.2s;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.info-link:hover {
+  color: #56d364;
+  text-decoration: underline;
+}
+
+.sponsor-text {
+  font-size: 12px;
+  color: #8b949e;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.sponsor-usage {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-.details-sponsor-usage-label {
+.sponsor-usage-label {
   font-size: 11px;
   color: #6e7681;
 }
 
-.details-sponsor-list {
+.sponsor-list {
   list-style: none;
   padding: 0;
   margin: 0;
@@ -767,7 +689,7 @@ body {
   gap: 6px;
 }
 
-.details-sponsor-list li {
+.sponsor-list li {
   font-size: 11px;
   color: #484f58;
   background: rgba(255, 255, 255, 0.04);
@@ -776,34 +698,21 @@ body {
   padding: 2px 8px;
 }
 
-.details-sponsor-link {
+.sponsor-link-btn {
+  display: inline-block;
   font-size: 13px;
   color: #3ddc84;
   text-decoration: none;
-  transition: color 0.2s;
-  align-self: flex-start;
-}
-
-.details-sponsor-link:hover {
-  color: #56d364;
-  text-decoration: underline;
-}
-
-.details-close {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid #21262d;
-  border-radius: 6px;
-  padding: 7px 0;
-  color: #8b949e;
-  font-size: 13px;
-  cursor: pointer;
   transition: all 0.2s;
-  outline: none;
-  width: 100%;
+  align-self: flex-start;
+  padding: 6px 16px;
+  border: 1px solid rgba(61, 220, 132, 0.3);
+  border-radius: 6px;
+  background: rgba(61, 220, 132, 0.08);
 }
 
-.details-close:hover {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: #30363d;
-  color: #e6edf3;
+.sponsor-link-btn:hover {
+  color: #56d364;
+  background: rgba(61, 220, 132, 0.15);
+  border-color: #3ddc84;
 }

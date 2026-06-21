@@ -389,12 +389,13 @@ func (a *App) OpenLogs() error {
 }
 
 type AboutInfo struct {
-	AppName     string `json:"appName"`
-	AppVersion  string `json:"appVersion"`
-	AppAuthor   string `json:"appAuthor"`
-	AppURL      string `json:"appURL"`
-	AppBilibili string `json:"bilibiliURL"`
-	AppDesc     string `json:"appDesc"`
+	AppName       string `json:"appName"`
+	AppVersion    string `json:"appVersion"`
+	AppAuthor     string `json:"appAuthor"`
+	AppURL        string `json:"appURL"`
+	AppBilibili   string `json:"bilibiliURL"`
+	AppDesc       string `json:"appDesc"`
+	AppSponsorURL string `json:"sponsorURL"`
 }
 
 type ConnectionDetails struct {
@@ -413,7 +414,7 @@ func (a *App) GetConnectionDetails() ConnectionDetails {
 		Connected:  a.state == StateConnected,
 		VirtualIP:  a.cfg.IP,
 		NodeName:   n2n.LookupNodeName(a.cfg.Supernode),
-		SponsorURL: "https://www.ifdian.net/a/vir_dominary?utm_source=copylink&utm_medium=link",
+		SponsorURL: config.AppSponsorURL,
 	}
 
 	if details.NodeName == "" {
@@ -436,12 +437,13 @@ func (a *App) GetConnectionDetails() ConnectionDetails {
 
 func (a *App) GetAboutInfo() AboutInfo {
 	return AboutInfo{
-		AppName:     config.AppName,
-		AppVersion:  config.AppVersion,
-		AppAuthor:   config.AppAuthor,
-		AppURL:      config.AppURL,
-		AppBilibili: config.AppBilibili,
-		AppDesc:     config.AppDesc,
+		AppName:       config.AppName,
+		AppVersion:    config.AppVersion,
+		AppAuthor:     config.AppAuthor,
+		AppURL:        config.AppURL,
+		AppBilibili:   config.AppBilibili,
+		AppDesc:       config.AppDesc,
+		AppSponsorURL: config.AppSponsorURL,
 	}
 }
 

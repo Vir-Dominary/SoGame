@@ -7,11 +7,12 @@ export namespace app {
 	    appURL: string;
 	    bilibiliURL: string;
 	    appDesc: string;
-	
+	    sponsorURL: string;
+
 	    static createFrom(source: any = {}) {
 	        return new AboutInfo(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.appName = source["appName"];
@@ -20,6 +21,7 @@ export namespace app {
 	        this.appURL = source["appURL"];
 	        this.bilibiliURL = source["bilibiliURL"];
 	        this.appDesc = source["appDesc"];
+	        this.sponsorURL = source["sponsorURL"];
 	    }
 	}
 	export class ConfigInfo {
