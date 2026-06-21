@@ -211,7 +211,7 @@ func ConfigureTapInterface(ifName, ip string) error {
 		logger.Warnf("启用 TAP 适配器 '%s' 失败: %v", ifName, err)
 	}
 
-	// 先重置为 DHCP
+	// 先重置为 DHCP，清除可能残留的 IP 配置
 	resetCmd := exec.Command("netsh", "interface", "ip", "set", "address",
 		ifName, "dhcp")
 	resetCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
@@ -219,13 +219,25 @@ func ConfigureTapInterface(ifName, ip string) error {
 
 	time.Sleep(500 * time.Millisecond)
 
-	// 设置静态 IP
+	// 设置静态 IP（/16 子网掩码，支持 10.10.X.X 全段通信）
 	cmd := exec.Command("netsh", "interface", "ip", "set", "address",
 		ifName, "static", ip, "255.255.0.0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("配置 TAP IP 失败: %v, %s", err, strings.TrimSpace(string(output)))
+	}
+
+	// 验证子网掩码：部分情况下 Windows 会将掩码改为 255.255.255.0，
+	// 导致不同 /24 子网的用户无法通信。若验证失败则用 PowerShell 修复。
+	time.Sleep(300 * time.Millisecond)
+	if !verifySubnetMask(ifName, "255.255.0.0") {
+		logger.Warnf("子网掩码验证失败（期望 255.255.0.0），尝试使用 PowerShell 修复")
+		if fixErr := fixSubnetMaskWithPowerShell(ifName, ip, 16); fixErr != nil {
+			logger.Warnf("PowerShell 修复子网掩码失败: %v", fixErr)
+		} else {
+			logger.Infof("PowerShell 修复子网掩码成功")
+		}
 	}
 
 	// 设置 MTU
@@ -242,6 +254,57 @@ func ConfigureTapInterface(ifName, ip string) error {
 		logger.Warnf("设置跃点数失败: %v", err)
 	}
 
+	return nil
+}
+
+// verifySubnetMask 验证指定适配器的 IPv4 子网掩码是否为期望值
+func verifySubnetMask(ifName, expectedMask string) bool {
+	cmd := exec.Command("netsh", "interface", "ip", "show", "config", ifName)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		logger.Warnf("验证子网掩码失败: %v", err)
+		return true // 无法验证时假设正确，避免不必要的修复
+	}
+	outputStr := string(output)
+	// netsh 输出中子网掩码行格式（中文/英文）：
+	//   子网掩码:    255.255.0.0
+	//   Subnet Mask:  255.255.0.0
+	// 检查输出中是否包含期望的掩码
+	if strings.Contains(outputStr, expectedMask) {
+		return true
+	}
+	// 检查是否包含错误的 /24 掩码
+	if strings.Contains(outputStr, "255.255.255.0") {
+		logger.Warnf("检测到错误的子网掩码 255.255.255.0（期望 %s）", expectedMask)
+		return false
+	}
+	return true
+}
+
+// fixSubnetMaskWithPowerShell 使用 PowerShell 删除现有 IP 并重新设置，
+// 以修复 netsh 设置子网掩码失败的问题
+func fixSubnetMaskWithPowerShell(ifName, ip string, prefixLength int) error {
+	// 删除现有 IPv4 地址
+	removeScript := fmt.Sprintf(
+		"Get-NetIPAddress -InterfaceAlias '%s' -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false",
+		ifName)
+	removeCmd := exec.Command("powershell", "-NoProfile", "-Command", removeScript)
+	removeCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	removeCmd.CombinedOutput()
+
+	time.Sleep(300 * time.Millisecond)
+
+	// 使用 New-NetIPAddress 重新设置 IP 和前缀长度
+	newScript := fmt.Sprintf(
+		"New-NetIPAddress -InterfaceAlias '%s' -IPAddress '%s' -PrefixLength %d",
+		ifName, ip, prefixLength)
+	newCmd := exec.Command("powershell", "-NoProfile", "-Command", newScript)
+	newCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	output, err := newCmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("New-NetIPAddress 失败: %v, %s", err, strings.TrimSpace(string(output)))
+	}
 	return nil
 }
 
