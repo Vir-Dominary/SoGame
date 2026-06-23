@@ -81,12 +81,16 @@ func aliasName(row *windows.MibIfRow2) string {
 }
 
 func isFilterLayer(name string) bool {
+	// 使用大小写不敏感匹配：Windows 实际使用 "Lightweight Filter"（小写 w），
+	// 而非 "LightWeight Filter"（大写 W），若区分大小写会导致过滤适配器漏网，
+	// 进而被误选为 TAP 重命名目标。
+	lower := strings.ToLower(name)
 	markers := []string{
-		"-Npcap", "-QoS Packet", "-Leigod", "LightWeight Filter",
-		"-WFP ", "WiFi Filter Driver", "Virtual Switch Extension",
+		"-npcap", "-qos packet", "-leigod", "lightweight filter",
+		"-wfp ", "wifi filter driver", "virtual switch extension",
 	}
 	for _, m := range markers {
-		if strings.Contains(name, m) {
+		if strings.Contains(lower, m) {
 			return true
 		}
 	}
