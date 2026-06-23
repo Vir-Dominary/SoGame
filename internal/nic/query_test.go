@@ -7,6 +7,36 @@ import (
 	"testing"
 )
 
+func TestIsFilterLayer(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		// "Lightweight Filter" 大小写变体（Windows 实际使用小写 w）
+		{"以太网-Cowman Lightweight Filter-0000", true},
+		{"Ethernet-Npcap Lightweight Filter", true},
+		{"LightWeight Filter", true}, // 大写 W 也应匹配
+		{"LIGHTWEIGHT FILTER", true}, // 全大写也应匹配
+		// 其他过滤适配器
+		{"以太网-Npcap", true},
+		{"本地连接-QoS Packet", true},
+		{"以太网-WFP Driver", true},
+		// 正常适配器不应被过滤
+		{"TAP-Windows Adapter V9", false},
+		{"SoGame-VPN", false},
+		{"以太网", false},
+		{"WLAN", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isFilterLayer(tt.name); got != tt.want {
+				t.Errorf("isFilterLayer(%q) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestList(t *testing.T) {
 	list, err := List()
 	if err != nil {

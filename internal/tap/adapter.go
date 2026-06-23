@@ -77,12 +77,25 @@ func FindRenameCandidate(newName string) (*nic.Info, error) {
 		if target != "" && strings.EqualFold(list[i].FriendlyName, target) {
 			continue
 		}
+		// 防御性检查：跳过名称中含 "Lightweight Filter" 的过滤适配器，
+		// 避免因 nic.List 过滤遗漏而误选。
+		if isFilterAdapter(list[i].FriendlyName) {
+			continue
+		}
 		if IsWindowsDescription(list[i].Description) {
 			return &list[i], nil
 		}
 	}
 
 	return nil, fmt.Errorf("%w: renameable TAP adapter", nic.ErrNotFound)
+}
+
+// isFilterAdapter 检查友好名称是否像过滤适配器（Lightweight Filter 等）。
+func isFilterAdapter(friendlyName string) bool {
+	lower := strings.ToLower(friendlyName)
+	return strings.Contains(lower, "lightweight filter") ||
+		strings.Contains(lower, "filter driver") ||
+		strings.Contains(lower, "virtual switch extension")
 }
 
 // RenameCandidate renames the first TAP-Windows candidate and verifies the new name.

@@ -46,3 +46,26 @@ func TestFindNewWindowsAdapterIgnoresNonTap(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestIsFilterAdapter(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"以太网-Cowman Lightweight Filter-0000", true},
+		{"Ethernet Filter Driver", true},
+		{"Virtual Switch Extension", true},
+		{"LIGHTWEIGHT FILTER", true},
+		{"TAP-Windows Adapter V9", false},
+		{"SoGame-VPN", false},
+		{"以太网", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isFilterAdapter(tt.name); got != tt.want {
+				t.Errorf("isFilterAdapter(%q) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}
