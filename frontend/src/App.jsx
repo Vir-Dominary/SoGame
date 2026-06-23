@@ -439,6 +439,11 @@ function App() {
                   <span className="info-label">引擎</span>
                   <span className="info-value">Powered by n2n</span>
                 </div>
+                <p className="info-tip">如果使用中遇到任何问题，欢迎联系作者解决</p>
+                <div className="info-row">
+                  <span className="info-label">QQ群</span>
+                  <span className="info-value">1105343393</span>
+                </div>
               </div>
             </div>
           </div>
