@@ -2,16 +2,18 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   GetState,
   GetErrorMessage,
-  GetNodes,
+  GetNodesWithLatency,
   GenerateInvite,
   ConnectWithInvite,
   Disconnect,
   OpenLogs,
   GetAboutInfo,
+  GetConnectionDetails,
   ListPlugins,
   GetPluginStatus,
   PluginAction,
 } from '../wailsjs/go/app/App'
+import { BrowserOpenURL, ClipboardSetText, EventsOn } from '../wailsjs/runtime/runtime'
 
 const STATES = {
   disconnected: { label: '未连接', color: '#666', ring: '#333' },
@@ -33,22 +35,51 @@ function App() {
   const [hoverDisconnect, setHoverDisconnect] = useState(false)
   const [connectionTime, setConnectionTime] = useState(null)
   const [elapsed, setElapsed] = useState('')
-  const [showAbout, setShowAbout] = useState(false)
   const [aboutInfo, setAboutInfo] = useState(null)
+  const [latencyLoading, setLatencyLoading] = useState(false)
+  const [connDetails, setConnDetails] = useState(null)
+  const [ipCopied, setIpCopied] = useState(false)
+  const [showSponsor, setShowSponsor] = useState(false)
   const [plugins, setPlugins] = useState([])
   const [pluginStatuses, setPluginStatuses] = useState({})
   const [actionLoading, setActionLoading] = useState({})
   const pollRef = useRef(null)
   const timerRef = useRef(null)
+  const latencyRef = useRef(null)
+  const selectedNodeRef = useRef('')
+
+  // 保持 ref 与 state 同步
+  useEffect(() => {
+    selectedNodeRef.current = selectedNode
+  }, [selectedNode])
 
   useEffect(() => {
-    loadNodes()
+    loadNodesWithLatency()
     GetState().then(s => {
       if (s && s !== 'disconnected') setStatus(s)
-    }).catch(() => {})
+    }).catch(e => console.error('GetState failed:', e))
+
+    // 预加载关于信息（作者链接、赞助链接）
+    GetAboutInfo().then(info => setAboutInfo(info)).catch(e => console.error('GetAboutInfo failed:', e))
+
+    // 监听后端异步推送的延迟数据
+    EventsOn('nodeLatencyUpdated', (data) => {
+      if (data && data.length > 0) {
+        setNodes(data)
+        setLatencyLoading(false)
+        // 如果当前选中的节点不可用，自动切换到延迟最低的可用节点
+        const current = data.find(n => n.name === selectedNodeRef.current)
+        if (!current || current.latency < 0) {
+          const best = data.find(n => n.latency >= 0)
+          if (best) setSelectedNode(best.name)
+        }
+      }
+    })
+
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
       if (timerRef.current) clearInterval(timerRef.current)
+      if (latencyRef.current) clearInterval(latencyRef.current)
     }
   }, [])
 
@@ -70,6 +101,8 @@ function App() {
           return t
         })
       }, 1000)
+      // 连接成功后获取连接详情（IP 地址）
+      GetConnectionDetails().then(d => setConnDetails(d)).catch(e => console.error('GetConnectionDetails failed:', e))
     }
     if (status !== 'connected') {
       if (timerRef.current) {
@@ -78,6 +111,7 @@ function App() {
       }
       setConnectionTime(null)
       setElapsed('')
+      setConnDetails(null)
     }
   }, [status])
 
@@ -143,17 +177,33 @@ function App() {
           clearInterval(pollRef.current)
           startPolling(3000, false)
         }
-      } catch (_) {}
+      } catch (e) { console.error('GetState polling failed:', e) }
     }, interval)
   }, [])
 
-  const loadNodes = async () => {
+  const loadNodesWithLatency = async () => {
+    setLatencyLoading(true)
     try {
-      const n = await GetNodes()
+      const n = await GetNodesWithLatency()
       setNodes(n || [])
-      if (n && n.length > 0) setSelectedNode(n[0].name)
-    } catch (_) {}
+      if (n && n.length > 0 && !selectedNode) {
+        // 初始选择第一个节点（延迟数据稍后通过事件更新）
+        setSelectedNode(n[0].name)
+      }
+    } catch (e) { console.error('loadNodesWithLatency failed:', e) }
+    // latencyLoading 由事件回调设为 false
   }
+
+  // 每 60 秒自动刷新延迟
+  useEffect(() => {
+    if (latencyRef.current) clearInterval(latencyRef.current)
+    latencyRef.current = setInterval(() => {
+      loadNodesWithLatency()
+    }, 60000)
+    return () => {
+      if (latencyRef.current) clearInterval(latencyRef.current)
+    }
+  }, [])
 
   const handleGenerate = async () => {
     const node = nodes.find(n => n.name === selectedNode)
@@ -169,7 +219,7 @@ function App() {
 
   const handleCopy = () => {
     if (generatedCode) {
-      navigator.clipboard.writeText(generatedCode).catch(() => {})
+      ClipboardSetText(generatedCode).catch(e => console.error('clipboard write failed:', e))
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     }
@@ -206,19 +256,15 @@ function App() {
   }
 
   const handleOpenLogs = async () => {
-    try { await OpenLogs() } catch (_) {}
+    try { await OpenLogs() } catch (e) { console.error('OpenLogs failed:', e) }
   }
 
-  const handleOpenAbout = async () => {
-    if (showAbout) {
-      setShowAbout(false)
-      return
+  const handleCopyIP = () => {
+    if (connDetails && connDetails.virtualIP) {
+      ClipboardSetText(connDetails.virtualIP).catch(e => console.error('clipboard write failed:', e))
+      setIpCopied(true)
+      setTimeout(() => setIpCopied(false), 2000)
     }
-    try {
-      const info = await GetAboutInfo()
-      setAboutInfo(info)
-      setShowAbout(true)
-    } catch (_) {}
   }
 
   const st = STATES[status] || STATES.disconnected
@@ -235,7 +281,7 @@ function App() {
               <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
             </svg>
           </div>
-          <span className="brand">忽游</span>
+          <span className="brand">SoGame</span>
         </div>
 
         <div className="main-area">
@@ -273,15 +319,24 @@ function App() {
               {mode === 'create' && (
                 <div className="invite-section">
                   <div className="field">
-                    <label>中心节点</label>
+                    <div className="field-header">
+                      <label>中心节点</label>
+                      <button className="refresh-latency-btn" onClick={loadNodesWithLatency} disabled={latencyLoading}>
+                        {latencyLoading ? '测速中...' : '测速'}
+                      </button>
+                    </div>
                     <div className="node-chips">
                       {nodes.map(n => (
                         <button
                           key={n.name}
-                          className={`node-chip ${selectedNode === n.name ? 'active' : ''}`}
+                          className={`node-chip ${selectedNode === n.name ? 'active' : ''} ${n.latency < 0 && n.latency !== -2 ? 'unavailable' : ''}`}
                           onClick={() => setSelectedNode(n.name)}
+                          disabled={n.latency < 0 && n.latency !== -2}
                         >
-                          {n.name}
+                          <span className="node-name">{n.name.replace(/公用节点——/, '').replace(/临时节点——/, '')}</span>
+                          <span className={`node-latency ${n.latency === -2 ? 'measuring' : n.latency < 0 ? 'unavailable' : n.latency < 50 ? 'fast' : n.latency < 150 ? 'medium' : 'slow'}`}>
+                            {n.latency === -2 ? '测量中' : n.latency < 0 ? '不可用' : `${n.latency}ms`}
+                          </span>
                         </button>
                       ))}
                     </div>
@@ -354,6 +409,21 @@ function App() {
                 )}
               </div>
 
+              {isConnected && connDetails && (
+                <div className="conn-info">
+                  <div className="conn-ip-row">
+                    <span className="conn-ip-label">本机 IP</span>
+                    <div className="conn-ip-value-group">
+                      <span className="conn-ip-value">{connDetails.virtualIP}</span>
+                      <button className="conn-copy-btn" onClick={handleCopyIP}>
+                        {ipCopied ? '已复制' : '复制'}
+                      </button>
+                    </div>
+                  </div>
+                  <p className="conn-desc">您已成功接入局域网，可以开始游戏了</p>
+                </div>
+              )}
+
               {isConnected && plugins.length > 0 && (
                 <div className="plugin-panel">
                   {plugins.map(p => {
@@ -399,16 +469,16 @@ function App() {
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
             </svg>
-            <span>{showSettings ? '收起' : '高级'}</span>
+            <span>{showSettings ? '收起' : '日志'}</span>
           </button>
           <button
             className="settings-toggle"
-            onClick={handleOpenAbout}
+            onClick={() => setShowSponsor(!showSponsor)}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+              <path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/>
             </svg>
-            <span>关于</span>
+            <span>{showSponsor ? '收起' : '赞助'}</span>
           </button>
         </div>
 
@@ -425,40 +495,61 @@ function App() {
           </div>
         )}
 
-        {showAbout && aboutInfo && (
-          <div className="about-panel">
-            <div className="about-inner">
-              <div className="about-header">
-                <div className="about-logo">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3ddc84" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-                  </svg>
-                </div>
-                <span className="about-title">{aboutInfo.appName}</span>
+        {aboutInfo && (
+          <div className="info-panel">
+            <div className="info-inner">
+              <div className="info-header">
+                <span className="info-title">关于 {aboutInfo.appName}</span>
+                <span className="info-version">v{aboutInfo.appVersion}</span>
               </div>
-              <div className="about-body">
-                <div className="about-row">
-                  <span className="about-label">版本</span>
-                  <span className="about-value">v{aboutInfo.appVersion}</span>
+              <div className="info-body">
+                <div className="info-row">
+                  <span className="info-label">作者</span>
+                  <span className="info-value">{aboutInfo.appAuthor}</span>
                 </div>
-                <div className="about-row">
-                  <span className="about-label">作者</span>
-                  <span className="about-value">{aboutInfo.appAuthor}</span>
+                <div className="info-row">
+                  <span className="info-label">GitHub</span>
+                  <a className="info-link" href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(aboutInfo.appURL) }}>{aboutInfo.appURL}</a>
                 </div>
-                <div className="about-row">
-                  <span className="about-label">Github</span>
-                  <a className="about-link" href="#" onClick={(e) => { e.preventDefault(); window.runtime.BrowserOpenURL(aboutInfo.appURL) }}>{aboutInfo.appURL}</a>
+                <div className="info-row">
+                  <span className="info-label">Bilibili</span>
+                  <a className="info-link" href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(aboutInfo.bilibiliURL) }}>{aboutInfo.bilibiliURL}</a>
                 </div>
-                <div className="about-row">
-                  <span className="about-label">Bilibili</span>
-                  <a className="about-link" href="#" onClick={(e) => { e.preventDefault(); window.runtime.BrowserOpenURL(aboutInfo.bilibiliURL) }}>{aboutInfo.bilibiliURL}</a>
+                <div className="info-row">
+                  <span className="info-label">引擎</span>
+                  <span className="info-value">Powered by n2n</span>
                 </div>
-                <div className="about-row">
-                  <span className="about-label">引擎</span>
-                  <span className="about-value">Powered by n2n</span>
+                <p className="info-tip">如果使用中遇到任何问题，欢迎联系作者解决</p>
+                <div className="info-row">
+                  <span className="info-label">QQ群</span>
+                  <span className="info-value">1105343393</span>
                 </div>
               </div>
-              <button className="about-close" onClick={() => setShowAbout(false)}>关闭</button>
+            </div>
+          </div>
+        )}
+
+        {showSponsor && aboutInfo && (
+          <div className="info-panel">
+            <div className="info-inner">
+              <div className="info-header">
+                <span className="info-title">支持开发</span>
+              </div>
+              <div className="info-body">
+                <p className="sponsor-text">如果这个项目帮助你和朋友顺利联机，欢迎支持该项目</p>
+                <div className="sponsor-usage">
+                  <span className="sponsor-usage-label">赞助费用将用于：</span>
+                  <ul className="sponsor-list">
+                    <li>节点服务器</li>
+                    <li>网络带宽</li>
+                    <li>域名与基础设施</li>
+                    <li>后续开发</li>
+                  </ul>
+                </div>
+                <a className="sponsor-link-btn" href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(aboutInfo.sponsorURL) }}>
+                  赞助支持
+                </a>
+              </div>
             </div>
           </div>
         )}

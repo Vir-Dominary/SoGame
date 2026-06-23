@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +60,11 @@ func SetAppInfo(name, version, author, url string) {
 }
 
 func Init() error {
+	// 已初始化则直接返回，避免重复打开文件导致句柄泄漏
+	if globalLogger != nil && globalLogger.logFile != nil {
+		return nil
+	}
+
 	logDir, err := getLogDir()
 	if err != nil {
 		return fmt.Errorf("failed to get log directory: %w", err)
@@ -165,6 +171,10 @@ func (l *Logger) rotateLogFile() {
 		}
 	}
 
+	sort.Slice(logFiles, func(i, j int) bool {
+		return logFiles[i].ModTime().Before(logFiles[j].ModTime())
+	})
+
 	// 如果超过最大日志文件数，删除最旧的
 	if len(logFiles) >= maxLogFiles {
 		for i := 0; i <= len(logFiles)-maxLogFiles; i++ {
@@ -270,26 +280,10 @@ func GetLogContent(lines int) (string, error) {
 		return "", err
 	}
 
-	// 简单的实现：返回最后 N 行
-	logLines := 0
-	for i := len(content) - 1; i >= 0 && logLines < lines; i-- {
-		if content[i] == '\n' {
-			logLines++
-		}
+	allLines := strings.Split(strings.TrimRight(string(content), "\n"), "\n")
+	start := 0
+	if len(allLines) > lines {
+		start = len(allLines) - lines
 	}
-
-	if logLines >= lines {
-		// 找到第 N 行的开始位置
-		lineCount := 0
-		for i := 0; i < len(content); i++ {
-			if content[i] == '\n' {
-				lineCount++
-				if lineCount == logLines-lines {
-					return string(content[i+1:]), nil
-				}
-			}
-		}
-	}
-
-	return string(content), nil
+	return strings.Join(allLines[start:], "\n"), nil
 }

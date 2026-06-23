@@ -26,6 +26,10 @@ export function GetConfig() {
   return window['go']['app']['App']['GetConfig']();
 }
 
+export function GetConnectionDetails() {
+  return window['go']['app']['App']['GetConnectionDetails']();
+}
+
 export function GetErrorMessage() {
   return window['go']['app']['App']['GetErrorMessage']();
 }
@@ -36,6 +40,10 @@ export function GetLogContent() {
 
 export function GetNodes() {
   return window['go']['app']['App']['GetNodes']();
+}
+
+export function GetNodesWithLatency() {
+  return window['go']['app']['App']['GetNodesWithLatency']();
 }
 
 export function GetPluginStatus(arg1) {

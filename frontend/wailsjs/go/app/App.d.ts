@@ -15,11 +15,15 @@ export function GetAboutInfo():Promise<app.AboutInfo>;
 
 export function GetConfig():Promise<app.ConfigInfo>;
 
+export function GetConnectionDetails():Promise<app.ConnectionDetails>;
+
 export function GetErrorMessage():Promise<string>;
 
 export function GetLogContent():Promise<string>;
 
 export function GetNodes():Promise<Array<app.NodeInfo>>;
+
+export function GetNodesWithLatency():Promise<Array<app.NodeLatencyInfo>>;
 
 export function GetPluginStatus(arg1:string):Promise<plugin.Status>;
 

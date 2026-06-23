@@ -7,11 +7,12 @@ export namespace app {
 	    appURL: string;
 	    bilibiliURL: string;
 	    appDesc: string;
-	
+	    sponsorURL: string;
+
 	    static createFrom(source: any = {}) {
 	        return new AboutInfo(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.appName = source["appName"];
@@ -20,6 +21,7 @@ export namespace app {
 	        this.appURL = source["appURL"];
 	        this.bilibiliURL = source["bilibiliURL"];
 	        this.appDesc = source["appDesc"];
+	        this.sponsorURL = source["sponsorURL"];
 	    }
 	}
 	export class ConfigInfo {
@@ -42,6 +44,26 @@ export namespace app {
 	        this.supernode = source["supernode"];
 	    }
 	}
+	export class ConnectionDetails {
+	    connected: boolean;
+	    virtualIP: string;
+	    nodeName: string;
+	    status: string;
+	    sponsorURL: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConnectionDetails(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connected = source["connected"];
+	        this.virtualIP = source["virtualIP"];
+	        this.nodeName = source["nodeName"];
+	        this.status = source["status"];
+	        this.sponsorURL = source["sponsorURL"];
+	    }
+	}
 	export class NodeInfo {
 	    name: string;
 	    address: string;
@@ -54,6 +76,22 @@ export namespace app {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
 	        this.address = source["address"];
+	    }
+	}
+	export class NodeLatencyInfo {
+	    name: string;
+	    address: string;
+	    latency: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new NodeLatencyInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.address = source["address"];
+	        this.latency = source["latency"];
 	    }
 	}
 

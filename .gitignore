@@ -2,9 +2,19 @@
 build/bin/
 build/bin.zip
 
+# 前端构建产物和依赖
+frontend/dist/
+frontend/node_modules/
+
 # IDE / 工具缓存
 .understand-anything/
+.vscode/
 
 # 系统文件
 Thumbs.db
 .DS_Store
+
+# Go
+*.exe
+*.test
+*.out

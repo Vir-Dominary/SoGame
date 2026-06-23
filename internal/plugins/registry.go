@@ -1,8 +1,8 @@
 package plugins
 
 import (
-	"netjoin/internal/plugin"
-	"netjoin/internal/plugins/civ6"
+	"sogame/internal/plugin"
+	"sogame/internal/plugins/civ6"
 )
 
 // All returns all built-in plugins registered at compile time.

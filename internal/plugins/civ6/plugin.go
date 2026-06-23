@@ -8,8 +8,8 @@ import (
 	"strings"
 	"syscall"
 
-	"netjoin/internal/logger"
-	"netjoin/internal/plugin"
+	"sogame/internal/logger"
+	"sogame/internal/plugin"
 )
 
 const PluginID = "civ6.injciv6"

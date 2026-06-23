@@ -10,14 +10,17 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 
-	"netjoin/internal/config"
-	"netjoin/internal/logger"
-	"netjoin/internal/n2n"
-	"netjoin/internal/platform"
-	"netjoin/internal/plugin"
-	"netjoin/internal/plugins"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"sogame/internal/config"
+	"sogame/internal/logger"
+	"sogame/internal/n2n"
+	"sogame/internal/platform"
+	"sogame/internal/plugin"
+	"sogame/internal/plugins"
 )
 
 type AppState string
@@ -74,7 +77,9 @@ func (a *App) Shutdown(ctx context.Context) {
 		}
 	}
 	// 清理可能遗留的孤儿进程（仅清理本应用启动的）
-	n2n.KillOrphanEdgeProcess()
+	if err := n2n.KillOrphanEdgeProcess(); err != nil {
+		logger.Warnf("shutdown: failed to kill orphan edge process: %v", err)
+	}
 }
 
 func (a *App) GetState() string {
@@ -124,17 +129,54 @@ type NodeInfo struct {
 	Address string `json:"address"`
 }
 
+type NodeLatencyInfo struct {
+	Name    string `json:"name"`
+	Address string `json:"address"`
+	Latency int    `json:"latency"`
+}
+
 func (a *App) GetNodes() []NodeInfo {
-	return []NodeInfo{
-		{Name: "公用节点——中国成都", Address: "119.6.178.183:10090"},
-		{Name: "公用节点——英国", Address: "146.56.108.91:10090"},
-		{Name: "公用节点——中国中山", Address: "116.28.76.77:10090"},
-		{Name: "公用节点——韩国", Address: "[2603:c024:5:5f5f:203d:234:6c3d:593c]:10090"},
-		{Name: "临时节点——中国北京", Address: "117.72.86.224:10090"},
-		{Name: "临时节点——中国深圳", Address: "8.148.244.159:10090"},
-		{Name: "临时节点——中国河北", Address: "111.225.98.22:10090"},
-		{Name: "临时节点——中国苏州", Address: "n2n.vvcd.win:10090"},
+	nodes := n2n.GetKnownNodes()
+	result := make([]NodeInfo, 0, len(nodes))
+	for _, node := range nodes {
+		result = append(result, NodeInfo{Name: node.Name, Address: node.Address})
 	}
+	return result
+}
+
+func (a *App) GetNodesWithLatency() []NodeLatencyInfo {
+	// 先获取节点列表（不测量延迟），确保 UI 能立即显示
+	nodes := n2n.GetKnownNodes()
+	out := make([]NodeLatencyInfo, 0, len(nodes))
+	for _, node := range nodes {
+		out = append(out, NodeLatencyInfo{
+			Name:    node.Name,
+			Address: node.Address,
+			Latency: -2, // -2 表示尚未测量
+		})
+	}
+
+	// 异步测量延迟，通过事件通知前端更新
+	go func() {
+		results := n2n.MeasureAllNodesLatency()
+		updated := make([]NodeLatencyInfo, 0, len(results))
+		for _, r := range results {
+			updated = append(updated, NodeLatencyInfo{
+				Name:    r.Name,
+				Address: r.Address,
+				Latency: r.Latency,
+			})
+		}
+		// 通过 Wails 事件系统通知前端延迟数据已更新
+		a.mu.Lock()
+		ctx := a.ctx
+		a.mu.Unlock()
+		if ctx != nil {
+			runtime.EventsEmit(ctx, "nodeLatencyUpdated", updated)
+		}
+	}()
+
+	return out
 }
 
 type inviteData struct {
@@ -142,6 +184,80 @@ type inviteData struct {
 	Key       string `json:"k"`
 	Supernode string `json:"s"`
 	HostIP    string `json:"h"`
+}
+
+// communityPrefix 是自动生成的社区名前缀。
+// v2 邀请码格式会省略此前缀以缩短长度，解码时再补回。
+const communityPrefix = "community-"
+
+// encodeInvite 将邀请数据编码为邀请码。
+// 优先使用 v2 紧凑格式（base64url + "|" 分隔），不满足条件时回退到 v1 JSON 格式。
+// v2 格式比 v1 短约 40%，通过省略 "community-" 前缀和用 base64url 编码密钥实现。
+func encodeInvite(data inviteData) (string, error) {
+	// 尝试 v2 格式：仅适用于标准 "community-XXX" 社区名 + hex 密钥
+	if strings.HasPrefix(data.Community, communityPrefix) {
+		keyBytes, err := hex.DecodeString(data.Key)
+		if err == nil {
+			communityShort := data.Community[len(communityPrefix):]
+			keyB64 := base64.RawURLEncoding.EncodeToString(keyBytes)
+			inner := communityShort + "|" + keyB64 + "|" + data.Supernode
+			return base64.RawURLEncoding.EncodeToString([]byte(inner)), nil
+		}
+	}
+
+	// 回退到 v1 JSON 格式
+	jsonBytes, err := json.Marshal(data)
+	if err != nil {
+		return "", fmt.Errorf("生成邀请码失败: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(jsonBytes), nil
+}
+
+// decodeInvite 解码邀请码，同时支持 v1（JSON + standard base64）和 v2（紧凑格式）。
+func decodeInvite(code string) (*inviteData, error) {
+	// 尝试 v1：standard base64 + JSON
+	if decoded, err := base64.StdEncoding.DecodeString(code); err == nil {
+		s := string(decoded)
+		if strings.HasPrefix(s, "{") {
+			var data inviteData
+			if err := json.Unmarshal(decoded, &data); err == nil {
+				return &data, nil
+			}
+		}
+		// 也可能是用 standard base64 编码的 v2 格式
+		if data, err := parseInviteV2(s); err == nil {
+			return data, nil
+		}
+	}
+
+	// 尝试 v2：base64url（无填充）
+	if decoded, err := base64.RawURLEncoding.DecodeString(code); err == nil {
+		if data, err := parseInviteV2(string(decoded)); err == nil {
+			return data, nil
+		}
+	}
+
+	return nil, fmt.Errorf("无效的邀请码格式")
+}
+
+// parseInviteV2 解析 v2 格式的邀请码内容（已 base64 解码后的字符串）。
+// 格式：<community_short>|<key_base64url>|<supernode>
+func parseInviteV2(s string) (*inviteData, error) {
+	parts := strings.SplitN(s, "|", 3)
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("v2 格式字段数不足")
+	}
+
+	keyBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("v2 密钥解码失败: %w", err)
+	}
+
+	return &inviteData{
+		Community: communityPrefix + parts[0],
+		Key:       hex.EncodeToString(keyBytes),
+		Supernode: parts[2],
+	}, nil
 }
 
 func getStableDeviceID() string {
@@ -158,12 +274,15 @@ func getStableDeviceID() string {
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
+// generateStableIP 基于设备 ID 和社区名生成稳定的虚拟 IP。
+// 仅随机化最后 8 位（10.10.10.X），配合 /24 子网掩码，避免 Windows
+// 将子网掩码强制改为 255.255.255.0 导致不同网段用户无法通信的问题。
 func generateStableIP(deviceID, community string) string {
 	h := sha256.New()
 	h.Write([]byte(deviceID + community))
 	hash := hex.EncodeToString(h.Sum(nil))
-	b, _ := hex.DecodeString(hash[:2])
-	host := b[0]%254 + 1
+	b, _ := hex.DecodeString(hash[:4])
+	host := int(b[0])%254 + 1 // 1-254
 	return fmt.Sprintf("10.10.10.%d", host)
 }
 
@@ -197,23 +316,12 @@ func (a *App) GenerateInvite(supernode string) (string, error) {
 		HostIP:    hostIP,
 	}
 
-	jsonBytes, err := json.Marshal(data)
-	if err != nil {
-		return "", fmt.Errorf("生成邀请码失败: %w", err)
-	}
-
-	encoded := base64.StdEncoding.EncodeToString(jsonBytes)
-	return encoded, nil
+	return encodeInvite(data)
 }
 
 func (a *App) ConnectWithInvite(code string) error {
-	decoded, err := base64.StdEncoding.DecodeString(code)
+	data, err := decodeInvite(code)
 	if err != nil {
-		return fmt.Errorf("无效的邀请码格式: %w", err)
-	}
-
-	var data inviteData
-	if err := json.Unmarshal(decoded, &data); err != nil {
 		return fmt.Errorf("邀请码解析失败: %w", err)
 	}
 
@@ -261,7 +369,7 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 		a.state = StateFailed
 		a.errMsg = fmt.Sprintf("保存配置失败: %v", err)
 		a.mu.Unlock()
-		return fmt.Errorf(a.errMsg)
+		return fmt.Errorf("保存配置失败: %w", err)
 	}
 
 	if a.cfg.Key == "" {
@@ -269,20 +377,16 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 		a.state = StateFailed
 		a.errMsg = "请先设置密码"
 		a.mu.Unlock()
-		return fmt.Errorf(a.errMsg)
+		return fmt.Errorf("请先设置密码")
 	}
 
-	if !platform.IsSoGameAdapterExists() {
-		status, err := platform.EnsureSoGameAdapter()
-		if err != nil || (status != platform.TapInstallSuccess && status != platform.TapAlreadyInstalled) {
-			a.mu.Lock()
-			a.state = StateFailed
-			a.errMsg = fmt.Sprintf("网络适配器安装失败: %v", err)
-			a.mu.Unlock()
-			return fmt.Errorf(a.errMsg)
-		}
-	} else {
-		platform.EnableTapInterface(platform.SoGameAdapterName)
+	status, err := platform.EnsureSoGameAdapter()
+	if err != nil || (status != platform.TapInstallSuccess && status != platform.TapAlreadyInstalled) {
+		a.mu.Lock()
+		a.state = StateFailed
+		a.errMsg = fmt.Sprintf("网络适配器安装失败: %v", err)
+		a.mu.Unlock()
+		return fmt.Errorf("网络适配器安装失败: %w", err)
 	}
 
 	// 在启动 edge 之前设置回调，因为 edge 可能在 Start() 返回前就输出注册成功
@@ -290,14 +394,21 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		switch state {
+		case n2n.StateConnecting:
+			a.state = StateConnecting
+			a.errMsg = ""
+		case n2n.StateConnected:
+			a.state = StateConnecting // TCP 已连接但尚未注册，仍显示连接中
+			a.errMsg = ""
 		case n2n.StateRegistered:
-			a.state = StateConnected
+			a.state = StateConnected // 注册成功才是真正连接成功
 			a.errMsg = ""
 		case n2n.StateError:
 			a.state = StateFailed
 			a.errMsg = "连接过程中发生错误"
 		case n2n.StateDisconnected:
 			a.state = StateDisconnected
+			a.errMsg = ""
 		}
 	})
 
@@ -315,13 +426,13 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 	a.state = StateConnecting
 	a.mu.Unlock()
 
-	err := a.edge.Start(a.cfg)
+	err = a.edge.Start(a.cfg)
 	if err != nil {
 		a.mu.Lock()
 		a.state = StateFailed
 		a.errMsg = fmt.Sprintf("连接失败: %v", err)
 		a.mu.Unlock()
-		return fmt.Errorf(a.errMsg)
+		return fmt.Errorf("连接失败: %w", err)
 	}
 
 	return nil
@@ -335,6 +446,12 @@ func (a *App) Disconnect() error {
 		a.mu.Unlock()
 		return err
 	}
+
+	// 断开连接时移除防火墙规则，不留残留
+	if fwErr := platform.RemoveFirewallRule(); fwErr != nil {
+		logger.Warnf("断开连接时移除防火墙规则失败: %v", fwErr)
+	}
+
 	a.mu.Lock()
 	a.state = StateDisconnected
 	a.errMsg = ""
@@ -357,22 +474,61 @@ func (a *App) OpenLogs() error {
 }
 
 type AboutInfo struct {
-	AppName     string `json:"appName"`
-	AppVersion  string `json:"appVersion"`
-	AppAuthor   string `json:"appAuthor"`
-	AppURL      string `json:"appURL"`
-	AppBilibili string `json:"bilibiliURL"`
-	AppDesc     string `json:"appDesc"`
+	AppName       string `json:"appName"`
+	AppVersion    string `json:"appVersion"`
+	AppAuthor     string `json:"appAuthor"`
+	AppURL        string `json:"appURL"`
+	AppBilibili   string `json:"bilibiliURL"`
+	AppDesc       string `json:"appDesc"`
+	AppSponsorURL string `json:"sponsorURL"`
+}
+
+type ConnectionDetails struct {
+	Connected  bool   `json:"connected"`
+	VirtualIP  string `json:"virtualIP"`
+	NodeName   string `json:"nodeName"`
+	Status     string `json:"status"`
+	SponsorURL string `json:"sponsorURL"`
+}
+
+func (a *App) GetConnectionDetails() ConnectionDetails {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	details := ConnectionDetails{
+		Connected:  a.state == StateConnected,
+		VirtualIP:  a.cfg.IP,
+		NodeName:   n2n.LookupNodeName(a.cfg.Supernode),
+		SponsorURL: config.AppSponsorURL,
+	}
+
+	if details.NodeName == "" {
+		details.NodeName = n2n.MaskSupernode(a.cfg.Supernode)
+	}
+
+	switch a.state {
+	case StateConnected:
+		details.Status = "正常"
+	case StateConnecting:
+		details.Status = "连接中"
+	case StateFailed:
+		details.Status = "异常"
+	default:
+		details.Status = "未连接"
+	}
+
+	return details
 }
 
 func (a *App) GetAboutInfo() AboutInfo {
 	return AboutInfo{
-		AppName:     config.AppName,
-		AppVersion:  config.AppVersion,
-		AppAuthor:   config.AppAuthor,
-		AppURL:      config.AppURL,
-		AppBilibili: config.AppBilibili,
-		AppDesc:     config.AppDesc,
+		AppName:       config.AppName,
+		AppVersion:    config.AppVersion,
+		AppAuthor:     config.AppAuthor,
+		AppURL:        config.AppURL,
+		AppBilibili:   config.AppBilibili,
+		AppDesc:       config.AppDesc,
+		AppSponsorURL: config.AppSponsorURL,
 	}
 }
 

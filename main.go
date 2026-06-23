@@ -9,9 +9,9 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
 
-	"netjoin/internal/config"
-	"netjoin/internal/logger"
-	webui "netjoin/internal/webui"
+	"sogame/internal/config"
+	"sogame/internal/logger"
+	webui "sogame/internal/webui"
 )
 
 //go:embed all:frontend/dist
@@ -29,7 +29,7 @@ func main() {
 	err := wails.Run(&options.App{
 		Title:  config.AppName,
 		Width:  400,
-		Height: 620,
+		Height: 780,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

@@ -1,6 +1,6 @@
 {
   "$schema": "https://wails.io/schemas/config.v2.json",
-  "name": "忽游",
+  "name": "SoGame",
   "outputfilename": "SoGame",
   "frontend:install": "npm install",
   "frontend:build": "npm run build",
@@ -11,9 +11,9 @@
   },
   "info": {
     "companyName": "vir_dominary",
-    "productName": "忽游",
-    "productVersion": "1.2",
+    "productName": "SoGame",
+    "productVersion": "1.3",
     "copyright": "Copyright © 2026 vir_dominary",
-    "comments": "忽游 - 远程组网工具"
+    "comments": "SoGame - 远程组网工具"
   }
 }

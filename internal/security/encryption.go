@@ -102,6 +102,22 @@ func GetOrCreateEncryptionKey() (string, error) {
 		return string(keyBytes), nil
 	}
 
+	return generateAndSaveKey(keyFile)
+}
+
+// GenerateAndSaveEncryptionKey 生成新的加密密钥并保存
+// 当原有密钥文件丢失或损坏时调用
+func GenerateAndSaveEncryptionKey() (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+
+	keyFile := filepath.Join(configDir, "SoGame", ".key")
+	return generateAndSaveKey(keyFile)
+}
+
+func generateAndSaveKey(keyFile string) (string, error) {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		return "", err
