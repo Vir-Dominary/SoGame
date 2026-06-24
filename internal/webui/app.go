@@ -193,6 +193,7 @@ const communityPrefix = "community-"
 // encodeInvite 将邀请数据编码为邀请码。
 // 优先使用 v2 紧凑格式（base64url + "|" 分隔），不满足条件时回退到 v1 JSON 格式。
 // v2 格式比 v1 短约 40%，通过省略 "community-" 前缀和用 base64url 编码密钥实现。
+// v2 格式包含 4 个字段：<community_short>|<key_base64url>|<supernode>|<host_ip>
 func encodeInvite(data inviteData) (string, error) {
 	// 尝试 v2 格式：仅适用于标准 "community-XXX" 社区名 + hex 密钥
 	if strings.HasPrefix(data.Community, communityPrefix) {
@@ -200,7 +201,7 @@ func encodeInvite(data inviteData) (string, error) {
 		if err == nil {
 			communityShort := data.Community[len(communityPrefix):]
 			keyB64 := base64.RawURLEncoding.EncodeToString(keyBytes)
-			inner := communityShort + "|" + keyB64 + "|" + data.Supernode
+			inner := communityShort + "|" + keyB64 + "|" + data.Supernode + "|" + data.HostIP
 			return base64.RawURLEncoding.EncodeToString([]byte(inner)), nil
 		}
 	}
@@ -241,10 +242,11 @@ func decodeInvite(code string) (*inviteData, error) {
 }
 
 // parseInviteV2 解析 v2 格式的邀请码内容（已 base64 解码后的字符串）。
-// 格式：<community_short>|<key_base64url>|<supernode>
+// 格式：<community_short>|<key_base64url>|<supernode>[|<host_ip>]
+// 第 4 字段 host_ip 为可选（旧版 v2 邀请码不含此字段）。
 func parseInviteV2(s string) (*inviteData, error) {
-	parts := strings.SplitN(s, "|", 3)
-	if len(parts) != 3 {
+	parts := strings.SplitN(s, "|", 4)
+	if len(parts) < 3 {
 		return nil, fmt.Errorf("v2 格式字段数不足")
 	}
 
@@ -253,11 +255,15 @@ func parseInviteV2(s string) (*inviteData, error) {
 		return nil, fmt.Errorf("v2 密钥解码失败: %w", err)
 	}
 
-	return &inviteData{
+	data := &inviteData{
 		Community: communityPrefix + parts[0],
 		Key:       hex.EncodeToString(keyBytes),
 		Supernode: parts[2],
-	}, nil
+	}
+	if len(parts) >= 4 {
+		data.HostIP = parts[3]
+	}
+	return data, nil
 }
 
 func getStableDeviceID() string {

@@ -12,6 +12,7 @@ func TestEncodeInviteV2ShorterThanV1(t *testing.T) {
 		Community: "community-2d76abfa",
 		Key:       "f8d990cbb2b02b995800115cf0b3007a",
 		Supernode: "8.148.244.159:10090",
+		HostIP:    "10.10.10.5",
 	}
 
 	v2, err := encodeInvite(data)
@@ -66,31 +67,42 @@ func TestDecodeInviteV1Beijing(t *testing.T) {
 	}
 }
 
-// TestEncodeDecodeRoundTrip 验证 v2 编码后解码能还原原始数据
+// TestEncodeDecodeRoundTrip 验证 v2 编码后解码能还原原始数据（含 HostIP）
 func TestEncodeDecodeRoundTrip(t *testing.T) {
 	tests := []struct {
 		name      string
 		community string
 		key       string
 		supernode string
+		hostIP    string
 	}{
 		{
 			name:      "shenzhen",
 			community: "community-2d76abfa",
 			key:       "f8d990cbb2b02b995800115cf0b3007a",
 			supernode: "8.148.244.159:10090",
+			hostIP:    "10.10.10.5",
 		},
 		{
 			name:      "beijing",
 			community: "community-abcdef12",
 			key:       "0123456789abcdef0123456789abcdef",
 			supernode: "117.72.86.224:10090",
+			hostIP:    "10.10.10.42",
 		},
 		{
 			name:      "ipv6_supernode",
 			community: "community-deadbeef",
 			key:       "fedcba9876543210fedcba9876543210",
 			supernode: "[2603:c024:5:5f5f:203d:234:6c3d:593c]:10090",
+			hostIP:    "10.10.10.99",
+		},
+		{
+			name:      "empty_host_ip",
+			community: "community-2d76abfa",
+			key:       "f8d990cbb2b02b995800115cf0b3007a",
+			supernode: "8.148.244.159:10090",
+			hostIP:    "",
 		},
 	}
 
@@ -100,6 +112,7 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 				Community: tt.community,
 				Key:       tt.key,
 				Supernode: tt.supernode,
+				HostIP:    tt.hostIP,
 			}
 
 			encoded, err := encodeInvite(original)
@@ -122,6 +135,9 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 			}
 			if decoded.Supernode != original.Supernode {
 				t.Errorf("supernode = %s, want %s", decoded.Supernode, original.Supernode)
+			}
+			if decoded.HostIP != original.HostIP {
+				t.Errorf("hostIP = %s, want %s", decoded.HostIP, original.HostIP)
 			}
 		})
 	}
