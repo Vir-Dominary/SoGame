@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"sogame/internal/logger"
 	"sogame/internal/nic"
 )
 
@@ -28,6 +29,8 @@ func IsWindowsDescription(description string) bool {
 // FindAdapter returns the named adapter first, then any TAP-Windows adapter.
 // Note: fallback uses IsWindowsDescription (not IsLikeDescription) to avoid
 // matching WinTUN or other non-TAP-Windows adapters that n2n edge cannot use.
+// 过滤 miniport（IsFilterInterface）被自动排除，避免选中 cFosSpeed 等过滤驱动
+// 生成的虚拟接口。
 func FindAdapter(name string) (*nic.Info, error) {
 	list, err := nic.List()
 	if err != nil {
@@ -37,12 +40,18 @@ func FindAdapter(name string) (*nic.Info, error) {
 	target := strings.TrimSpace(name)
 	if target != "" {
 		for i := range list {
+			if list[i].IsFilterInterface {
+				continue
+			}
 			if strings.EqualFold(list[i].FriendlyName, target) {
 				return &list[i], nil
 			}
 		}
 	}
 	for i := range list {
+		if list[i].IsFilterInterface {
+			continue
+		}
 		if IsWindowsDescription(list[i].Description) {
 			return &list[i], nil
 		}
@@ -52,12 +61,16 @@ func FindAdapter(name string) (*nic.Info, error) {
 }
 
 // HasWindowsAdapter reports whether any TAP-Windows adapter instance exists.
+// 过滤 miniport 不计入，因为它们不是可用的 TAP-Windows 实例。
 func HasWindowsAdapter() (bool, error) {
 	list, err := nic.List()
 	if err != nil {
 		return false, err
 	}
 	for i := range list {
+		if list[i].IsFilterInterface {
+			continue
+		}
 		if IsWindowsDescription(list[i].Description) {
 			return true, nil
 		}
@@ -66,6 +79,7 @@ func HasWindowsAdapter() (bool, error) {
 }
 
 // FindRenameCandidate returns a TAP-Windows adapter that is not already named newName.
+// 通过 IsFilterInterface 标志从系统层面排除过滤 miniport，无需维护关键词黑名单。
 func FindRenameCandidate(newName string) (*nic.Info, error) {
 	list, err := nic.List()
 	if err != nil {
@@ -74,12 +88,10 @@ func FindRenameCandidate(newName string) (*nic.Info, error) {
 
 	target := strings.TrimSpace(newName)
 	for i := range list {
-		if target != "" && strings.EqualFold(list[i].FriendlyName, target) {
+		if list[i].IsFilterInterface {
 			continue
 		}
-		// 防御性检查：跳过名称中含 "Lightweight Filter" 的过滤适配器，
-		// 避免因 nic.List 过滤遗漏而误选。
-		if isFilterAdapter(list[i].FriendlyName) {
+		if target != "" && strings.EqualFold(list[i].FriendlyName, target) {
 			continue
 		}
 		if IsWindowsDescription(list[i].Description) {
@@ -90,35 +102,62 @@ func FindRenameCandidate(newName string) (*nic.Info, error) {
 	return nil, fmt.Errorf("%w: renameable TAP adapter", nic.ErrNotFound)
 }
 
-// isFilterAdapter 检查友好名称是否像过滤适配器（Lightweight Filter 等）。
-func isFilterAdapter(friendlyName string) bool {
-	lower := strings.ToLower(friendlyName)
-	return strings.Contains(lower, "lightweight filter") ||
-		strings.Contains(lower, "filter driver") ||
-		strings.Contains(lower, "virtual switch extension")
-}
-
-// RenameCandidate renames the first TAP-Windows candidate and verifies the new name.
-// Returns the adapter info with FriendlyName updated to the new name.
+// RenameCandidate 遍历所有 TAP-Windows 适配器，逐个尝试重命名为 newName。
+// 第一个重命名成功的即为可用适配器。
+//
+// 这种方式不依赖关键词黑名单即可自动跳过被任何过滤驱动（cFosSpeed、Lightweight Filter
+// 或未来出现的新过滤驱动）锁定名称的适配器：HrRenameConnection 对被锁定的适配器会返回
+// "Incorrect function"，此时自动跳到下一个候选继续尝试。
+//
+// 过滤 miniport（IsFilterInterface=true）会被直接跳过，不参与改名尝试。
 func RenameCandidate(newName string, timeout time.Duration) (*nic.Info, error) {
 	target := strings.TrimSpace(newName)
 	if target == "" {
 		return nil, fmt.Errorf("adapter name is empty")
 	}
 
-	info, err := FindRenameCandidate(target)
+	list, err := nic.List()
 	if err != nil {
 		return nil, err
 	}
-	if err := nic.RenameConnection(info.Luid, target); err != nil {
-		return nil, fmt.Errorf("rename TAP adapter %q to %q: %w", info.FriendlyName, target, err)
+
+	var skipped []string
+	for i := range list {
+		info := &list[i]
+		// 跳过已命名为目标名的
+		if strings.EqualFold(info.FriendlyName, target) {
+			continue
+		}
+		// 跳过过滤 miniport（系统层面排除）
+		if info.IsFilterInterface {
+			continue
+		}
+		// 只认 TAP-Windows 适配器
+		if !IsWindowsDescription(info.Description) {
+			continue
+		}
+		// 尝试重命名：失败说明该适配器被过滤驱动锁定名称，跳过继续找下一个
+		if err := nic.RenameConnection(info.Luid, target); err != nil {
+			logger.Warnf("重命名 TAP 适配器 %q 失败（可能被过滤驱动锁定），跳过: %v", info.FriendlyName, err)
+			skipped = append(skipped, info.FriendlyName)
+			continue
+		}
+		// 验证改名已生效
+		if err := waitFriendlyName(target, timeout); err != nil {
+			// 验证超时：尝试改回原名，避免留下被改名但未验证的适配器
+			_ = nic.RenameConnection(info.Luid, info.FriendlyName)
+			logger.Warnf("验证 TAP 适配器 %q 改名超时，已改回原名", info.FriendlyName)
+			skipped = append(skipped, info.FriendlyName+"(验证超时)")
+			continue
+		}
+		info.FriendlyName = target
+		return info, nil
 	}
-	if err := waitFriendlyName(target, timeout); err != nil {
-		return nil, fmt.Errorf("verify renamed TAP adapter %q: %w", target, err)
+
+	if len(skipped) > 0 {
+		return nil, fmt.Errorf("%w: renameable TAP adapter (跳过被锁定的适配器: %s)", nic.ErrNotFound, strings.Join(skipped, ", "))
 	}
-	// 返回更新后的 Info，FriendlyName 为新名称
-	info.FriendlyName = target
-	return info, nil
+	return nil, fmt.Errorf("%w: renameable TAP adapter", nic.ErrNotFound)
 }
 
 func waitFriendlyName(name string, timeout time.Duration) error {

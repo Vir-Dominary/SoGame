@@ -79,7 +79,7 @@ func classifyResolvedAdapter(known *KnownAdapter, info *nic.Info, netCfgID, expe
 		Info:             info,
 		NetCfgInstanceID: strings.TrimSpace(netCfgID),
 	}
-	if info == nil || !IsWindowsDescription(info.Description) {
+	if info == nil || !IsWindowsDescription(info.Description) || info.IsFilterInterface {
 		result.Status = ResolveInvalid
 		return result
 	}

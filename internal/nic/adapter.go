@@ -9,6 +9,12 @@ type Info struct {
 	Luid         uint64
 	AdminStatus  uint32
 	OperStatus   uint32
+	// IsFilterInterface 标记该接口是否为 NDIS 过滤 miniport（如 cFosSpeed、
+	// Lightweight Filter 等过滤驱动生成的虚拟接口）。
+	// 来源：MibIfRow2.InterfaceAndOperStatusFlags 的 FilterInterface 位（bit 1）。
+	// 过滤 miniport 不是真实物理/虚拟适配器，无法通过 HrRenameConnection 改名，
+	// 且可能继承底层适配器的描述导致被误判为 TAP 实例。
+	IsFilterInterface bool
 }
 
 // AdminText 返回管理状态（启用/禁用）的中文描述。

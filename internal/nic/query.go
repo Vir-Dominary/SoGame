@@ -67,6 +67,9 @@ func listFromTable(match func(name string) bool) ([]Info, error) {
 			Luid:         row.InterfaceLuid,
 			AdminStatus:  row.AdminStatus,
 			OperStatus:   row.OperStatus,
+			// InterfaceAndOperStatusFlags bit 1 = FilterInterface：
+			// 标记该接口是否为 NDIS 过滤 miniport（cFosSpeed、Lightweight Filter 等）。
+			IsFilterInterface: row.InterfaceAndOperStatusFlags&0x02 != 0,
 		})
 	}
 	return list, nil
