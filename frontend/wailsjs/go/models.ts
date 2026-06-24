@@ -94,6 +94,28 @@ export namespace app {
 	        this.latency = source["latency"];
 	    }
 	}
+	export class PluginDebugInfo {
+	    state: string;
+	    isHost: boolean;
+	    hostIP: string;
+	    myIP: string;
+	    community: string;
+	    connected: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new PluginDebugInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.state = source["state"];
+	        this.isHost = source["isHost"];
+	        this.hostIP = source["hostIP"];
+	        this.myIP = source["myIP"];
+	        this.community = source["community"];
+	        this.connected = source["connected"];
+	    }
+	}
 
 }
 

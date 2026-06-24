@@ -6,6 +6,10 @@ export function Connect(arg1, arg2, arg3, arg4) {
   return window['go']['app']['App']['Connect'](arg1, arg2, arg3, arg4);
 }
 
+export function ConnectAsHost(arg1) {
+  return window['go']['app']['App']['ConnectAsHost'](arg1);
+}
+
 export function ConnectWithInvite(arg1) {
   return window['go']['app']['App']['ConnectWithInvite'](arg1);
 }
@@ -44,6 +48,10 @@ export function GetNodes() {
 
 export function GetNodesWithLatency() {
   return window['go']['app']['App']['GetNodesWithLatency']();
+}
+
+export function GetPluginDebugInfo() {
+  return window['go']['app']['App']['GetPluginDebugInfo']();
 }
 
 export function GetPluginStatus(arg1) {

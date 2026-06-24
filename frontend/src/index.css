@@ -725,70 +725,20 @@ body {
   border-color: #3ddc84;
 }
 
-/* --- 插件面板 --- */
-.plugin-panel {
-  width: 100%;
+.plugin-debug-info {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: 8px;
-}
-
-.plugin-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  margin-top: 8px;
+  padding: 6px 8px;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid #21262d;
-  border-radius: 10px;
-  padding: 12px 14px;
-  gap: 10px;
+  border-radius: 4px;
+  font-size: 10px;
+  color: #6e7681;
+  font-family: monospace;
 }
 
-.plugin-info {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-
-.plugin-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: #e6edf3;
-}
-
-.plugin-status-text {
-  font-size: 11px;
-  color: #8b949e;
-  line-height: 1.4;
-}
-
-.plugin-actions {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.plugin-action-btn {
-  background: rgba(61, 220, 132, 0.1);
-  border: 1px solid rgba(61, 220, 132, 0.3);
-  border-radius: 6px;
-  padding: 5px 12px;
-  color: #3ddc84;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
-  outline: none;
+.plugin-debug-info span {
   white-space: nowrap;
-}
-
-.plugin-action-btn:hover:not(.disabled) {
-  background: rgba(61, 220, 132, 0.18);
-  border-color: #3ddc84;
-}
-
-.plugin-action-btn.disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
 }

@@ -5,6 +5,8 @@ import {plugin} from '../models';
 
 export function Connect(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 
+export function ConnectAsHost(arg1:string):Promise<void>;
+
 export function ConnectWithInvite(arg1:string):Promise<void>;
 
 export function Disconnect():Promise<void>;
@@ -24,6 +26,8 @@ export function GetLogContent():Promise<string>;
 export function GetNodes():Promise<Array<app.NodeInfo>>;
 
 export function GetNodesWithLatency():Promise<Array<app.NodeLatencyInfo>>;
+
+export function GetPluginDebugInfo():Promise<app.PluginDebugInfo>;
 
 export function GetPluginStatus(arg1:string):Promise<plugin.Status>;
 

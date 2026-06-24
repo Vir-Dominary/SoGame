@@ -228,19 +228,36 @@ func (p *Plugin) findGamePath() (string, error) {
 }
 
 // findProcessPath 按进程名查找正在运行的可执行文件的完整路径。
+// 优先使用 PowerShell Get-CimInstance（Windows 11 推荐），WMIC 作为兜底。
 func findProcessPath(exeName string) string {
 	exeNameLower := strings.ToLower(exeName)
 
-	// 使用 WMIC 获取进程路径，Windows 上无需管理员权限
-	cmd := exec.Command("wmic", "process", "where", fmt.Sprintf("name='%s'", exeName), "get", "ExecutablePath")
+	// 优先使用 PowerShell（Windows 11 上 WMIC 已弃用）
+	psCmd := fmt.Sprintf(
+		"Get-CimInstance Win32_Process -Filter \"name='%s'\" | Select-Object -ExpandProperty ExecutablePath",
+		exeName,
+	)
+	cmd := exec.Command("powershell", "-NoProfile", "-Command", psCmd)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	output, err := cmd.CombinedOutput()
+	if err == nil {
+		for _, line := range strings.Split(string(output), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" && strings.HasSuffix(strings.ToLower(line), "\\"+exeNameLower) {
+				return line
+			}
+		}
+	}
+
+	// 兜底：使用 WMIC（旧版 Windows 兼容）
+	cmd = exec.Command("wmic", "process", "where", fmt.Sprintf("name='%s'", exeName), "get", "ExecutablePath")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	output, err = cmd.CombinedOutput()
 	if err != nil {
 		return ""
 	}
 
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
+	for _, line := range strings.Split(string(output), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.EqualFold(line, "ExecutablePath") {
 			continue

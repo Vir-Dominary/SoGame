@@ -41,6 +41,7 @@ type App struct {
 	errMsg  string
 	plugins *plugin.Manager
 	hostIP  string // 房主 VPN IP，从邀请码解析获得（为空表示自己是房主）
+	isHost  bool   // 是否为房主（由前端创建/加入模式显式指定，避免 IP 比较误判）
 }
 
 func NewApp() *App {
@@ -326,6 +327,17 @@ func (a *App) GenerateInvite(supernode string) (string, error) {
 }
 
 func (a *App) ConnectWithInvite(code string) error {
+	return a.connectWithInvite(code, false)
+}
+
+// ConnectAsHost 以房主身份连接房间。房主无需注入，仅加入者需要注入。
+func (a *App) ConnectAsHost(code string) error {
+	return a.connectWithInvite(code, true)
+}
+
+// connectWithInvite 解析邀请码并连接房间，同时设置房主身份标志。
+// isHost 为 true 表示当前用户是房主（创建房间），为 false 表示加入者。
+func (a *App) connectWithInvite(code string, isHost bool) error {
 	data, err := decodeInvite(code)
 	if err != nil {
 		return fmt.Errorf("邀请码解析失败: %w", err)
@@ -351,9 +363,13 @@ func (a *App) ConnectWithInvite(code string) error {
 		logger.Infof("  房主IP: %s", data.HostIP)
 	}
 	logger.Infof("  分配IP: %s", ip)
+	logger.Infof("  身份: %s", map[bool]string{true: "房主", false: "加入者"}[isHost])
 
-	// 保存房主 IP 供插件使用
+	// 保存房主 IP 和身份标志供插件使用（加锁防止与 pluginSession 竞争）
+	a.mu.Lock()
 	a.hostIP = data.HostIP
+	a.isHost = isHost
+	a.mu.Unlock()
 
 	return a.Connect(data.Community, ip, data.Key, data.Supernode)
 }
@@ -462,6 +478,7 @@ func (a *App) Disconnect() error {
 	a.state = StateDisconnected
 	a.errMsg = ""
 	a.hostIP = ""
+	a.isHost = false
 	a.mu.Unlock()
 	return nil
 }
@@ -555,7 +572,7 @@ func (a *App) pluginSession() plugin.Session {
 
 	return plugin.Session{
 		Connected: a.state == StateConnected || a.state == StateConnecting,
-		IsHost:    a.hostIP == "" || a.hostIP == a.cfg.IP,
+		IsHost:    a.isHost,
 		MyIP:      a.cfg.IP,
 		HostIP:    a.hostIP,
 		Community: a.cfg.Community,
@@ -573,4 +590,27 @@ func (a *App) GetPluginStatus(pluginID string) (plugin.Status, error) {
 
 func (a *App) PluginAction(pluginID, actionID string) error {
 	return a.plugins.RunAction(pluginID, actionID, a.pluginSession())
+}
+
+// PluginDebugInfo 返回插件调试信息，用于诊断注入按钮状态问题。
+type PluginDebugInfo struct {
+	State     string `json:"state"`
+	IsHost    bool   `json:"isHost"`
+	HostIP    string `json:"hostIP"`
+	MyIP      string `json:"myIP"`
+	Community string `json:"community"`
+	Connected bool   `json:"connected"`
+}
+
+func (a *App) GetPluginDebugInfo() PluginDebugInfo {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return PluginDebugInfo{
+		State:     string(a.state),
+		IsHost:    a.isHost,
+		HostIP:    a.hostIP,
+		MyIP:      a.cfg.IP,
+		Community: a.cfg.Community,
+		Connected: a.state == StateConnected || a.state == StateConnecting,
+	}
 }

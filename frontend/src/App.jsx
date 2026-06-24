@@ -5,12 +5,14 @@ import {
   GetNodesWithLatency,
   GenerateInvite,
   ConnectWithInvite,
+  ConnectAsHost,
   Disconnect,
   OpenLogs,
   GetAboutInfo,
   GetConnectionDetails,
   ListPlugins,
   GetPluginStatus,
+  GetPluginDebugInfo,
   PluginAction,
 } from '../wailsjs/go/app/App'
 import { BrowserOpenURL, ClipboardSetText, EventsOn } from '../wailsjs/runtime/runtime'
@@ -42,10 +44,12 @@ function App() {
   const [showSponsor, setShowSponsor] = useState(false)
   const [plugins, setPlugins] = useState([])
   const [pluginStatuses, setPluginStatuses] = useState({})
+  const [pluginDebug, setPluginDebug] = useState(null)
   const [actionLoading, setActionLoading] = useState({})
   const pollRef = useRef(null)
   const timerRef = useRef(null)
   const latencyRef = useRef(null)
+  const pluginPollRef = useRef(null)
   const selectedNodeRef = useRef('')
 
   // 保持 ref 与 state 同步
@@ -80,6 +84,7 @@ function App() {
       if (pollRef.current) clearInterval(pollRef.current)
       if (timerRef.current) clearInterval(timerRef.current)
       if (latencyRef.current) clearInterval(latencyRef.current)
+      if (pluginPollRef.current) clearInterval(pluginPollRef.current)
     }
   }, [])
 
@@ -115,13 +120,37 @@ function App() {
     }
   }, [status])
 
-  // 连接成功后加载插件列表
+  // 连接成功后加载插件列表，并定期刷新插件状态
   useEffect(() => {
     if (status === 'connected') {
       loadPlugins()
+      // 每 5 秒刷新插件状态（检测游戏进程变化、注入状态等）
+      pluginPollRef.current = setInterval(async () => {
+        try {
+          const list = await ListPlugins()
+          if (list && list.length > 0) {
+            const statuses = {}
+            for (const p of list) {
+              try {
+                statuses[p.id] = await GetPluginStatus(p.id)
+              } catch (_) {}
+            }
+            setPluginStatuses(statuses)
+          }
+          // 刷新调试信息
+          try {
+            const debug = await GetPluginDebugInfo()
+            setPluginDebug(debug)
+          } catch (_) {}
+        } catch (_) {}
+      }, 5000)
     } else {
       setPlugins([])
       setPluginStatuses({})
+      if (pluginPollRef.current) {
+        clearInterval(pluginPollRef.current)
+        pluginPollRef.current = null
+      }
     }
   }, [status])
 
@@ -136,6 +165,11 @@ function App() {
         } catch (_) {}
       }
       setPluginStatuses(statuses)
+      // 加载调试信息
+      try {
+        const debug = await GetPluginDebugInfo()
+        setPluginDebug(debug)
+      } catch (_) {}
     } catch (_) {}
   }
 
@@ -247,7 +281,12 @@ function App() {
     setErrorMsg('')
 
     try {
-      await ConnectWithInvite(code)
+      // 创建房间时以房主身份连接，加入房间时以加入者身份连接
+      if (mode === 'create') {
+        await ConnectAsHost(code)
+      } else {
+        await ConnectWithInvite(code)
+      }
       startPolling()
     } catch (e) {
       setStatus('failed')
@@ -451,6 +490,14 @@ function App() {
                       </div>
                     )
                   })}
+                  {pluginDebug && (
+                    <div className="plugin-debug-info">
+                      <span>状态: {pluginDebug.state}</span>
+                      <span>身份: {pluginDebug.isHost ? '房主' : '加入者'}</span>
+                      <span>房主IP: {pluginDebug.hostIP || '(空)'}</span>
+                      <span>我的IP: {pluginDebug.myIP || '(空)'}</span>
+                    </div>
+                  )}
                 </div>
               )}
             </>
