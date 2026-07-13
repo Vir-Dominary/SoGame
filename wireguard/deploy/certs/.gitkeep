@@ -1,0 +1,4 @@
+# 将 SSL 证书文件放在此目录：
+# - fullchain.pem
+# - privkey.pem
+# Docker Compose 会自动挂载到 nginx 容器的 /etc/nginx/certs/

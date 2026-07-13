@@ -1,0 +1,14 @@
+# 依赖
+node_modules/
+
+# 构建产物
+web/dist/
+*.exe
+
+# 测试数据库
+*.db
+*.db-wal
+*.db-shm
+
+# 本地配置
+.env.local

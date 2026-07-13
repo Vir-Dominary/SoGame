@@ -1,0 +1,15 @@
+# --- Build stage ---
+FROM node:18-alpine AS builder
+
+WORKDIR /build
+
+COPY package.json package-lock.json* ./
+RUN npm install
+
+COPY . ./
+RUN npm run build
+
+# --- Runtime stage: nginx serving static files ---
+FROM nginx:alpine
+
+COPY --from=builder /build/dist /web
