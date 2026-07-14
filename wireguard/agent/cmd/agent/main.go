@@ -15,6 +15,7 @@ import (
 	"sogame/wireguard/agent/internal/keys"
 	"sogame/wireguard/agent/internal/logger"
 	"sogame/wireguard/agent/internal/models"
+	"sogame/wireguard/agent/internal/stun"
 	"sogame/wireguard/agent/internal/wg"
 	wslistener "sogame/wireguard/agent/internal/ws"
 )
@@ -30,12 +31,13 @@ type Agent struct {
 	pingStop  chan struct{}
 
 	// 当前房间状态（受 mu 保护）
-	connected bool
-	roomID    string
-	virtualIP string
-	subnet    string
-	serverURL string
-	nickname  string
+	connected    bool
+	roomID       string
+	virtualIP    string
+	subnet       string
+	serverURL    string
+	nickname     string
+	lastEndpoint string // STUN 探测到的公网 endpoint（受 mu 保护）
 }
 
 // New 创建 Agent
@@ -195,9 +197,10 @@ func (a *Agent) handleCreate(w http.ResponseWriter, r *http.Request) {
 		logger.Warnf("websocket connect: %v", err)
 	}
 
-	// 启动心跳
+	// 启动心跳和 STUN 探测
 	a.pingStop = make(chan struct{})
 	go a.pingLoop(a.pingStop)
+	go a.stunLoop(a.pingStop)
 
 	a.mu.Lock()
 	a.connected = true
@@ -291,9 +294,10 @@ func (a *Agent) handleConnect(w http.ResponseWriter, r *http.Request) {
 		logger.Warnf("websocket connect: %v", err)
 	}
 
-	// 启动心跳
+	// 启动心跳和 STUN 探测
 	a.pingStop = make(chan struct{})
 	go a.pingLoop(a.pingStop)
+	go a.stunLoop(a.pingStop)
 
 	a.mu.Lock()
 	a.connected = true
@@ -410,17 +414,51 @@ func (a *Agent) pingLoop(stop <-chan struct{}) {
 			a.mu.Lock()
 			cli := a.client
 			connected := a.connected
+			endpoint := a.lastEndpoint
 			a.mu.Unlock()
 
 			if cli != nil && connected {
 				if err := cli.Ping(models.PingRequest{
 					PublicKey: a.keyPair.PublicKey,
-					Endpoint:  "",
+					Endpoint:  endpoint,
 				}); err != nil {
 					logger.Warnf("ping: %v", err)
 				}
 			}
 		}
+	}
+}
+
+// stunLoop 定期通过 STUN 探测公网 endpoint，首次立即探测，之后每 5 分钟刷新
+func (a *Agent) stunLoop(stop <-chan struct{}) {
+	a.discoverEndpoint()
+
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			a.discoverEndpoint()
+		}
+	}
+}
+
+// discoverEndpoint 通过 STUN 探测公网 endpoint 并缓存
+func (a *Agent) discoverEndpoint() {
+	ep, err := stun.DiscoverPublicIP(stun.DefaultServers, 3*time.Second, 30)
+	if err != nil {
+		logger.Warnf("stun discover: %v", err)
+		return
+	}
+	a.mu.Lock()
+	old := a.lastEndpoint
+	a.lastEndpoint = ep
+	a.mu.Unlock()
+	if old != ep {
+		logger.Infof("public endpoint updated: %s -> %s", old, ep)
 	}
 }
 

@@ -16,21 +16,21 @@ const InterfaceName = "sogame"
 
 // Peer 表示一个 WireGuard 对等节点
 type Peer struct {
-	PublicKey   string
-	VirtualIP   string
-	Endpoint    string
+	PublicKey    string
+	VirtualIP    string
+	Endpoint     string
 	PresharedKey string
 }
 
 // Manager 管理 WireGuard 接口和节点
 type Manager struct {
-	mu          sync.Mutex
-	configDir   string
-	privateKey  string
-	virtualIP   string
-	subnet      string
-	peers       map[string]*Peer // public_key -> Peer
-	connected   bool
+	mu         sync.Mutex
+	configDir  string
+	privateKey string
+	virtualIP  string
+	subnet     string
+	peers      map[string]*Peer // public_key -> Peer
+	connected  bool
 }
 
 // New 创建 WireGuard 管理器
@@ -105,6 +105,7 @@ func (m *Manager) AddPeer(peer *Peer) error {
 		"set", InterfaceName,
 		"peer", peer.PublicKey,
 		"allowed-ips", peer.VirtualIP + "/32",
+		"persistent-keepalive", "25",
 	}
 	if peer.Endpoint != "" {
 		args = append(args, "endpoint", peer.Endpoint)
