@@ -46,9 +46,9 @@ chinese.ConfirmUninstall=确定要卸载 {#MyAppName} 吗？
 [Files]
 Source: "..\build\bin\SoGame.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\build\bin\edge.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
-Source: "tap\OemWin2k.inf"; DestDir: "{app}\tap"; Flags: ignoreversion
-Source: "tap\tap0901.cat"; DestDir: "{app}\tap"; Flags: ignoreversion
-Source: "tap\tap0901.sys"; DestDir: "{app}\tap"; Flags: ignoreversion
+Source: "tap\amd64\OemVista.inf"; DestDir: "{app}\tap\amd64"; Flags: ignoreversion
+Source: "tap\amd64\tap0901.cat"; DestDir: "{app}\tap\amd64"; Flags: ignoreversion
+Source: "tap\amd64\tap0901.sys"; DestDir: "{app}\tap\amd64"; Flags: ignoreversion
 Source: "tap\tapinstall.exe"; DestDir: "{app}\tap"; Flags: ignoreversion
 
 [Icons]

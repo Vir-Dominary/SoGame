@@ -92,7 +92,7 @@ func checkAssets(args []string) error {
 
 	paths := []string{
 		filepath.Join(*tapDir, "tapinstall.exe"),
-		filepath.Join(*tapDir, "OemWin2k.inf"),
+		filepath.Join(*tapDir, "amd64", "OemVista.inf"),
 	}
 	for _, p := range paths {
 		abs, _ := filepath.Abs(p)

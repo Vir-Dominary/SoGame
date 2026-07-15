@@ -354,7 +354,7 @@ func installTapDriver() (TapInstallStatus, error) {
 
 	logger.Infof("正在安装 TAP 驱动，驱动目录: %s", tapDir)
 
-	infPath := filepath.Join(tapDir, "OemWin2k.inf")
+	infPath := filepath.Join(tapDir, "OemVista.inf")
 
 	logger.Infof("  添加 TAP 驱动到驱动存储...")
 	pnputilCmd := exec.Command("pnputil", "/add-driver", infPath, "/install")
@@ -397,7 +397,7 @@ func createSoGameAdapter() (TapInstallStatus, error) {
 		return TapInstallFailed, err
 	}
 
-	infPath := filepath.Join(tapDir, "OemWin2k.inf")
+	infPath := filepath.Join(tapDir, "OemVista.inf")
 
 	tapinstallPath, err := tapadapter.FindTapinstall(tapDir)
 	if err != nil {
