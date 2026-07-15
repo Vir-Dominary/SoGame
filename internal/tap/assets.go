@@ -37,23 +37,3 @@ func FindDriverDir(baseDir, wd string) (string, error) {
 	}
 	return "", fmt.Errorf("未找到 TAP 驱动文件目录 (%s/%s)", driverSubDir, driverINFName)
 }
-
-// FindTapinstall 查找 tapinstall.exe 工具。
-// tapDir 通常是驱动目录（amd64 子目录），tapinstall.exe 一般位于其父目录。
-func FindTapinstall(tapDir string) (string, error) {
-	candidates := []string{
-		filepath.Join(tapDir, "tapinstall.exe"),
-		filepath.Join(tapDir, "..", "tapinstall.exe"),
-		filepath.Join(tapDir, "devcon.exe"),
-		filepath.Join(tapDir, "..", "devcon.exe"),
-		`C:\Program Files\TAP-Windows\bin\tapinstall.exe`,
-		`C:\Program Files\OpenVPN\bin\tapinstall.exe`,
-	}
-	for _, p := range candidates {
-		abs, _ := filepath.Abs(p)
-		if _, err := os.Stat(abs); err == nil {
-			return abs, nil
-		}
-	}
-	return "", fmt.Errorf("未找到 tapinstall.exe")
-}

@@ -49,7 +49,6 @@ Source: "..\build\bin\edge.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "tap\amd64\OemVista.inf"; DestDir: "{app}\tap\amd64"; Flags: ignoreversion
 Source: "tap\amd64\tap0901.cat"; DestDir: "{app}\tap\amd64"; Flags: ignoreversion
 Source: "tap\amd64\tap0901.sys"; DestDir: "{app}\tap\amd64"; Flags: ignoreversion
-Source: "tap\tapinstall.exe"; DestDir: "{app}\tap"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
