@@ -17,9 +17,10 @@ const driverSubDir = "amd64"
 // 返回的目录直接包含 OemVista.inf 以及 tap0901.cat/tap0901.sys。
 func FindDriverDir(baseDir, wd string) (string, error) {
 	candidates := []string{
-		filepath.Join(baseDir, "tap"),
-		filepath.Join(baseDir, "installer", "tap"),
-		filepath.Join(baseDir, "..", "installer", "tap"),
+		filepath.Join(baseDir, "tap"),                          // 生产安装: {app}/tap/amd64
+		filepath.Join(baseDir, "installer", "tap"),             // 项目根直接运行
+		filepath.Join(baseDir, "..", "installer", "tap"),       // build/bin -> build/installer/tap
+		filepath.Join(baseDir, "..", "..", "installer", "tap"), // 开发环境: build/bin -> 项目根/installer/tap
 	}
 	if wd != "" && wd != baseDir {
 		candidates = append(candidates,

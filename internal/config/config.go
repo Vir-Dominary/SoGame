@@ -29,6 +29,9 @@ type Config struct {
 	Supernode string `yaml:"supernode"`
 	IP        string `yaml:"ip"`
 	MgmtPort  int    `yaml:"-"` // n2n edge 管理端口（运行时生成，不持久化）
+	// TapUpgradeDismissedVer 记录用户选择"不再提示"时随程序分发的 TAP 驱动版本。
+	// 当随程序分发的版本变化（程序升级）时，会重新触发升级提示。
+	TapUpgradeDismissedVer string `yaml:"tap_upgrade_dismissed_ver,omitempty"`
 }
 
 // encryptor 全局加密器

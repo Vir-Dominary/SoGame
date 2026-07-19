@@ -724,3 +724,219 @@ body {
   background: rgba(61, 220, 132, 0.15);
   border-color: #3ddc84;
 }
+
+/* TAP 驱动升级弹窗 */
+.tap-upgrade-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: tap-fade-in 0.2s ease;
+}
+
+@keyframes tap-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.tap-upgrade-modal {
+  width: 340px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  animation: tap-slide-up 0.25s ease;
+}
+
+@keyframes tap-slide-up {
+  from { transform: translateY(12px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.tap-upgrade-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(240, 160, 48, 0.12);
+  border: 1px solid rgba(240, 160, 48, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #f0a030;
+}
+
+.tap-upgrade-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #e6edf3;
+  letter-spacing: 0.3px;
+}
+
+.tap-upgrade-desc {
+  font-size: 12px;
+  color: #8b949e;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.tap-upgrade-versions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.tap-upgrade-ver-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: center;
+}
+
+.tap-upgrade-ver-label {
+  font-size: 10px;
+  color: #6e7681;
+  letter-spacing: 0.5px;
+}
+
+.tap-upgrade-ver-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e6edf3;
+  font-family: 'Consolas', 'Monaco', monospace;
+}
+
+.tap-upgrade-ver-value.old {
+  color: #f85149;
+}
+
+.tap-upgrade-ver-value.new {
+  color: #3ddc84;
+}
+
+.tap-upgrade-arrow {
+  color: #484f58;
+  font-size: 16px;
+}
+
+.tap-upgrade-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tap-upgrade-btn-primary {
+  background: rgba(61, 220, 132, 0.15);
+  border: 1px solid rgba(61, 220, 132, 0.4);
+  border-radius: 8px;
+  padding: 10px 0;
+  color: #3ddc84;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  outline: none;
+}
+
+.tap-upgrade-btn-primary:hover:not(:disabled) {
+  background: rgba(61, 220, 132, 0.25);
+  border-color: #3ddc84;
+}
+
+.tap-upgrade-btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tap-upgrade-btn-secondary {
+  background: transparent;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 8px 0;
+  color: #8b949e;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  outline: none;
+}
+
+.tap-upgrade-btn-secondary:hover {
+  border-color: #484f58;
+  color: #c9d1d9;
+}
+
+.tap-upgrade-btn-text {
+  background: transparent;
+  border: none;
+  color: #6e7681;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 4px 0;
+  transition: color 0.2s;
+  outline: none;
+}
+
+.tap-upgrade-btn-text:hover {
+  color: #8b949e;
+}
+
+.tap-upgrade-status {
+  font-size: 12px;
+  color: #f0a030;
+  text-align: center;
+  min-height: 16px;
+}
+
+.tap-upgrade-status.error {
+  color: #f85149;
+}
+
+.tap-upgrade-status.success {
+  color: #3ddc84;
+}
+
+/* 引擎版本徽标 */
+.engine-version-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 6px;
+}
+
+.engine-version-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.3px;
+}
+
+.engine-version-tag.tag-latest {
+  color: #3ddc84;
+  background: rgba(61, 220, 132, 0.12);
+  border: 1px solid rgba(61, 220, 132, 0.3);
+}
+
+.engine-version-tag.tag-upgrade {
+  color: #f0a030;
+  background: rgba(240, 160, 48, 0.12);
+  border: 1px solid rgba(240, 160, 48, 0.3);
+}
+
+.engine-version-tag.tag-missing {
+  color: #f85149;
+  background: rgba(248, 81, 73, 0.12);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+}

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -19,6 +20,7 @@ import (
 	"sogame/internal/logger"
 	"sogame/internal/n2n"
 	"sogame/internal/platform"
+	tapadapter "sogame/internal/tap"
 )
 
 type AppState string
@@ -457,13 +459,21 @@ func (a *App) OpenLogs() error {
 }
 
 type AboutInfo struct {
-	AppName       string `json:"appName"`
-	AppVersion    string `json:"appVersion"`
-	AppAuthor     string `json:"appAuthor"`
-	AppURL        string `json:"appURL"`
-	AppBilibili   string `json:"bilibiliURL"`
-	AppDesc       string `json:"appDesc"`
-	AppSponsorURL string `json:"sponsorURL"`
+	AppName         string `json:"appName"`
+	AppVersion      string `json:"appVersion"`
+	AppAuthor       string `json:"appAuthor"`
+	AppURL          string `json:"appURL"`
+	AppBilibili     string `json:"bilibiliURL"`
+	AppDesc         string `json:"appDesc"`
+	AppSponsorURL   string `json:"sponsorURL"`
+	N2NVersion      string `json:"n2nVersion"`      // edge.exe 实际版本号
+	N2NBundledVer   string `json:"n2nBundledVer"`   // 随程序分发的版本号
+	N2NNeedsUpgrade bool   `json:"n2nNeedsUpgrade"` // edge.exe 是否需要升级
+	N2NFound        bool   `json:"n2nFound"`        // 是否找到 edge.exe
+	TapVersion      string `json:"tapVersion"`      // 已安装 TAP 驱动版本号
+	TapBundledVer   string `json:"tapBundledVer"`   // 随程序分发的 TAP 驱动版本号
+	TapNeedsUpgrade bool   `json:"tapNeedsUpgrade"` // TAP 驱动是否需要升级
+	TapAdapterFound bool   `json:"tapAdapterFound"` // 是否找到 TAP 适配器
 }
 
 type ConnectionDetails struct {
@@ -504,14 +514,24 @@ func (a *App) GetConnectionDetails() ConnectionDetails {
 }
 
 func (a *App) GetAboutInfo() AboutInfo {
+	n2nInfo := n2n.GetN2NVersionInfo()
+	tapStatus, _ := tapadapter.CheckTapDriverStatus()
 	return AboutInfo{
-		AppName:       config.AppName,
-		AppVersion:    config.AppVersion,
-		AppAuthor:     config.AppAuthor,
-		AppURL:        config.AppURL,
-		AppBilibili:   config.AppBilibili,
-		AppDesc:       config.AppDesc,
-		AppSponsorURL: config.AppSponsorURL,
+		AppName:         config.AppName,
+		AppVersion:      config.AppVersion,
+		AppAuthor:       config.AppAuthor,
+		AppURL:          config.AppURL,
+		AppBilibili:     config.AppBilibili,
+		AppDesc:         config.AppDesc,
+		AppSponsorURL:   config.AppSponsorURL,
+		N2NVersion:      n2nInfo.InstalledVersion,
+		N2NBundledVer:   n2nInfo.BundledVersion,
+		N2NNeedsUpgrade: n2nInfo.NeedsUpgrade,
+		N2NFound:        n2nInfo.Found,
+		TapVersion:      tapStatus.InstalledVersion,
+		TapBundledVer:   tapStatus.BundledVersion,
+		TapNeedsUpgrade: tapStatus.NeedsUpgrade,
+		TapAdapterFound: tapStatus.AdapterExists,
 	}
 }
 
@@ -524,4 +544,87 @@ func (a *App) GetLogContent() string {
 		return fmt.Sprintf("读取日志失败: %v", err)
 	}
 	return content
+}
+
+// TapUpgradeInfo 是返回给前端的 TAP 驱动升级检查结果。
+type TapUpgradeInfo struct {
+	NeedsUpgrade     bool   `json:"needsUpgrade"`
+	InstalledVersion string `json:"installedVersion"`
+	BundledVersion   string `json:"bundledVersion"`
+	Dismissed        bool   `json:"dismissed"` // 用户是否已对当前分发版本选择"不再提示"
+}
+
+// CheckTapDriverUpgrade 在应用启动时由前端调用，检测系统中已安装的 TAP 驱动版本。
+// 仅当存在 TAP 适配器、已安装版本低于随程序分发版本、且用户未对当前分发版本选择"不再提示"时，
+// 返回 NeedsUpgrade=true。无 TAP 适配器时不触发升级提示（由后续 EnsureSoGameAdapter 流程处理）。
+func (a *App) CheckTapDriverUpgrade() TapUpgradeInfo {
+	a.mu.Lock()
+	dismissedVer := a.cfg.TapUpgradeDismissedVer
+	a.mu.Unlock()
+
+	status, err := tapadapter.CheckTapDriverStatus()
+	if err != nil {
+		logger.Warnf("CheckTapDriverUpgrade: %v", err)
+		return TapUpgradeInfo{BundledVersion: tapadapter.BundledDriverVersion}
+	}
+
+	info := TapUpgradeInfo{
+		NeedsUpgrade:     status.NeedsUpgrade,
+		InstalledVersion: status.InstalledVersion,
+		BundledVersion:   status.BundledVersion,
+	}
+	if status.NeedsUpgrade && dismissedVer == status.BundledVersion {
+		info.Dismissed = true
+		info.NeedsUpgrade = false
+	}
+	return info
+}
+
+// UpgradeTapDriver 执行 TAP 驱动升级流程：移除旧适配器实例 → 安装新驱动到驱动存储 →
+// 创建新适配器实例。升级完成后调用 EnsureSoGameAdapter 完成重命名，确保新网卡可被选中。
+func (a *App) UpgradeTapDriver() error {
+	logger.Infof("用户触发 TAP 驱动升级")
+	if err := tapadapter.UpgradeTapDriver(); err != nil {
+		logger.Errorf("TAP 驱动升级失败: %v", err)
+		return fmt.Errorf("驱动升级失败: %w", err)
+	}
+
+	// 等待新创建的 TAP 适配器完成 PnP 初始化。
+	// CreateAdapterViaSetupAPI 返回时设备实例已注册，但 Windows PnP 管理器尚未完成
+	// 网络接口表刷新和 netshell 改名就绪，立即调用 HrRenameConnection 会返回 "Incorrect function"。
+	logger.Infof("等待新 TAP 适配器完成 PnP 初始化...")
+	time.Sleep(6 * time.Second)
+
+	// 升级后新适配器为默认名，调用 EnsureSoGameAdapter 认领并重命名为 SoGame-VPN
+	status, err := platform.EnsureSoGameAdapter()
+	if err != nil {
+		return fmt.Errorf("升级后配置适配器失败: %w", err)
+	}
+	if status != platform.TapInstallSuccess && status != platform.TapAlreadyInstalled {
+		return fmt.Errorf("升级后适配器状态异常: %v", status)
+	}
+
+	// 清除"不再提示"标记，因为已升级到当前版本
+	a.mu.Lock()
+	a.cfg.TapUpgradeDismissedVer = ""
+	saveErr := config.SaveCached(a.cfg)
+	a.mu.Unlock()
+	if saveErr != nil {
+		logger.Warnf("清除升级忽略标记失败: %v", saveErr)
+	}
+	return nil
+}
+
+// DismissTapUpgrade 记录用户对当前分发版本的"不再提示"选择。
+// 当随程序分发的驱动版本变化（程序升级）时，会重新触发提示。
+func (a *App) DismissTapUpgrade() error {
+	a.mu.Lock()
+	a.cfg.TapUpgradeDismissedVer = tapadapter.BundledDriverVersion
+	err := config.SaveCached(a.cfg)
+	a.mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("保存设置失败: %w", err)
+	}
+	logger.Infof("用户已选择不再提示 TAP 驱动升级（版本 %s）", tapadapter.BundledDriverVersion)
+	return nil
 }

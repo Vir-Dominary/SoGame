@@ -4,6 +4,7 @@ package tap
 
 import (
 	"fmt"
+	"unsafe"
 
 	"sogame/internal/logger"
 
@@ -39,7 +40,7 @@ const tapRootHardwareID = "root\\tap0901"
 //  8. 注册 co-installer（非致命）
 //  9. 安装接口（非致命）
 // 10. 安装设备（核心步骤）
-func CreateAdapterViaSetupAPI() error {
+func CreateAdapterViaSetupAPI() (retErr error) {
 	// 步骤 1: 创建空的设备信息集
 	devInfo, err := windows.SetupDiCreateDeviceInfoListEx(setupapiNetClassGUID, 0, "")
 	if err != nil {
@@ -66,6 +67,18 @@ func CreateAdapterViaSetupAPI() error {
 		return fmt.Errorf("DIF_REGISTERDEVICE: %w", err)
 	}
 
+	// 设备已注册到 PnP 管理器。后续安装步骤若失败，需调用 DIF_REMOVE 清理半成品设备实例，
+	// 否则会遗留不可用的设备节点污染系统：多次失败会累积垃圾设备，且 before/after 快照
+	// 差分会把这些半成品当作"新适配器"，导致 FindNewWindowsAdapter 误判。
+	defer func() {
+		if retErr == nil {
+			return
+		}
+		if rmErr := removeRegisteredDevice(devInfo, devInfoData); rmErr != nil {
+			logger.Warnf("  SetupAPI: 清理半成品设备实例失败: %v", rmErr)
+		}
+	}()
+
 	// 步骤 5: 构建兼容驱动列表（搜索驱动存储）
 	if err := devInfo.BuildDriverInfoList(devInfoData, windows.SPDIT_COMPATDRIVER); err != nil {
 		return fmt.Errorf("BuildDriverInfoList: %w", err)
@@ -75,7 +88,7 @@ func CreateAdapterViaSetupAPI() error {
 	// 步骤 6: 查找并选中 TAP-Windows 驱动
 	drvInfoData, err := findTapCompatibleDriver(devInfo, devInfoData)
 	if err != nil {
-		return err
+		return fmt.Errorf("查找 TAP 驱动失败: %w", err)
 	}
 	if err := devInfo.SetSelectedDriver(devInfoData, drvInfoData); err != nil {
 		return fmt.Errorf("SetSelectedDriver: %w", err)
@@ -103,6 +116,23 @@ func CreateAdapterViaSetupAPI() error {
 	}
 
 	logger.Infof("  SetupAPI: TAP 设备创建完成")
+	return nil
+}
+
+// removeRegisteredDevice 调用 DIF_REMOVE 移除已注册的设备实例。
+// 用于安装流程中途失败时清理半成品设备，避免遗留不可用设备节点。
+func removeRegisteredDevice(devInfo windows.DevInfo, devInfoData *windows.DevInfoData) error {
+	params := windows.RemoveDeviceParams{
+		ClassInstallHeader: *windows.MakeClassInstallHeader(windows.DIF_REMOVE),
+		Scope:              windows.DI_REMOVEDEVICE_GLOBAL,
+		HwProfile:          0,
+	}
+	if err := devInfo.SetClassInstallParams(devInfoData, &params.ClassInstallHeader, uint32(unsafe.Sizeof(params))); err != nil {
+		return fmt.Errorf("SetClassInstallParams(DIF_REMOVE): %w", err)
+	}
+	if err := devInfo.CallClassInstaller(windows.DIF_REMOVE, devInfoData); err != nil {
+		return fmt.Errorf("CallClassInstaller(DIF_REMOVE): %w", err)
+	}
 	return nil
 }
 
