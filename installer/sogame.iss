@@ -1,5 +1,5 @@
 #define MyAppName "SoGame"
-#define MyAppVersion "1.3"
+#define MyAppVersion "1.4"
 #define MyAppPublisher "vir_dominary"
 #define MyAppExeName "SoGame.exe"
 
@@ -29,6 +29,7 @@ UninstallDisplayName={#MyAppName}
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 ShowLanguageDialog=no
+CloseApplications=force
 
 [Languages]
 Name: "chinese"; MessagesFile: "compiler:Default.isl"
@@ -44,12 +45,14 @@ chinese.FinishedRestartLabel=要完成安装，需要重新启动计算机。是
 chinese.ConfirmUninstall=确定要卸载 {#MyAppName} 吗？
 
 [Files]
+; 主程序（wails build 输出到 build/bin/）
 Source: "..\build\bin\SoGame.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\build\bin\edge.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
-Source: "tap\OemWin2k.inf"; DestDir: "{app}\tap"; Flags: ignoreversion
-Source: "tap\tap0901.cat"; DestDir: "{app}\tap"; Flags: ignoreversion
-Source: "tap\tap0901.sys"; DestDir: "{app}\tap"; Flags: ignoreversion
-Source: "tap\tapinstall.exe"; DestDir: "{app}\tap"; Flags: ignoreversion
+; n2n edge 二进制（位于项目根 bin/）
+Source: "..\bin\edge.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
+; TAP-Windows 驱动文件（随程序分发，运行时按需安装）
+Source: "tap\amd64\OemVista.inf"; DestDir: "{app}\tap\amd64"; Flags: ignoreversion
+Source: "tap\amd64\tap0901.cat"; DestDir: "{app}\tap\amd64"; Flags: ignoreversion
+Source: "tap\amd64\tap0901.sys"; DestDir: "{app}\tap\amd64"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -58,35 +61,29 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加选项:"; Flags: checkedonce
+Name: "runafterinstall"; Description: "安装完成后启动 {#MyAppName}"; GroupDescription: "其他选项:"; Flags: checkedonce
+
+[Run]
+Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Tasks: runafterinstall; Flags: nowait postinstall skipifsilent
 
 [Code]
 
-function IsTapInstalled(): Boolean;
+// 实际开始安装文件前关闭正在运行的 SoGame，避免文件被占用导致安装失败
+// 使用 CurStepChanged 而非 PrepareToInstall，因为后者在 Inno Setup 6.x
+// 中签名变为 4 个参数(var Name, var TmpIsmpPath, var TmpDownloadPath,
+// var RestartAfterInstall)，跨版本兼容性差。
+// CurStepChanged 的签名在 Inno Setup 5/6 中保持一致。
+procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
-  Output: string;
 begin
-  Result := False;
-  if Exec('powershell', '-Command "Get-NetAdapter -IncludeHidden | Where-Object { $_.InterfaceDescription -match ''tap0901|TAP-Windows'' } | Measure-Object | Select-Object -ExpandProperty Count"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  if CurStep = ssInstall then
   begin
-    if (ResultCode = 0) and (Output <> '') and (StrToIntDef(Output, 0) > 0) then
-      Result := True;
+    Exec('taskkill', '/IM SoGame.exe /F', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;
 
-function ShouldInstallTap(): Boolean;
-begin
-  Result := not IsTapInstalled();
-end;
-
-procedure CurStepChanged(CurStep: TSetupStep);
-begin
-  if (CurStep = ssPostInstall) then
-  begin
-    Log('Installation completed. TAP driver installation is handled by the application at runtime.');
-  end;
-end;
-
+// 卸载时询问是否删除用户配置和密钥
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   ConfigDir: string;

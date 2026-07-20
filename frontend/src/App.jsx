@@ -9,6 +9,9 @@ import {
   OpenLogs,
   GetAboutInfo,
   GetConnectionDetails,
+  CheckTapDriverUpgrade,
+  UpgradeTapDriver,
+  DismissTapUpgrade,
 } from '../wailsjs/go/app/App'
 import { BrowserOpenURL, ClipboardSetText, EventsOn } from '../wailsjs/runtime/runtime'
 
@@ -37,6 +40,9 @@ function App() {
   const [connDetails, setConnDetails] = useState(null)
   const [ipCopied, setIpCopied] = useState(false)
   const [showSponsor, setShowSponsor] = useState(false)
+  const [tapUpgrade, setTapUpgrade] = useState(null)
+  const [tapUpgrading, setTapUpgrading] = useState(false)
+  const [tapUpgradeStatus, setTapUpgradeStatus] = useState('')
   const pollRef = useRef(null)
   const timerRef = useRef(null)
   const latencyRef = useRef(null)
@@ -55,6 +61,13 @@ function App() {
 
     // 预加载关于信息（作者链接、赞助链接）
     GetAboutInfo().then(info => setAboutInfo(info)).catch(e => console.error('GetAboutInfo failed:', e))
+
+    // 首次启动时检测 TAP 驱动版本，若存在旧版本则弹出升级提示
+    CheckTapDriverUpgrade().then(info => {
+      if (info && info.needsUpgrade) {
+        setTapUpgrade(info)
+      }
+    }).catch(e => console.error('CheckTapDriverUpgrade failed:', e))
 
     // 监听后端异步推送的延迟数据
     EventsOn('nodeLatencyUpdated', (data) => {
@@ -217,6 +230,45 @@ function App() {
     }
   }
 
+  const handleUpgradeTap = async () => {
+    setTapUpgrading(true)
+    setTapUpgradeStatus('正在升级 TAP 驱动，请稍候...')
+    try {
+      await UpgradeTapDriver()
+      setTapUpgradeStatus('升级成功，新网卡已就绪')
+      // 升级成功后立即重新加载关于信息，刷新 TAP 版本显示，
+      // 避免用户需要重启程序才能看到更新后的版本号。
+      // 后端 UpgradeTapDriver 已等待 PnP 初始化并完成 EnsureSoGameAdapter，
+      // 此时 CheckTapDriverStatus 能查询到新驱动版本。
+      GetAboutInfo()
+        .then(info => setAboutInfo(info))
+        .catch(e => console.error('GetAboutInfo refresh after upgrade failed:', e))
+      setTimeout(() => {
+        setTapUpgrade(null)
+        setTapUpgradeStatus('')
+      }, 1500)
+    } catch (e) {
+      setTapUpgradeStatus(`升级失败: ${e}`)
+    } finally {
+      setTapUpgrading(false)
+    }
+  }
+
+  const handleIgnoreTapUpgrade = () => {
+    setTapUpgrade(null)
+    setTapUpgradeStatus('')
+  }
+
+  const handleDismissTapUpgrade = async () => {
+    try {
+      await DismissTapUpgrade()
+      setTapUpgrade(null)
+      setTapUpgradeStatus('')
+    } catch (e) {
+      console.error('DismissTapUpgrade failed:', e)
+    }
+  }
+
   const st = STATES[status] || STATES.disconnected
   const isConnected = status === 'connected'
   const isConnecting = status === 'connecting'
@@ -224,6 +276,62 @@ function App() {
 
   return (
     <div className="app">
+      {tapUpgrade && (
+        <div className="tap-upgrade-overlay">
+          <div className="tap-upgrade-modal">
+            <div className="tap-upgrade-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+            </div>
+            <div className="tap-upgrade-title">TAP 驱动升级可用</div>
+            <p className="tap-upgrade-desc">
+              检测到系统中安装的 TAP-Windows 驱动版本较低，升级后可提升网络稳定性和兼容性。升级过程中会短暂断开网络，请勿关闭程序。
+            </p>
+            <div className="tap-upgrade-versions">
+              <div className="tap-upgrade-ver-block">
+                <span className="tap-upgrade-ver-label">当前版本</span>
+                <span className="tap-upgrade-ver-value old">{tapUpgrade.installedVersion || '未知'}</span>
+              </div>
+              <span className="tap-upgrade-arrow">→</span>
+              <div className="tap-upgrade-ver-block">
+                <span className="tap-upgrade-ver-label">最新版本</span>
+                <span className="tap-upgrade-ver-value new">{tapUpgrade.bundledVersion}</span>
+              </div>
+            </div>
+            <div className="tap-upgrade-actions">
+              <button
+                className="tap-upgrade-btn-primary"
+                onClick={handleUpgradeTap}
+                disabled={tapUpgrading}
+              >
+                {tapUpgrading ? '升级中...' : '立即升级'}
+              </button>
+              <button
+                className="tap-upgrade-btn-secondary"
+                onClick={handleIgnoreTapUpgrade}
+                disabled={tapUpgrading}
+              >
+                本次忽略
+              </button>
+              <button
+                className="tap-upgrade-btn-text"
+                onClick={handleDismissTapUpgrade}
+                disabled={tapUpgrading}
+              >
+                不再提示
+              </button>
+            </div>
+            {tapUpgradeStatus && (
+              <div className={`tap-upgrade-status ${tapUpgradeStatus.includes('失败') ? 'error' : tapUpgradeStatus.includes('成功') ? 'success' : ''}`}>
+                {tapUpgradeStatus}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       <div className="app-inner">
         <div className="header">
           <div className="logo">
@@ -437,7 +545,45 @@ function App() {
                 </div>
                 <div className="info-row">
                   <span className="info-label">引擎</span>
-                  <span className="info-value">Powered by n2n</span>
+                  <span className="info-value">
+                    Powered by n2n
+                    {aboutInfo.n2nFound && aboutInfo.n2nVersion && (
+                      <span className="engine-version-badge">
+                        v{aboutInfo.n2nVersion}
+                        {aboutInfo.n2nNeedsUpgrade ? (
+                          <span className="engine-version-tag tag-upgrade">需升级</span>
+                        ) : (
+                          <span className="engine-version-tag tag-latest">最新</span>
+                        )}
+                      </span>
+                    )}
+                    {!aboutInfo.n2nFound && (
+                      <span className="engine-version-badge">
+                        <span className="engine-version-tag tag-missing">未找到</span>
+                      </span>
+                    )}
+                  </span>
+                </div>
+                <div className="info-row">
+                  <span className="info-label">网卡</span>
+                  <span className="info-value">
+                    TAP-Windows Adapter V9
+                    {aboutInfo.tapAdapterFound && aboutInfo.tapVersion && (
+                      <span className="engine-version-badge">
+                        v{aboutInfo.tapVersion}
+                        {aboutInfo.tapNeedsUpgrade ? (
+                          <span className="engine-version-tag tag-upgrade">需升级</span>
+                        ) : (
+                          <span className="engine-version-tag tag-latest">最新</span>
+                        )}
+                      </span>
+                    )}
+                    {!aboutInfo.tapAdapterFound && (
+                      <span className="engine-version-badge">
+                        <span className="engine-version-tag tag-missing">未安装</span>
+                      </span>
+                    )}
+                  </span>
                 </div>
                 <p className="info-tip">如果使用中遇到任何问题，欢迎联系作者解决</p>
                 <div className="info-row">

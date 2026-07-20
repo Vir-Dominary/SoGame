@@ -354,7 +354,7 @@ func installTapDriver() (TapInstallStatus, error) {
 
 	logger.Infof("正在安装 TAP 驱动，驱动目录: %s", tapDir)
 
-	infPath := filepath.Join(tapDir, "OemWin2k.inf")
+	infPath := filepath.Join(tapDir, "OemVista.inf")
 
 	logger.Infof("  添加 TAP 驱动到驱动存储...")
 	pnputilCmd := exec.Command("pnputil", "/add-driver", infPath, "/install")
@@ -383,42 +383,18 @@ func installTapDriver() (TapInstallStatus, error) {
 	return TapInstallSuccess, nil
 }
 
-// createSoGameAdapter 创建 TAP 适配器实例并重命名为 SoGame-VPN
+// createSoGameAdapter 通过 SetupAPI 创建 TAP 适配器实例并重命名为 SoGame-VPN
 func createSoGameAdapter() (TapInstallStatus, error) {
-	exePath, err := os.Executable()
-	if err != nil {
-		return TapInstallFailed, fmt.Errorf("failed to get executable path: %w", err)
-	}
-	baseDir := filepath.Dir(exePath)
-	wd, _ := os.Getwd()
-
-	tapDir, err := tapadapter.FindDriverDir(baseDir, wd)
-	if err != nil {
-		return TapInstallFailed, err
-	}
-
-	infPath := filepath.Join(tapDir, "OemWin2k.inf")
-
-	tapinstallPath, err := tapadapter.FindTapinstall(tapDir)
-	if err != nil {
-		return TapInstallFailed, err
-	}
-
-	logger.Infof("  创建 TAP 适配器实例: %s", tapinstallPath)
+	logger.Infof("  通过 SetupAPI 创建 TAP 适配器实例")
 	before, err := tapadapter.ListWindowsAdapters()
 	if err != nil {
 		return TapInstallFailed, fmt.Errorf("获取 TAP 安装前快照失败: %w", err)
 	}
 
-	installCmd := exec.Command(tapinstallPath, "install", infPath, "tap0901")
-	installCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	installOutput, installErr := installCmd.CombinedOutput()
+	if err := tapadapter.CreateAdapterViaSetupAPI(); err != nil {
+		logger.Warnf("  SetupAPI 创建 TAP 适配器失败: %v", err)
 
-	if installErr != nil {
-		outputStr := strings.TrimSpace(string(installOutput))
-		logger.Warnf("  tapinstall install 失败: %v, 输出: %s", installErr, outputStr)
-
-		logger.Infof("  重试 tapinstall install...")
+		logger.Infof("  重试 SetupAPI 创建...")
 		time.Sleep(2 * time.Second)
 
 		// 重新采集 before 快照：第一次安装可能已创建半成品实例，
@@ -428,18 +404,13 @@ func createSoGameAdapter() (TapInstallStatus, error) {
 			return TapInstallFailed, fmt.Errorf("获取 TAP 重试前快照失败: %w", err)
 		}
 
-		installCmd2 := exec.Command(tapinstallPath, "install", infPath, "tap0901")
-		installCmd2.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-		installOutput2, installErr2 := installCmd2.CombinedOutput()
-
-		if installErr2 != nil {
-			outputStr2 := strings.TrimSpace(string(installOutput2))
-			return TapInstallFailed, fmt.Errorf("TAP 适配器安装失败: %v\n输出: %s", installErr2, outputStr2)
+		if err := tapadapter.CreateAdapterViaSetupAPI(); err != nil {
+			return TapInstallFailed, fmt.Errorf("TAP 适配器安装失败: %w", err)
 		}
 	}
 
-	// before 是 tapinstall 之前已有的 TAP-Windows 集合。等待时间按 before 数量计算，
-	// 目的是让 Windows 完成本轮 tapinstall 引发的全局 TAP 刷新，再采集 after 快照。
+	// before 是安装之前已有的 TAP-Windows 集合。等待时间按 before 数量计算，
+	// 目的是让 Windows 完成本轮安装引发的全局 TAP 刷新，再采集 after 快照。
 	// 这样 FindNewWindowsAdapter 更可能拿到稳定的新实例，避免误选尚不可改名的临时接口。
 	wait := tapCreateBaseWait + time.Duration(len(before))*tapCreateWaitPerExistingAdapter
 	logger.Infof("  等待 TAP 设备刷新稳定: %s (当前 TAP 数=%d)", wait, len(before))

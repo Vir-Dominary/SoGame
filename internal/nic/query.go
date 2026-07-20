@@ -52,11 +52,17 @@ func listFromTable(match func(name string) bool) ([]Info, error) {
 	}
 	defer windows.FreeMibTable(unsafe.Pointer(table))
 
+	if table.NumEntries == 0 {
+		return nil, nil
+	}
+
 	var list []Info
-	rowSize := unsafe.Sizeof(windows.MibIfRow2{})
-	base := uintptr(unsafe.Pointer(&table.Table[0]))
-	for i := uint32(0); i < table.NumEntries; i++ {
-		row := (*windows.MibIfRow2)(unsafe.Pointer(base + uintptr(i)*rowSize))
+	// table.Table 声明为 [1]MibIfRow2，但 Windows API 实际按 NumEntries 分配了
+	// 连续内存。用 unsafe.Slice 将其重新解释为长度 NumEntries 的切片，避免手写
+	// 指针算术（go vet 会将 uintptr 与 unsafe.Pointer 之间的转换标记为误用）。
+	rows := unsafe.Slice((*windows.MibIfRow2)(unsafe.Pointer(&table.Table[0])), table.NumEntries)
+	for i := range rows {
+		row := &rows[i]
 		name := aliasName(row)
 		if name == "" || isFilterLayer(name) || !match(name) {
 			continue

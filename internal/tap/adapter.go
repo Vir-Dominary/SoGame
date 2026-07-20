@@ -1,8 +1,10 @@
 package tap
 
 import (
+	"errors"
 	"fmt"
 	"strings"
+	"syscall"
 	"time"
 
 	"sogame/internal/logger"
@@ -136,8 +138,9 @@ func RenameCandidate(newName string, timeout time.Duration) (*nic.Info, error) {
 		if !IsWindowsDescription(info.Description) {
 			continue
 		}
-		// 尝试重命名：失败说明该适配器被过滤驱动锁定名称，跳过继续找下一个
-		if err := nic.RenameConnection(info.Luid, target); err != nil {
+		// 尝试重命名：失败可能是适配器被过滤驱动锁定，也可能是适配器刚创建尚未完成 PnP 初始化。
+		// 对 "Incorrect function" 错误进行重试，等待 PnP 初始化完成后再试。
+		if err := renameWithRetry(info.Luid, target, 3, 2*time.Second); err != nil {
 			logger.Warnf("重命名 TAP 适配器 %q 失败（可能被过滤驱动锁定），跳过: %v", info.FriendlyName, err)
 			skipped = append(skipped, info.FriendlyName)
 			continue
@@ -158,6 +161,34 @@ func RenameCandidate(newName string, timeout time.Duration) (*nic.Info, error) {
 		return nil, fmt.Errorf("%w: renameable TAP adapter (跳过被锁定的适配器: %s)", nic.ErrNotFound, strings.Join(skipped, ", "))
 	}
 	return nil, fmt.Errorf("%w: renameable TAP adapter", nic.ErrNotFound)
+}
+
+// renameWithRetry 对 "Incorrect function" (ERROR_INVALID_FUNCTION) 错误进行重试。
+// 该错误在新创建的 TAP 适配器尚未完成 PnP 初始化时会短暂出现，
+// 与被过滤驱动永久锁定无法区分，因此通过重试 + 延迟来区分：
+//   - 瞬态（PnP 未就绪）：重试后成功
+//   - 永久（过滤驱动锁定）：重试仍失败，返回错误由调用方跳过
+func renameWithRetry(luid uint64, name string, maxRetries int, delay time.Duration) error {
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		lastErr = nic.RenameConnection(luid, name)
+		if lastErr == nil {
+			return nil
+		}
+		if !isIncorrectFunctionError(lastErr) {
+			return lastErr
+		}
+		if attempt < maxRetries {
+			logger.Debugf("重命名返回 Incorrect function (尝试 %d/%d)，等待 PnP 初始化后重试...", attempt+1, maxRetries)
+			time.Sleep(delay)
+		}
+	}
+	return lastErr
+}
+
+func isIncorrectFunctionError(err error) bool {
+	return errors.Is(err, syscall.Errno(1)) ||
+		strings.Contains(err.Error(), "Incorrect function")
 }
 
 func waitFriendlyName(name string, timeout time.Duration) error {
