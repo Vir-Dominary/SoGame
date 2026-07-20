@@ -236,6 +236,13 @@ function App() {
     try {
       await UpgradeTapDriver()
       setTapUpgradeStatus('升级成功，新网卡已就绪')
+      // 升级成功后立即重新加载关于信息，刷新 TAP 版本显示，
+      // 避免用户需要重启程序才能看到更新后的版本号。
+      // 后端 UpgradeTapDriver 已等待 PnP 初始化并完成 EnsureSoGameAdapter，
+      // 此时 CheckTapDriverStatus 能查询到新驱动版本。
+      GetAboutInfo()
+        .then(info => setAboutInfo(info))
+        .catch(e => console.error('GetAboutInfo refresh after upgrade failed:', e))
       setTimeout(() => {
         setTapUpgrade(null)
         setTapUpgradeStatus('')
