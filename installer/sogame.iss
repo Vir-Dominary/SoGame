@@ -1,5 +1,5 @@
 #define MyAppName "SoGame"
-#define MyAppVersion "1.3"
+#define MyAppVersion "1.4"
 #define MyAppPublisher "vir_dominary"
 #define MyAppExeName "SoGame.exe"
 
@@ -68,13 +68,19 @@ Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Tasks: ru
 
 [Code]
 
-// 安装前关闭正在运行的 SoGame，避免文件被占用导致安装失败
-function PrepareToInstall(var Name: String): String;
+// 实际开始安装文件前关闭正在运行的 SoGame，避免文件被占用导致安装失败
+// 使用 CurStepChanged 而非 PrepareToInstall，因为后者在 Inno Setup 6.x
+// 中签名变为 4 个参数(var Name, var TmpIsmpPath, var TmpDownloadPath,
+// var RestartAfterInstall)，跨版本兼容性差。
+// CurStepChanged 的签名在 Inno Setup 5/6 中保持一致。
+procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
 begin
-  Result := '';
-  Exec('taskkill', '/IM SoGame.exe /F', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if CurStep = ssInstall then
+  begin
+    Exec('taskkill', '/IM SoGame.exe /F', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
 end;
 
 // 卸载时询问是否删除用户配置和密钥
