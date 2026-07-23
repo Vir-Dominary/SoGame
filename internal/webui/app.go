@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -8,10 +9,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -30,13 +35,58 @@ const (
 	StateFailed       AppState = "failed"
 )
 
+// 联机模式
+type AppMode string
+
+const (
+	ModeClassic AppMode = "classic" // 经典模式：n2n + tap 网卡
+	ModeExpress AppMode = "express" // 极速模式：wireguard + wintun
+)
+
+// agentListenAddr 是 sogame-agent HTTP 监听地址
+const agentListenAddr = "127.0.0.1:7890"
+const agentBaseURL = "http://" + agentListenAddr
+
+// DefaultWGServerURL 是 WireGuard 控制服务器的默认地址。
+// 官方服务器尚未架设，测试阶段使用本地控制服务器。
+const DefaultWGServerURL = "http://127.0.0.1:8080"
+
+// normalizeWGServerURL 确保服务器地址包含 http:// 或 https:// 协议前缀。
+// 用户可能输入 "127.0.0.1:8080" 这样的裸地址，缺少协议前缀会导致 Go net/http
+// 将其当作相对路径解析，触发 "first path segment in URL cannot contain colon" 错误。
+func normalizeWGServerURL(url string) string {
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return url
+	}
+	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+		return url
+	}
+	return "http://" + url
+}
+
+// isAgentRunning 检测 Agent 是否在监听（含外部独立启动的 Agent）。
+// 通过 HTTP 探测 /api/agent/status，比仅检查 agentCmd 更可靠：
+// 用户可能通过 start-wg-test.ps1 提权启动 Agent，此时 agentCmd 为 nil
+// 但 Agent 实际已运行。
+func isAgentRunning() bool {
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	resp, err := client.Get(agentBaseURL + "/api/agent/status")
+	if err != nil {
+		return false
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
 type App struct {
-	mu     sync.Mutex
-	ctx    context.Context
-	edge   *n2n.Edge
-	cfg    *config.Config
-	state  AppState
-	errMsg string
+	mu       sync.Mutex
+	ctx      context.Context
+	edge     *n2n.Edge
+	cfg      *config.Config
+	state    AppState
+	errMsg   string
+	agentCmd *exec.Cmd
 }
 
 func NewApp() *App {
@@ -55,8 +105,11 @@ func NewApp() *App {
 
 func (a *App) Startup(ctx context.Context) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.ctx = ctx
+	a.mu.Unlock()
+
+	// 启动 WireGuard Agent 子进程（极速模式使用，经典模式下保持空闲）
+	go a.startAgent()
 }
 
 func (a *App) Shutdown(ctx context.Context) {
@@ -75,6 +128,125 @@ func (a *App) Shutdown(ctx context.Context) {
 	if err := n2n.KillOrphanEdgeProcess(); err != nil {
 		logger.Warnf("shutdown: failed to kill orphan edge process: %v", err)
 	}
+
+	// 停止 WireGuard Agent 子进程
+	a.stopAgent()
+}
+
+// resolveAgentBinDir 解析 sogame-agent.exe 和 wireguard.exe/wg.exe 所在目录
+// 搜索顺序（binDir 同时是 wireguard.exe/wg.exe 所在目录）：
+//  1. {exe_dir}/bin/sogame-agent.exe        —— 安装后（iss 打包到 {app}\bin\）
+//  2. {exe_dir}/sogame-agent.exe            —— 开发模式（手动拷贝到 build\bin\）
+//  3. 向上查找 wireguard/agent/sogame-agent.exe —— 开发模式回退（wails dev/build）
+func resolveAgentBinDir() (binDir, agentExePath string) {
+	exePath, err := os.Executable()
+	if err == nil {
+		exeDir := filepath.Dir(exePath)
+		// 1. 安装后：{app}\SoGame.exe，agent 在 {app}\bin\sogame-agent.exe
+		binDirCandidate := filepath.Join(exeDir, "bin")
+		agentCandidate := filepath.Join(binDirCandidate, "sogame-agent.exe")
+		if _, err := os.Stat(agentCandidate); err == nil {
+			return binDirCandidate, agentCandidate
+		}
+		// 2. 开发模式：exe 同目录
+		agentCandidate = filepath.Join(exeDir, "sogame-agent.exe")
+		if _, err := os.Stat(agentCandidate); err == nil {
+			return exeDir, agentCandidate
+		}
+		// 3. 开发模式回退：向上查找 wireguard/agent/sogame-agent.exe
+		// 适用于 wails dev/build 时 SoGame.exe 在 build\bin\，wireguard 在项目根目录
+		d := exeDir
+		for i := 0; i < 6; i++ {
+			candidate := filepath.Join(d, "wireguard", "agent", "sogame-agent.exe")
+			if _, err := os.Stat(candidate); err == nil {
+				// binDir 指向包含 wireguard.exe/wg.exe 的目录
+				return filepath.Join(d, "wireguard"), candidate
+			}
+			parent := filepath.Dir(d)
+			if parent == d {
+				break // 到达根目录
+			}
+			d = parent
+		}
+	}
+	return "", ""
+}
+
+// startAgent 启动 sogame-agent 子进程
+// Agent 运行 HTTP 服务（127.0.0.1:7890），由 Wails 主程序通过 HTTP 调用。
+// 若检测到已有 Agent 在监听（如用户通过 start-wg-test.ps1 独立提权启动），
+// 则跳过启动，直接复用外部 Agent。
+func (a *App) startAgent() {
+	// 检测是否已有外部 Agent 在运行（端口 7890 已被占用）
+	if isAgentRunning() {
+		logger.Infof("agent: external agent already running on %s, skip launching", agentListenAddr)
+		return
+	}
+
+	binDir, agentExePath := resolveAgentBinDir()
+	if agentExePath == "" {
+		logger.Warnf("agent: sogame-agent.exe not found, express mode unavailable")
+		return
+	}
+
+	cmd := exec.Command(agentExePath)
+	cmd.Env = append(os.Environ(),
+		"SOGAME_BIN_DIR="+binDir,
+		"SOGAME_AGENT_LISTEN="+agentListenAddr,
+	)
+	// 隐藏子进程控制台窗口，让用户无感知
+	hideConsoleProcess(cmd)
+	// Agent 自带 logger 写入独立日志文件，丢弃 stdout/stderr 避免 GUI 程序句柄无效
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+
+	if err := cmd.Start(); err != nil {
+		logger.Errorf("failed to start agent: %v", err)
+		return
+	}
+
+	a.mu.Lock()
+	a.agentCmd = cmd
+	a.mu.Unlock()
+	logger.Infof("agent started, pid=%d, binDir=%s", cmd.Process.Pid, binDir)
+
+	// 等待子进程退出（正常情况下会一直阻塞到 Shutdown）
+	err := cmd.Wait()
+	if err != nil {
+		logger.Warnf("agent exited: %v", err)
+	}
+
+	a.mu.Lock()
+	a.agentCmd = nil
+	a.mu.Unlock()
+}
+
+// stopAgent 停止 Agent 子进程：先 HTTP 通知断开 WireGuard，再 Kill 进程
+// Windows 上 SIGTERM 信号不可靠，因此先调用 /disconnect API 触发 Agent 的 cleanup()
+// 清理 WireGuard 接口，然后直接 Kill 终止进程
+func (a *App) stopAgent() {
+	a.mu.Lock()
+	cmd := a.agentCmd
+	a.mu.Unlock()
+
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+
+	// 1. 通过 HTTP 通知 Agent 断开 WireGuard 连接（清理接口）
+	client := &http.Client{Timeout: 2 * time.Second}
+	if resp, err := client.Post(agentBaseURL+"/api/agent/disconnect", "application/json", bytes.NewReader([]byte("{}"))); err == nil {
+		_ = resp.Body.Close()
+		logger.Infof("agent: disconnect requested")
+	}
+
+	// 2. 等待 1 秒让 Agent 完成 cleanup
+	time.Sleep(1 * time.Second)
+
+	// 3. 强制终止子进程
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
+	logger.Infof("agent stopped")
 }
 
 func (a *App) GetState() string {
@@ -476,6 +648,37 @@ type ConnectionDetails struct {
 
 func (a *App) GetConnectionDetails() ConnectionDetails {
 	a.mu.Lock()
+	mode := AppMode(a.cfg.Mode)
+	if mode == "" {
+		mode = ModeClassic
+	}
+	state := a.state
+	a.mu.Unlock()
+
+	// 极速模式：从 Agent 获取真实状态
+	if mode == ModeExpress && (state == StateConnected || state == StateConnecting) {
+		wgStatus := a.WGGetStatus()
+		details := ConnectionDetails{
+			Connected:  wgStatus.Connected,
+			VirtualIP:  wgStatus.VirtualIP,
+			NodeName:   "WireGuard P2P",
+			SponsorURL: config.AppSponsorURL,
+		}
+		switch {
+		case wgStatus.Connected:
+			details.Status = "正常"
+		case state == StateConnecting:
+			details.Status = "连接中"
+		case state == StateFailed:
+			details.Status = "异常"
+		default:
+			details.Status = "未连接"
+		}
+		return details
+	}
+
+	// 经典模式：原有逻辑
+	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	details := ConnectionDetails{
@@ -524,4 +727,383 @@ func (a *App) GetLogContent() string {
 		return fmt.Sprintf("读取日志失败: %v", err)
 	}
 	return content
+}
+
+// ============================================================================
+// 联机模式 API
+// ============================================================================
+
+// ModeInfo 返回当前模式与可用选项
+type ModeInfo struct {
+	Current       string `json:"current"`       // classic / express
+	AgentRunning  bool   `json:"agentRunning"`  // WireGuard Agent 是否运行中
+	DefaultServer string `json:"defaultServer"` // 默认控制服务器地址
+	ServerURL     string `json:"serverURL"`     // 用户保存的控制服务器地址
+	Nickname      string `json:"nickname"`      // 用户保存的昵称
+}
+
+// GetMode 返回当前联机模式及 Agent 状态
+func (a *App) GetMode() ModeInfo {
+	a.mu.Lock()
+	mode := a.cfg.Mode
+	if mode == "" {
+		mode = string(ModeClassic)
+	}
+	// agentCmd 仅能检测本程序启动的 Agent；用户可能通过脚本独立启动 Agent（提权），
+	// 此时 agentCmd 为 nil 但 Agent 已在运行。通过 HTTP 探测兼顾两种情况。
+	agentRunning := (a.agentCmd != nil && a.agentCmd.Process != nil) || isAgentRunning()
+	serverURL := normalizeWGServerURL(a.cfg.WGServerURL)
+	nickname := a.cfg.WGNickname
+	a.mu.Unlock()
+
+	if serverURL == "" {
+		serverURL = DefaultWGServerURL
+	}
+	if nickname == "" {
+		nickname = a.cfg.NodeName
+	}
+
+	return ModeInfo{
+		Current:       mode,
+		AgentRunning:  agentRunning,
+		DefaultServer: DefaultWGServerURL,
+		ServerURL:     serverURL,
+		Nickname:      nickname,
+	}
+}
+
+// SetMode 切换联机模式。如果当前已连接，将先断开。
+func (a *App) SetMode(mode string) error {
+	if mode != string(ModeClassic) && mode != string(ModeExpress) {
+		return fmt.Errorf("无效的模式: %s（仅支持 classic 或 express）", mode)
+	}
+
+	a.mu.Lock()
+	connected := a.state == StateConnected || a.state == StateConnecting
+	oldMode := AppMode(a.cfg.Mode)
+	if oldMode == "" {
+		oldMode = ModeClassic
+	}
+	a.mu.Unlock()
+
+	// 模式切换且当前已连接，先断开
+	if connected && oldMode != AppMode(mode) {
+		if oldMode == ModeClassic {
+			_ = a.Disconnect()
+		} else {
+			_ = a.WGDisconnect()
+		}
+	}
+
+	a.mu.Lock()
+	a.cfg.Mode = mode
+	a.mu.Unlock()
+
+	if err := config.SaveCached(a.cfg); err != nil {
+		return fmt.Errorf("保存模式失败: %w", err)
+	}
+	logger.Infof("mode switched to: %s", mode)
+	return nil
+}
+
+// SaveWGSettings 保存极速模式的配置（服务器地址、昵称）
+func (a *App) SaveWGSettings(serverURL, nickname string) error {
+	if nickname == "" {
+		return fmt.Errorf("昵称不能为空")
+	}
+	serverURL = normalizeWGServerURL(serverURL)
+	if serverURL == "" {
+		return fmt.Errorf("服务器地址不能为空")
+	}
+
+	a.mu.Lock()
+	a.cfg.WGServerURL = serverURL
+	a.cfg.WGNickname = nickname
+	a.mu.Unlock()
+
+	return config.SaveCached(a.cfg)
+}
+
+// ============================================================================
+// WireGuard 极速模式 API（封装对 Agent HTTP API 的调用）
+// ============================================================================
+
+// WGCreateRoomResponse 创建 WireGuard 房间的响应
+type WGCreateRoomResponse struct {
+	RoomID     string `json:"room_id"`
+	InviteCode string `json:"invite_code"`
+	VirtualIP  string `json:"virtual_ip"`
+	Subnet     string `json:"subnet"`
+}
+
+// WGJoinRoomResponse 加入 WireGuard 房间的响应
+type WGJoinRoomResponse struct {
+	RoomID    string       `json:"room_id"`
+	VirtualIP string       `json:"virtual_ip"`
+	Subnet    string       `json:"subnet"`
+	Peers     []WGPeerInfo `json:"peers"`
+}
+
+// WGPeerInfo WireGuard 节点信息
+type WGPeerInfo struct {
+	PublicKey string `json:"public_key"`
+	VirtualIP string `json:"virtual_ip"`
+	Endpoint  string `json:"endpoint"`
+	Nickname  string `json:"nickname"`
+	Online    bool   `json:"online"`
+}
+
+// WGStatusResponse WireGuard 连接状态
+type WGStatusResponse struct {
+	Connected bool   `json:"connected"`
+	PublicKey string `json:"public_key"`
+	RoomID    string `json:"room_id"`
+	VirtualIP string `json:"virtual_ip"`
+	Subnet    string `json:"subnet"`
+}
+
+// agentPost 向 Agent 发送 POST 请求
+func agentPost(path string, body interface{}) (*http.Response, error) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %w", err)
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequest("POST", agentBaseURL+path, bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return client.Do(req)
+}
+
+// waitAgentReady 等待 Agent 启动完成（轮询 /api/agent/status）
+// 最多等待 5 秒
+func waitAgentReady() error {
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	for i := 0; i < 10; i++ {
+		resp, err := client.Get(agentBaseURL + "/api/agent/status")
+		if err == nil && resp.StatusCode == http.StatusOK {
+			_ = resp.Body.Close()
+			return nil
+		}
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("agent 未就绪，请检查 sogame-agent.exe 是否已启动")
+}
+
+// WGCreateRoom 创建 WireGuard 房间（极速模式 - 创建者）
+func (a *App) WGCreateRoom(serverURL, nickname string) (*WGCreateRoomResponse, error) {
+	serverURL = normalizeWGServerURL(serverURL)
+	if serverURL == "" {
+		serverURL = DefaultWGServerURL
+	}
+	if nickname == "" {
+		nickname = a.cfg.NodeName
+	}
+
+	// 保存配置
+	a.mu.Lock()
+	a.cfg.WGServerURL = serverURL
+	a.cfg.WGNickname = nickname
+	a.state = StateConnecting
+	a.errMsg = ""
+	a.mu.Unlock()
+	_ = config.SaveCached(a.cfg)
+
+	if err := waitAgentReady(); err != nil {
+		a.mu.Lock()
+		a.state = StateFailed
+		a.errMsg = err.Error()
+		a.mu.Unlock()
+		return nil, err
+	}
+
+	resp, err := agentPost("/api/agent/create", map[string]string{
+		"server_url": serverURL,
+		"nickname":   nickname,
+	})
+	if err != nil {
+		a.mu.Lock()
+		a.state = StateFailed
+		a.errMsg = fmt.Sprintf("连接 Agent 失败: %v", err)
+		a.mu.Unlock()
+		return nil, fmt.Errorf("连接 Agent 失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&errResp)
+		a.mu.Lock()
+		a.state = StateFailed
+		a.errMsg = errResp.Error
+		a.mu.Unlock()
+		return nil, fmt.Errorf("%s", errResp.Error)
+	}
+
+	var createResp WGCreateRoomResponse
+	if err := json.NewDecoder(resp.Body).Decode(&createResp); err != nil {
+		a.mu.Lock()
+		a.state = StateFailed
+		a.errMsg = fmt.Sprintf("解析响应失败: %v", err)
+		a.mu.Unlock()
+		return nil, fmt.Errorf("解析响应失败: %w", err)
+	}
+
+	// 保存邀请码
+	a.mu.Lock()
+	a.cfg.WGInviteCode = createResp.InviteCode
+	a.state = StateConnected
+	a.errMsg = ""
+	a.mu.Unlock()
+	_ = config.SaveCached(a.cfg)
+
+	logger.Infof("WG room created: room=%s, ip=%s, invite=%s",
+		createResp.RoomID, createResp.VirtualIP, createResp.InviteCode)
+	return &createResp, nil
+}
+
+// WGJoinRoom 加入 WireGuard 房间（极速模式 - 加入者）
+func (a *App) WGJoinRoom(serverURL, inviteCode, nickname string) (*WGJoinRoomResponse, error) {
+	serverURL = normalizeWGServerURL(serverURL)
+	if serverURL == "" {
+		serverURL = DefaultWGServerURL
+	}
+	if inviteCode == "" {
+		return nil, fmt.Errorf("邀请码不能为空")
+	}
+	if nickname == "" {
+		nickname = a.cfg.NodeName
+	}
+
+	a.mu.Lock()
+	a.cfg.WGServerURL = serverURL
+	a.cfg.WGNickname = nickname
+	a.cfg.WGInviteCode = inviteCode
+	a.state = StateConnecting
+	a.errMsg = ""
+	a.mu.Unlock()
+	_ = config.SaveCached(a.cfg)
+
+	if err := waitAgentReady(); err != nil {
+		a.mu.Lock()
+		a.state = StateFailed
+		a.errMsg = err.Error()
+		a.mu.Unlock()
+		return nil, err
+	}
+
+	resp, err := agentPost("/api/agent/connect", map[string]string{
+		"server_url":  serverURL,
+		"invite_code": inviteCode,
+		"nickname":    nickname,
+	})
+	if err != nil {
+		a.mu.Lock()
+		a.state = StateFailed
+		a.errMsg = fmt.Sprintf("连接 Agent 失败: %v", err)
+		a.mu.Unlock()
+		return nil, fmt.Errorf("连接 Agent 失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&errResp)
+		a.mu.Lock()
+		a.state = StateFailed
+		a.errMsg = errResp.Error
+		a.mu.Unlock()
+		return nil, fmt.Errorf("%s", errResp.Error)
+	}
+
+	// 先解码为通用 map 获取基础字段
+	var raw struct {
+		RoomID    string       `json:"room_id"`
+		VirtualIP string       `json:"virtual_ip"`
+		Subnet    string       `json:"subnet"`
+		Peers     []WGPeerInfo `json:"peers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		a.mu.Lock()
+		a.state = StateFailed
+		a.errMsg = fmt.Sprintf("解析响应失败: %v", err)
+		a.mu.Unlock()
+		return nil, fmt.Errorf("解析响应失败: %w", err)
+	}
+
+	a.mu.Lock()
+	a.state = StateConnected
+	a.errMsg = ""
+	a.mu.Unlock()
+
+	logger.Infof("WG room joined: room=%s, ip=%s, peers=%d",
+		raw.RoomID, raw.VirtualIP, len(raw.Peers))
+	return &WGJoinRoomResponse{
+		RoomID:    raw.RoomID,
+		VirtualIP: raw.VirtualIP,
+		Subnet:    raw.Subnet,
+		Peers:     raw.Peers,
+	}, nil
+}
+
+// WGDisconnect 断开 WireGuard 连接
+func (a *App) WGDisconnect() error {
+	if err := waitAgentReady(); err != nil {
+		// Agent 已退出，直接重置状态
+		a.mu.Lock()
+		a.state = StateDisconnected
+		a.errMsg = ""
+		a.mu.Unlock()
+		return nil
+	}
+
+	resp, err := agentPost("/api/agent/disconnect", map[string]string{})
+	if err != nil {
+		a.mu.Lock()
+		a.errMsg = fmt.Sprintf("断开失败: %v", err)
+		a.mu.Unlock()
+		return fmt.Errorf("断开失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	a.mu.Lock()
+	a.state = StateDisconnected
+	a.errMsg = ""
+	a.mu.Unlock()
+	logger.Infof("WG disconnected")
+	return nil
+}
+
+// WGGetStatus 获取 WireGuard 连接状态
+func (a *App) WGGetStatus() WGStatusResponse {
+	if err := waitAgentReady(); err != nil {
+		return WGStatusResponse{Connected: false}
+	}
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(agentBaseURL + "/api/agent/status")
+	if err != nil {
+		return WGStatusResponse{Connected: false}
+	}
+	defer resp.Body.Close()
+
+	var status WGStatusResponse
+	_ = json.NewDecoder(resp.Body).Decode(&status)
+	return status
+}
+
+// WGGetInviteCode 返回最近一次创建房间得到的邀请码
+func (a *App) WGGetInviteCode() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg.WGInviteCode
 }

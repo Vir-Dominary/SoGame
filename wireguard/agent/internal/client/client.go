@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"sogame/wireguard/agent/internal/models"
@@ -17,14 +18,29 @@ type Client struct {
 	http    *http.Client
 }
 
-// New 创建控制服务器客户端
+// New 创建控制服务器客户端。
+// 自动为缺少协议前缀的 baseURL 补充 http://，否则 http.Post 会将
+// "127.0.0.1:8080/api/room/create" 当作相对路径解析，触发
+// "first path segment in URL cannot contain colon" 错误。
 func New(baseURL string) *Client {
 	return &Client{
-		baseURL: baseURL,
+		baseURL: normalizeBaseURL(baseURL),
 		http: &http.Client{
 			Timeout: 10 * time.Second,
 		},
 	}
+}
+
+// normalizeBaseURL 确保 baseURL 包含 http:// 或 https:// 协议前缀。
+func normalizeBaseURL(url string) string {
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return url
+	}
+	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+		return url
+	}
+	return "http://" + url
 }
 
 // CreateRoom 创建房间
@@ -64,9 +80,19 @@ func (c *Client) Ping(req models.PingRequest) error {
 	return c.post("/api/ping", req, nil)
 }
 
-// WSURL 返回 WebSocket 连接 URL
+// WSURL 返回 WebSocket 连接 URL。
+// 自动将 http(s):// 转换为 ws(s)://，因为 gorilla/websocket 要求显式的 ws/wss 协议。
 func (c *Client) WSURL(roomID string) string {
-	return c.baseURL + "/ws/room/" + roomID
+	wsScheme := "ws"
+	base := c.baseURL
+	switch {
+	case strings.HasPrefix(base, "https://"):
+		wsScheme = "wss"
+		base = strings.TrimPrefix(base, "https://")
+	case strings.HasPrefix(base, "http://"):
+		base = strings.TrimPrefix(base, "http://")
+	}
+	return wsScheme + "://" + base + "/ws/room/" + roomID
 }
 
 // post 发送 POST 请求

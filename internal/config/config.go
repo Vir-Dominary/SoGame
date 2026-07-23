@@ -29,6 +29,13 @@ type Config struct {
 	Supernode string `yaml:"supernode"`
 	IP        string `yaml:"ip"`
 	MgmtPort  int    `yaml:"-"` // n2n edge 管理端口（运行时生成，不持久化）
+
+	// 联机模式：classic（n2n+tap）/ express（wireguard+wintun）
+	// 空值视为 classic 以保持向后兼容
+	Mode          string `yaml:"mode"`
+	WGServerURL   string `yaml:"wg_server_url"`   // WireGuard 控制服务器地址
+	WGNickname    string `yaml:"wg_nickname"`     // WireGuard 房间昵称
+	WGInviteCode  string `yaml:"wg_invite_code"`  // 最近一次使用的 WireGuard 邀请码
 }
 
 // encryptor 全局加密器
@@ -65,6 +72,7 @@ func DefaultConfig() *Config {
 		Key:       "",
 		Supernode: "8.148.244.159:10090",
 		IP:        "10.10.10.10",
+		Mode:      "classic",
 	}
 }
 

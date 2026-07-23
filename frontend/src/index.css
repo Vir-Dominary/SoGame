@@ -92,6 +92,78 @@ body {
   transition: all 0.2s;
 }
 
+/* 应用模式切换：经典 / 极速 */
+.app-mode-tabs {
+  display: flex;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid #21262d;
+  border-radius: 10px;
+  padding: 3px;
+  gap: 2px;
+  width: 100%;
+}
+
+.app-mode-tab {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: #8b949e;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+  letter-spacing: 0.5px;
+}
+
+.app-mode-tab.active {
+  background: linear-gradient(135deg, rgba(61, 220, 132, 0.15), rgba(61, 220, 132, 0.05));
+  color: #3ddc84;
+  box-shadow: 0 0 0 1px rgba(61, 220, 132, 0.2) inset;
+}
+
+.app-mode-tab:hover:not(.active):not(:disabled) {
+  color: #e6edf3;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.app-mode-tab:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 极速模式：Agent 状态提示 */
+.wg-hint {
+  font-size: 11px;
+  color: #6e7681;
+  text-align: center;
+  margin-top: 2px;
+  letter-spacing: 0.3px;
+}
+
+/* 极速模式：自定义服务器输入框 */
+.custom-server-input {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: #e6edf3;
+  font-size: 13px;
+  outline: none;
+  width: 100%;
+  margin-top: 8px;
+  box-sizing: border-box;
+  transition: border-color 0.15s;
+}
+.custom-server-input:focus {
+  border-color: #3ddc84;
+}
+.custom-server-input::placeholder {
+  color: #6e7681;
+}
+
 .mode-tab.active {
   background: rgba(61, 220, 132, 0.1);
   color: #3ddc84;
