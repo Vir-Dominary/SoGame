@@ -101,41 +101,64 @@ export async function getAgentPeers() {
 
 // --- Admin API ---
 
-export async function getAdminStats() {
-  const resp = await fetch(`${SERVER_URL}/api/admin/stats`)
+// Admin Token 管理：存储在 localStorage 中，每次 admin 请求附带 Bearer Token
+const ADMIN_TOKEN_KEY = 'sogame_admin_token'
+
+export function getAdminToken() {
+  return localStorage.getItem(ADMIN_TOKEN_KEY) || ''
+}
+
+export function setAdminToken(token) {
+  if (token) {
+    localStorage.setItem(ADMIN_TOKEN_KEY, token)
+  } else {
+    localStorage.removeItem(ADMIN_TOKEN_KEY)
+  }
+}
+
+// adminFetch 封装了 admin API 请求，自动附加 Authorization 头
+async function adminFetch(url, options = {}) {
+  const token = getAdminToken()
+  const headers = { ...options.headers }
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  const resp = await fetch(url, { ...options, headers })
+  if (resp.status === 401) {
+    throw new Error('Admin Token 无效或已过期，请重新输入')
+  }
+  if (resp.status === 403) {
+    throw new Error('Admin API 未启用（服务器未配置 SOGAME_ADMIN_TOKEN）')
+  }
   if (!resp.ok) throw new Error(await resp.text())
   return resp.json()
 }
 
+export async function getAdminStats() {
+  return adminFetch(`${SERVER_URL}/api/admin/stats`)
+}
+
 export async function getAdminRooms() {
-  const resp = await fetch(`${SERVER_URL}/api/admin/rooms`)
-  if (!resp.ok) throw new Error(await resp.text())
-  return resp.json()
+  return adminFetch(`${SERVER_URL}/api/admin/rooms`)
 }
 
 export async function getAdminPeers(roomId = '') {
   const url = roomId
     ? `${SERVER_URL}/api/admin/peers?room_id=${roomId}`
     : `${SERVER_URL}/api/admin/peers`
-  const resp = await fetch(url)
-  if (!resp.ok) throw new Error(await resp.text())
-  return resp.json()
+  return adminFetch(url)
 }
 
 export async function deleteRoom(roomId) {
-  const resp = await fetch(`${SERVER_URL}/api/admin/room/${roomId}`, {
+  return adminFetch(`${SERVER_URL}/api/admin/room/${roomId}`, {
     method: 'DELETE',
   })
-  if (!resp.ok) throw new Error(await resp.text())
-  return resp.json()
 }
 
 export async function kickPeer(peerId) {
-  const resp = await fetch(`${SERVER_URL}/api/admin/peer/${peerId}`, {
+  return adminFetch(`${SERVER_URL}/api/admin/peer/${peerId}`, {
     method: 'DELETE',
   })
-  if (!resp.ok) throw new Error(await resp.text())
-  return resp.json()
 }
 
 // --- WebSocket ---

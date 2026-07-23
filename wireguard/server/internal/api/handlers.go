@@ -13,27 +13,61 @@ import (
 
 // Handler 处理所有 REST API 请求
 type Handler struct {
-	room *room.Manager
-	db   *db.Database
+	room       *room.Manager
+	db         *db.Database
+	adminToken string // 为空时 admin 端点完全禁用（返回 403）
 }
 
-// New 创建 API Handler
-func New(roomMgr *room.Manager, database *db.Database) *Handler {
-	return &Handler{room: roomMgr, db: database}
+// New 创建 API Handler。
+// adminToken 为空时，所有 /api/admin/* 端点将返回 403 Forbidden。
+func New(roomMgr *room.Manager, database *db.Database, adminToken string) *Handler {
+	return &Handler{room: roomMgr, db: database, adminToken: adminToken}
 }
 
-// RegisterRoutes 注册所有 API 路由
+// RegisterRoutes 注册所有 API 路由。
+// /api/admin/* 路由通过 adminAuthMiddleware 包裹，需要 Bearer Token 认证。
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
+	// 公共 API（无需认证）
 	mux.HandleFunc("/api/room/create", h.handleCreateRoom)
 	mux.HandleFunc("/api/room/join", h.handleJoinRoom)
 	mux.HandleFunc("/api/room/leave", h.handleLeaveRoom)
 	mux.HandleFunc("/api/room/peers", h.handleGetPeers)
 	mux.HandleFunc("/api/ping", h.handlePing)
-	mux.HandleFunc("/api/admin/stats", h.handleAdminStats)
-	mux.HandleFunc("/api/admin/rooms", h.handleAdminRooms)
-	mux.HandleFunc("/api/admin/peers", h.handleAdminPeers)
-	mux.HandleFunc("/api/admin/room/", h.handleAdminRoomAction)
-	mux.HandleFunc("/api/admin/peer/", h.handleAdminPeerAction)
+
+	// Admin API（需要 Bearer Token 认证）
+	adminMux := http.NewServeMux()
+	adminMux.HandleFunc("/api/admin/stats", h.handleAdminStats)
+	adminMux.HandleFunc("/api/admin/rooms", h.handleAdminRooms)
+	adminMux.HandleFunc("/api/admin/peers", h.handleAdminPeers)
+	adminMux.HandleFunc("/api/admin/room/", h.handleAdminRoomAction)
+	adminMux.HandleFunc("/api/admin/peer/", h.handleAdminPeerAction)
+	mux.Handle("/api/admin/", h.adminAuthMiddleware(adminMux))
+}
+
+// adminAuthMiddleware 校验 Authorization: Bearer <token> 头。
+// 若 adminToken 为空，admin 端点完全禁用（返回 403）；
+// 若 token 不匹配，返回 401。
+func (h *Handler) adminAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h.adminToken == "" {
+			writeError(w, http.StatusForbidden, "admin API is disabled (no token configured)")
+			return
+		}
+
+		auth := r.Header.Get("Authorization")
+		const prefix = "Bearer "
+		if len(auth) <= len(prefix) || auth[:len(prefix)] != prefix {
+			writeError(w, http.StatusUnauthorized, "missing or invalid Authorization header")
+			return
+		}
+		token := auth[len(prefix):]
+		if token != h.adminToken {
+			writeError(w, http.StatusUnauthorized, "invalid admin token")
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (h *Handler) handleCreateRoom(w http.ResponseWriter, r *http.Request) {

@@ -1,0 +1,37 @@
+[Unit]
+Description=SoGame WireGuard Control Server
+Documentation=https://github.com/your-repo/SoGame
+After=network.target
+
+[Service]
+Type=simple
+User=sogame
+Group=sogame
+
+# 二进制路径（编译后拷贝到此位置）
+ExecStart=/usr/local/bin/sogame-server
+
+# 环境变量配置文件
+EnvironmentFile=/etc/sogame/server.env
+
+# 数据目录
+WorkingDirectory=/var/lib/sogame
+StateDirectory=sogame
+
+# 优雅停止：发送 SIGTERM 后等待 10 秒再 SIGKILL
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# 崩溃后自动重启
+Restart=always
+RestartSec=5
+
+# 安全加固
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sogame
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -13,6 +13,8 @@ import {
   kickPeer,
   connectWebSocket,
   getServerURL,
+  getAdminToken,
+  setAdminToken,
 } from './api'
 
 function App() {
@@ -36,6 +38,8 @@ function App() {
   const [adminStats, setAdminStats] = useState(null)
   const [adminRooms, setAdminRooms] = useState([])
   const [adminPeers, setAdminPeers] = useState([])
+  const [adminAuthenticated, setAdminAuthenticated] = useState(!!getAdminToken())
+  const [adminTokenInput, setAdminTokenInput] = useState('')
 
   const showToast = useCallback((msg) => {
     setToast(msg)
@@ -183,6 +187,7 @@ function App() {
 
   // --- Admin ---
   const loadAdminData = async () => {
+    if (!getAdminToken()) return
     try {
       const [stats, rooms, peers] = await Promise.all([
         getAdminStats(),
@@ -193,17 +198,43 @@ function App() {
       setAdminRooms(rooms || [])
       setAdminPeers(peers || [])
     } catch (e) {
+      // 401/403 错误时清除 token，让用户重新输入
+      if (e.message.includes('Token') || e.message.includes('未启用')) {
+        setAdminToken('')
+        setAdminAuthenticated(false)
+      }
       setError(`加载管理数据失败: ${e.message}`)
     }
   }
 
+  const handleAdminLogin = async () => {
+    if (!adminTokenInput.trim()) {
+      setError('请输入 Admin Token')
+      return
+    }
+    setAdminToken(adminTokenInput.trim())
+    setAdminAuthenticated(true)
+    setAdminTokenInput('')
+    setError('')
+    // 立即尝试加载数据验证 token 是否有效
+    setTimeout(() => loadAdminData(), 100)
+  }
+
+  const handleAdminLogout = () => {
+    setAdminToken('')
+    setAdminAuthenticated(false)
+    setAdminStats(null)
+    setAdminRooms([])
+    setAdminPeers([])
+  }
+
   useEffect(() => {
-    if (view === 'admin') {
+    if (view === 'admin' && adminAuthenticated) {
       loadAdminData()
       const interval = setInterval(loadAdminData, 10000)
       return () => clearInterval(interval)
     }
-  }, [view])
+  }, [view, adminAuthenticated])
 
   const handleDeleteRoom = async (roomId) => {
     if (!confirm('确定删除此房间？')) return
@@ -447,8 +478,33 @@ function App() {
       {/* Admin View */}
       {view === 'admin' && (
         <>
-          <div className="card">
-            <div className="card-title">在线统计</div>
+          {!adminAuthenticated ? (
+            /* Token 输入卡片 */
+            <div className="card">
+              <div className="card-title">管理员认证</div>
+              <div className="form-group">
+                <label>Admin Token</label>
+                <input
+                  type="password"
+                  value={adminTokenInput}
+                  onChange={(e) => setAdminTokenInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleAdminLogin()}
+                  placeholder="输入服务器配置的 SOGAME_ADMIN_TOKEN"
+                />
+              </div>
+              <button className="btn btn-primary" onClick={handleAdminLogin}>
+                认证
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="card">
+                <div className="card-header-row">
+                  <div className="card-title">在线统计</div>
+                  <button className="action-btn" onClick={handleAdminLogout} title="清除 Token 退出管理">
+                    退出
+                  </button>
+                </div>
             {adminStats ? (
               <div className="stats-grid">
                 <div className="stat-card">
@@ -540,6 +596,8 @@ function App() {
               </table>
             )}
           </div>
+            </>
+          )}
         </>
       )}
 

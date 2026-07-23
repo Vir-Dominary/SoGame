@@ -21,6 +21,7 @@ func main() {
 	dbPath := envOrDefault("SOGAME_DB_PATH", "/data/sogame.db")
 	listenAddr := envOrDefault("SOGAME_LISTEN", ":8080")
 	webDir := envOrDefault("SOGAME_WEB_DIR", "/web")
+	adminToken := os.Getenv("SOGAME_ADMIN_TOKEN")
 
 	// 确保数据目录存在
 	dataDir := filepathDir(dbPath)
@@ -39,7 +40,13 @@ func main() {
 	hub := ws.New()
 	ipamMgr := ipam.New(database)
 	roomMgr := room.New(database, ipamMgr, hub)
-	apiHandler := api.New(roomMgr, database)
+	apiHandler := api.New(roomMgr, database, adminToken)
+
+	if adminToken == "" {
+		log.Println("warning: SOGAME_ADMIN_TOKEN not set, admin API endpoints are disabled")
+	} else {
+		log.Println("admin API enabled (token configured)")
+	}
 
 	// 注册路由
 	mux := http.NewServeMux()

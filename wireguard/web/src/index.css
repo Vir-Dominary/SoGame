@@ -151,6 +151,17 @@ body {
   margin-bottom: 16px;
 }
 
+.card-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.card-header-row .card-title {
+  margin-bottom: 0;
+}
+
 /* Form */
 .form-group {
   margin-bottom: 14px;

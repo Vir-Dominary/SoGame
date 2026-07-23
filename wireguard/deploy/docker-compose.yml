@@ -11,6 +11,7 @@ services:
     environment:
       - SOGAME_DB_PATH=/data/sogame.db
       - SOGAME_LISTEN=:8080
+      - SOGAME_ADMIN_TOKEN=${SOGAME_ADMIN_TOKEN:-}
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
       interval: 10s
@@ -28,10 +29,11 @@ services:
     container_name: sogame-nginx
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # 通过 NGINX_CONF 环境变量切换 HTTP/HTTPS 配置（默认 nginx.conf）
+      - ./nginx/${NGINX_CONF:-nginx.conf}:/etc/nginx/conf.d/default.conf:ro
       - ./certs:/etc/nginx/certs:ro
     depends_on:
       backend:
