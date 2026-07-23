@@ -26,6 +26,7 @@ type Peer struct {
 type Manager struct {
 	mu         sync.Mutex
 	configDir  string
+	binDir     string // wireguard.exe / wg.exe 所在目录
 	privateKey string
 	virtualIP  string
 	subnet     string
@@ -33,12 +34,23 @@ type Manager struct {
 	connected  bool
 }
 
-// New 创建 WireGuard 管理器
-func New(configDir string) *Manager {
+// New 创建 WireGuard 管理器，binDir 为 wireguard.exe/wg.exe 所在目录
+func New(configDir, binDir string) *Manager {
 	return &Manager{
 		configDir: configDir,
+		binDir:    binDir,
 		peers:     make(map[string]*Peer),
 	}
+}
+
+// wgPath 返回 wg.exe 的绝对路径
+func (m *Manager) wgPath() string {
+	return filepath.Join(m.binDir, "wg.exe")
+}
+
+// wireguardPath 返回 wireguard.exe 的绝对路径
+func (m *Manager) wireguardPath() string {
+	return filepath.Join(m.binDir, "wireguard.exe")
 }
 
 // Connect 创建 WireGuard 接口并配置
@@ -114,7 +126,7 @@ func (m *Manager) AddPeer(peer *Peer) error {
 		args = append(args, "preshared-key", peer.PresharedKey)
 	}
 
-	if err := runWG(args...); err != nil {
+	if err := m.runWG(args...); err != nil {
 		return fmt.Errorf("wg set peer: %w", err)
 	}
 
@@ -132,7 +144,7 @@ func (m *Manager) RemovePeer(publicKey string) error {
 		return fmt.Errorf("not connected")
 	}
 
-	if err := runWG(
+	if err := m.runWG(
 		"set", InterfaceName,
 		"peer", publicKey,
 		"remove",
@@ -197,28 +209,31 @@ ListenPort = 51820
 }
 
 // installTunnel 安装 WireGuard 隧道服务（Windows）
+// 注意：wireguard.exe 官方参数是 /installtunnelservice（不是 /installtunnel）
+// 需要管理员权限，调用方应确保已提升权限
 func (m *Manager) installTunnel(configPath string) error {
-	// Windows: wireguard.exe /installtunnel <config>
-	cmd := exec.Command("wireguard.exe", "/installtunnel", configPath)
+	// Windows: wireguard.exe /installtunnelservice CONFIG_PATH
+	cmd := exec.Command(m.wireguardPath(), "/installtunnelservice", configPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("installtunnel: %w: %s", err, string(output))
+		return fmt.Errorf("installtunnelservice: %w: %s", err, string(output))
 	}
 	return nil
 }
 
 // uninstallTunnel 卸载 WireGuard 隧道服务（Windows）
+// 注意：wireguard.exe 官方参数是 /uninstalltunnelservice（不是 /uninstalltunnel）
 func (m *Manager) uninstallTunnel() error {
-	// Windows: wireguard.exe /uninstalltunnel <name>
-	cmd := exec.Command("wireguard.exe", "/uninstalltunnel", InterfaceName)
+	// Windows: wireguard.exe /uninstalltunnelservice TUNNEL_NAME
+	cmd := exec.Command(m.wireguardPath(), "/uninstalltunnelservice", InterfaceName)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("uninstalltunnel: %w: %s", err, string(output))
+		return fmt.Errorf("uninstalltunnelservice: %w: %s", err, string(output))
 	}
 	return nil
 }
 
 // runWG 执行 wg 命令
-func runWG(args ...string) error {
-	cmd := exec.Command("wg", args...)
+func (m *Manager) runWG(args ...string) error {
+	cmd := exec.Command(m.wgPath(), args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s", strings.TrimSpace(string(output)))

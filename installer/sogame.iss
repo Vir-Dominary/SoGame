@@ -50,6 +50,10 @@ Source: "tap\OemWin2k.inf"; DestDir: "{app}\tap"; Flags: ignoreversion
 Source: "tap\tap0901.cat"; DestDir: "{app}\tap"; Flags: ignoreversion
 Source: "tap\tap0901.sys"; DestDir: "{app}\tap"; Flags: ignoreversion
 Source: "tap\tapinstall.exe"; DestDir: "{app}\tap"; Flags: ignoreversion
+; WireGuard 极速模式
+Source: "..\wireguard\wireguard.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
+Source: "..\wireguard\wg.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
+Source: "..\wireguard\agent\sogame-agent.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -80,20 +84,34 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
 begin
   if (CurStep = ssPostInstall) then
   begin
     Log('Installation completed. TAP driver installation is handled by the application at runtime.');
+
+    // 添加 WireGuard UDP 51820 入站防火墙规则
+    if Exec('netsh', 'advfirewall firewall add rule name="SoGame WireGuard" dir=in action=allow protocol=UDP localport=51820',
+            '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      Log('WireGuard firewall rule added')
+    else
+      Log('Failed to add WireGuard firewall rule');
   end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
+  ResultCode: Integer;
   ConfigDir: string;
   KeyDir: string;
 begin
   if CurUninstallStep = usUninstall then
   begin
+    // 删除防火墙规则
+    Exec('netsh', 'advfirewall firewall delete rule name="SoGame WireGuard"',
+         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
     if MsgBox('是否删除用户配置文件和密钥？', mbConfirmation, MB_YESNO) = IDYES then
     begin
       ConfigDir := ExpandConstant('{userappdata}\SoGame');

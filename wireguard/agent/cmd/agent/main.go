@@ -1,14 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"sogame/wireguard/agent/internal/client"
@@ -40,14 +43,14 @@ type Agent struct {
 	lastEndpoint string // STUN 探测到的公网 endpoint（受 mu 保护）
 }
 
-// New 创建 Agent
-func New(configDir string) (*Agent, error) {
+// New 创建 Agent，binDir 为 wireguard.exe/wg.exe 所在目录
+func New(configDir, binDir string) (*Agent, error) {
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return nil, fmt.Errorf("create config dir: %w", err)
 	}
 
-	// 检查 WireGuard 是否安装
-	if err := checkWireGuard(); err != nil {
+	// 检查 WireGuard 二进制是否可用
+	if err := checkWireGuard(binDir); err != nil {
 		logger.Warnf("wireguard check: %v", err)
 	}
 
@@ -60,7 +63,7 @@ func New(configDir string) (*Agent, error) {
 
 	a := &Agent{
 		keyPair:   kp,
-		wgMgr:     wg.New(filepath.Join(configDir, "wireguard")),
+		wgMgr:     wg.New(filepath.Join(configDir, "wireguard"), binDir),
 		configDir: configDir,
 	}
 
@@ -68,14 +71,44 @@ func New(configDir string) (*Agent, error) {
 }
 
 // checkWireGuard 检查 WireGuard 二进制文件是否可用
-func checkWireGuard() error {
-	if _, err := exec.LookPath("wg"); err != nil {
-		return fmt.Errorf("wg 命令未找到，请安装 WireGuard")
+// 优先检查 binDir 目录，回退到 PATH
+func checkWireGuard(binDir string) error {
+	wgPath := filepath.Join(binDir, "wg.exe")
+	wgExePath := filepath.Join(binDir, "wireguard.exe")
+
+	// 检查 binDir 目录
+	if _, err := os.Stat(wgPath); err != nil {
+		// 回退到 PATH
+		if _, err := exec.LookPath("wg"); err != nil {
+			return fmt.Errorf("wg.exe 未找到（搜索 %s 和 PATH）", binDir)
+		}
 	}
-	if _, err := exec.LookPath("wireguard.exe"); err != nil {
-		return fmt.Errorf("wireguard.exe 未找到，请安装 WireGuard")
+	if _, err := os.Stat(wgExePath); err != nil {
+		if _, err := exec.LookPath("wireguard.exe"); err != nil {
+			return fmt.Errorf("wireguard.exe 未找到（搜索 %s 和 PATH）", binDir)
+		}
 	}
 	return nil
+}
+
+// resolveBinDir 解析 WireGuard 二进制目录
+// 优先级：SOGAME_BIN_DIR 环境变量 > 可执行文件同目录/bin > 可执行文件同目录 > PATH
+func resolveBinDir() string {
+	if dir := os.Getenv("SOGAME_BIN_DIR"); dir != "" {
+		return dir
+	}
+	exePath, err := os.Executable()
+	if err == nil {
+		exeDir := filepath.Dir(exePath)
+		binDir := filepath.Join(exeDir, "bin")
+		if _, err := os.Stat(filepath.Join(binDir, "wireguard.exe")); err == nil {
+			return binDir
+		}
+		if _, err := os.Stat(filepath.Join(exeDir, "wireguard.exe")); err == nil {
+			return exeDir
+		}
+	}
+	return ""
 }
 
 // ConnectRequest 连接房间请求
@@ -483,12 +516,14 @@ func main() {
 		configDir = filepath.Join(homeDir, "SoGame", "agent")
 	}
 
+	binDir := resolveBinDir()
+
 	if err := logger.Init(filepath.Join(configDir, "logs")); err != nil {
 		log.Printf("warning: logger init: %v", err)
 	}
 	defer logger.Close()
 
-	agent, err := New(configDir)
+	agent, err := New(configDir, binDir)
 	if err != nil {
 		log.Fatalf("failed to create agent: %v", err)
 	}
@@ -504,7 +539,7 @@ func main() {
 
 	// CORS
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:34115,http://127.0.0.1:34115")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		if r.Method == http.MethodOptions {
@@ -514,13 +549,31 @@ func main() {
 		mux.ServeHTTP(w, r)
 	})
 
-	listenAddr := envOrDefault("SOGAME_AGENT_LISTEN", "127.0.0.1:7890")
-	logger.Infof("SoGame agent listening on %s", listenAddr)
-	log.Printf("SoGame agent listening on %s", listenAddr)
-
-	if err := http.ListenAndServe(listenAddr, handler); err != nil {
-		log.Fatalf("agent server error: %v", err)
+	server := &http.Server{
+		Addr:    envOrDefault("SOGAME_AGENT_LISTEN", "127.0.0.1:7890"),
+		Handler: handler,
 	}
+
+	// 优雅关闭：监听信号，确保清理 WireGuard 接口
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		logger.Infof("SoGame agent listening on %s", server.Addr)
+		log.Printf("SoGame agent listening on %s", server.Addr)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("agent server error: %v", err)
+		}
+	}()
+
+	<-stop
+	logger.Infof("shutting down agent...")
+	agent.cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	server.Shutdown(ctx)
+	logger.Infof("agent stopped")
 }
 
 func envOrDefault(key, defaultVal string) string {

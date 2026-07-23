@@ -64,6 +64,14 @@ func probeOne(server string, timeout time.Duration) ProbeResult {
 			Error:  err,
 		}
 	}
+	// 校验返回的 IP 合法性，过滤组播/回环/链路本地等无效地址
+	// 部分 STUN 服务器可能返回错误数据（如 229.x.x.x 组播地址）
+	if !isValidPublicIP(ip) {
+		return ProbeResult{
+			Server: server,
+			Error:  fmt.Errorf("invalid public ip: %s", ip.String()),
+		}
+	}
 	return ProbeResult{
 		Server:    server,
 		Available: true,
@@ -71,6 +79,21 @@ func probeOne(server string, timeout time.Duration) ProbeResult {
 		PublicIP:  ip,
 		PublicEP:  fmt.Sprintf("%s:%d", ip.String(), port),
 	}
+}
+
+// isValidPublicIP 校验 IP 是否为合法的公网 IPv4
+// 排除：回环、私有、链路本地、组播、广播、未指定地址
+func isValidPublicIP(ip net.IP) bool {
+	if ip == nil || ip.IsUnspecified() || ip.IsLoopback() ||
+		ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() {
+		return false
+	}
+	// 排除 0.0.0.0 和 255.255.255.255（net.IP 没有 IsBroadcast，用 Equal 显式判断）
+	if ip.Equal(net.IPv4zero) || ip.Equal(net.IPv4bcast) {
+		return false
+	}
+	return true
 }
 
 // SelectBest 探测所有服务器并返回延迟最低的 n 个可用结果。

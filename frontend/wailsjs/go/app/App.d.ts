@@ -20,12 +20,30 @@ export function GetErrorMessage():Promise<string>;
 
 export function GetLogContent():Promise<string>;
 
+export function GetMode():Promise<app.ModeInfo>;
+
 export function GetNodes():Promise<Array<app.NodeInfo>>;
 
 export function GetNodesWithLatency():Promise<Array<app.NodeLatencyInfo>>;
 
 export function GetState():Promise<string>;
 
+export function GetWGServers():Promise<Array<app.WGServerInfo>>;
+
 export function IsNetworkAdapterReady():Promise<boolean>;
 
 export function OpenLogs():Promise<void>;
+
+export function SaveWGSettings(arg1:string,arg2:string):Promise<void>;
+
+export function SetMode(arg1:string):Promise<void>;
+
+export function WGCreateRoom(arg1:string,arg2:string):Promise<app.WGCreateRoomResponse>;
+
+export function WGDisconnect():Promise<void>;
+
+export function WGGetInviteCode():Promise<string>;
+
+export function WGGetStatus():Promise<app.WGStatusResponse>;
+
+export function WGJoinRoom(arg1:string,arg2:string,arg3:string):Promise<app.WGJoinRoomResponse>;

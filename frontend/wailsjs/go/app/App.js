@@ -38,6 +38,10 @@ export function GetLogContent() {
   return window['go']['app']['App']['GetLogContent']();
 }
 
+export function GetMode() {
+  return window['go']['app']['App']['GetMode']();
+}
+
 export function GetNodes() {
   return window['go']['app']['App']['GetNodes']();
 }
@@ -50,10 +54,42 @@ export function GetState() {
   return window['go']['app']['App']['GetState']();
 }
 
+export function GetWGServers() {
+  return window['go']['app']['App']['GetWGServers']();
+}
+
 export function IsNetworkAdapterReady() {
   return window['go']['app']['App']['IsNetworkAdapterReady']();
 }
 
 export function OpenLogs() {
   return window['go']['app']['App']['OpenLogs']();
+}
+
+export function SaveWGSettings(arg1, arg2) {
+  return window['go']['app']['App']['SaveWGSettings'](arg1, arg2);
+}
+
+export function SetMode(arg1) {
+  return window['go']['app']['App']['SetMode'](arg1);
+}
+
+export function WGCreateRoom(arg1, arg2) {
+  return window['go']['app']['App']['WGCreateRoom'](arg1, arg2);
+}
+
+export function WGDisconnect() {
+  return window['go']['app']['App']['WGDisconnect']();
+}
+
+export function WGGetInviteCode() {
+  return window['go']['app']['App']['WGGetInviteCode']();
+}
+
+export function WGGetStatus() {
+  return window['go']['app']['App']['WGGetStatus']();
+}
+
+export function WGJoinRoom(arg1, arg2, arg3) {
+  return window['go']['app']['App']['WGJoinRoom'](arg1, arg2, arg3);
 }
