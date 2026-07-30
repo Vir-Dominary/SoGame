@@ -383,6 +383,14 @@ func (a *Agent) cleanup() {
 	cli := a.client
 	listener := a.listener
 	pingStop := a.pingStop
+	// 先置 nil，防止并发重复 close channel 导致 panic
+	a.pingStop = nil
+	a.client = nil
+	a.listener = nil
+	a.connected = false
+	a.roomID = ""
+	a.virtualIP = ""
+	a.subnet = ""
 	a.mu.Unlock()
 
 	// 停止心跳
@@ -402,16 +410,6 @@ func (a *Agent) cleanup() {
 
 	// 移除 WireGuard 接口
 	_ = a.wgMgr.Disconnect()
-
-	a.mu.Lock()
-	a.connected = false
-	a.roomID = ""
-	a.virtualIP = ""
-	a.subnet = ""
-	a.client = nil
-	a.listener = nil
-	a.pingStop = nil
-	a.mu.Unlock()
 }
 
 // handlePeers 返回当前 WireGuard 节点列表

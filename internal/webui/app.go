@@ -1067,10 +1067,14 @@ func (a *App) WGDisconnect() error {
 
 	resp, err := agentPost("/api/agent/disconnect", map[string]string{})
 	if err != nil {
+		// Agent 可能在处理断开时崩溃（连接被强制关闭），
+		// 此时 WireGuard 接口已随进程退出而移除，直接重置状态即可
+		logger.Infof("Agent disconnect request failed (agent may have crashed): %v", err)
 		a.mu.Lock()
-		a.errMsg = fmt.Sprintf("断开失败: %v", err)
+		a.state = StateDisconnected
+		a.errMsg = ""
 		a.mu.Unlock()
-		return fmt.Errorf("断开失败: %w", err)
+		return nil
 	}
 	defer resp.Body.Close()
 
