@@ -47,9 +47,8 @@ const (
 const agentListenAddr = "127.0.0.1:7890"
 const agentBaseURL = "http://" + agentListenAddr
 
-// DefaultWGServerURL 是 WireGuard 控制服务器的默认地址。
-// 官方服务器尚未架设，测试阶段使用本地控制服务器。
-const DefaultWGServerURL = "http://127.0.0.1:8080"
+// DefaultWGServerURL 是 WireGuard 控制服务器的默认地址（官方服务器公网地址）。
+const DefaultWGServerURL = "http://123.56.254.224"
 
 // normalizeWGServerURL 确保服务器地址包含 http:// 或 https:// 协议前缀。
 // 用户可能输入 "127.0.0.1:8080" 这样的裸地址，缺少协议前缀会导致 Go net/http

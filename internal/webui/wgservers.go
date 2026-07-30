@@ -17,9 +17,9 @@ type WGServerInfo struct {
 }
 
 // knownWGServers 预设控制服务器列表（顺序即 UI 显示顺序）
-// 官方服务器尚未架设，当前仅支持本地测试，因此合并为单个按钮
+// 官方服务器已部署，指向公网地址
 var knownWGServers = []WGServerInfo{
-	{Name: "官方服务器（当前只能本地测试）", URL: "http://127.0.0.1:8080", Available: true, Latency: -2},
+	{Name: "官方服务器", URL: "http://123.56.254.224", Available: true, Latency: -2},
 }
 
 // GetWGServers 返回预设控制服务器列表。
