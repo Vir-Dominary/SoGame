@@ -739,8 +739,19 @@ function App() {
                       </button>
                     </div>
                   </div>
+                  {appMode === 'express' && wgGeneratedCode && (
+                    <div className="conn-ip-row">
+                      <span className="conn-ip-label">邀请码</span>
+                      <div className="conn-ip-value-group">
+                        <span className="conn-ip-value">{wgGeneratedCode}</span>
+                        <button className="conn-copy-btn" onClick={handleWgCopy}>
+                          {wgCopied ? '已复制' : '复制'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   <p className="conn-desc">
-                    {appMode === 'express' ? 'WireGuard P2P 已建立，开始游戏吧' : '您已成功接入局域网，可以开始游戏了'}
+                    {appMode === 'express' ? 'WireGuard P2P 已建立，分享邀请码给好友即可联机' : '您已成功接入局域网，可以开始游戏了'}
                   </p>
                 </div>
               )}
