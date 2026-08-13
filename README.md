@@ -10,6 +10,34 @@
 - **TAP 驱动自动安装** — 首次连接时自动检测并安装 TAP 网络适配器
 - **连接状态监控** — 实时显示连接状态、群内节点数和网络诊断信息
 - **管理员权限自动请求** — 网络操作需要提权时自动触发 UAC
+- **极速模式（NetBird）** — 基于官方 NetBird v0.74.7 (WireGuard) 的房间制组网，
+  无需门牌号即可创建/加入房间、查看房间成员与连接路径（直连/中继）
+
+### 极速模式（测试进度）
+
+极速模式客户端集成已完成，当前处于**单机全链路验证**阶段：
+
+| 项目 | 状态 |
+|------|------|
+| 客户端集成（netbird 守护进程编排、Room API 客户端、状态机、DPAPI 安全存储） | ✅ 完成 |
+| 单机创建房间 → 入网 → 房间管理界面（成员/房间码/断开/离开） | ✅ 通过 |
+| 失败事务回滚与孤儿 profile 自愈 | ✅ 通过 |
+| 房间码明文展示与一键复制 | ✅ 通过 |
+| 双机真实联机测试（两台 Windows + legengen.top） | ⏳ 待办 |
+| Room API 服务端移植进 SoGame | ⏳ 后续 |
+
+本地开发验证方式：
+
+```powershell
+# 默认：Room API 指向真实服务器 https://legengen.top
+.\build\bin\SoGame.exe
+
+# 可选：本地 Mock 模拟（Room API 用 tools/room-api-mock）
+# 此时需把 Room API 地址切到 http://127.0.0.1:9099（UI 设置或 config.yaml 的 room_api_url）
+go run ./tools/room-api-mock/main.go
+```
+
+> 详细架构与测试进度见 [`wireguard/README.md`](wireguard/README.md) 与 `docs/`。
 
 ## 安装
 

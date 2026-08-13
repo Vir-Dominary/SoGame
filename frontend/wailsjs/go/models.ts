@@ -64,12 +64,122 @@ export namespace app {
 	        this.sponsorURL = source["sponsorURL"];
 	    }
 	}
+	export class ExpressError {
+	    code: string;
+	    message: string;
+	    retryable: boolean;
+	    action?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ExpressError(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.code = source["code"];
+	        this.message = source["message"];
+	        this.retryable = source["retryable"];
+	        this.action = source["action"];
+	    }
+	}
+	export class ExpressPeer {
+	    id: string;
+	    name: string;
+	    netbirdIp: string;
+	    connected: boolean;
+	    path: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ExpressPeer(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.netbirdIp = source["netbirdIp"];
+	        this.connected = source["connected"];
+	        this.path = source["path"];
+	    }
+	}
+	export class ExpressService {
+	    installed: boolean;
+	    running: boolean;
+	    version: string;
+	    expectedVersion: string;
+	    repairRequired: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ExpressService(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.installed = source["installed"];
+	        this.running = source["running"];
+	        this.version = source["version"];
+	        this.expectedVersion = source["expectedVersion"];
+	        this.repairRequired = source["repairRequired"];
+	    }
+	}
+	export class ExpressState {
+	    state: string;
+	    roomId: string;
+	    roomCodeMasked: string;
+	    localIp: string;
+	    connectedPath: string;
+	    peers: ExpressPeer[];
+	    peersStale: boolean;
+	    service: ExpressService;
+	    error?: ExpressError;
+	    busyCommand: string;
+	    hasSavedRoom: boolean;
+	    disconnected: boolean;
+	    roomCode: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ExpressState(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.state = source["state"];
+	        this.roomId = source["roomId"];
+	        this.roomCodeMasked = source["roomCodeMasked"];
+	        this.localIp = source["localIp"];
+	        this.connectedPath = source["connectedPath"];
+	        this.peers = this.convertValues(source["peers"], ExpressPeer);
+	        this.peersStale = source["peersStale"];
+	        this.service = this.convertValues(source["service"], ExpressService);
+	        this.error = this.convertValues(source["error"], ExpressError);
+	        this.busyCommand = source["busyCommand"];
+	        this.hasSavedRoom = source["hasSavedRoom"];
+	        this.disconnected = source["disconnected"];
+	        this.roomCode = source["roomCode"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ModeInfo {
 	    current: string;
-	    agentRunning: boolean;
-	    defaultServer: string;
-	    serverURL: string;
 	    nickname: string;
+	    roomApiUrl: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ModeInfo(source);
@@ -78,10 +188,8 @@ export namespace app {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.current = source["current"];
-	        this.agentRunning = source["agentRunning"];
-	        this.defaultServer = source["defaultServer"];
-	        this.serverURL = source["serverURL"];
 	        this.nickname = source["nickname"];
+	        this.roomApiUrl = source["roomApiUrl"];
 	    }
 	}
 	export class NodeInfo {
@@ -112,119 +220,6 @@ export namespace app {
 	        this.name = source["name"];
 	        this.address = source["address"];
 	        this.latency = source["latency"];
-	    }
-	}
-	export class WGCreateRoomResponse {
-	    room_id: string;
-	    invite_code: string;
-	    virtual_ip: string;
-	    subnet: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new WGCreateRoomResponse(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.room_id = source["room_id"];
-	        this.invite_code = source["invite_code"];
-	        this.virtual_ip = source["virtual_ip"];
-	        this.subnet = source["subnet"];
-	    }
-	}
-	export class WGPeerInfo {
-	    public_key: string;
-	    virtual_ip: string;
-	    endpoint: string;
-	    nickname: string;
-	    online: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new WGPeerInfo(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.public_key = source["public_key"];
-	        this.virtual_ip = source["virtual_ip"];
-	        this.endpoint = source["endpoint"];
-	        this.nickname = source["nickname"];
-	        this.online = source["online"];
-	    }
-	}
-	export class WGJoinRoomResponse {
-	    room_id: string;
-	    virtual_ip: string;
-	    subnet: string;
-	    peers: WGPeerInfo[];
-	
-	    static createFrom(source: any = {}) {
-	        return new WGJoinRoomResponse(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.room_id = source["room_id"];
-	        this.virtual_ip = source["virtual_ip"];
-	        this.subnet = source["subnet"];
-	        this.peers = this.convertValues(source["peers"], WGPeerInfo);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	
-	export class WGServerInfo {
-	    name: string;
-	    url: string;
-	    available: boolean;
-	    latency: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new WGServerInfo(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.url = source["url"];
-	        this.available = source["available"];
-	        this.latency = source["latency"];
-	    }
-	}
-	export class WGStatusResponse {
-	    connected: boolean;
-	    public_key: string;
-	    room_id: string;
-	    virtual_ip: string;
-	    subnet: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new WGStatusResponse(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.connected = source["connected"];
-	        this.public_key = source["public_key"];
-	        this.room_id = source["room_id"];
-	        this.virtual_ip = source["virtual_ip"];
-	        this.subnet = source["subnet"];
 	    }
 	}
 

@@ -8,6 +8,22 @@ export function ConnectWithInvite(arg1:string):Promise<void>;
 
 export function Disconnect():Promise<void>;
 
+export function ExpressCreateRoom(arg1:string):Promise<app.ExpressState>;
+
+export function ExpressDisconnect():Promise<app.ExpressState>;
+
+export function ExpressGetState():Promise<app.ExpressState>;
+
+export function ExpressJoinRoom(arg1:string,arg2:string):Promise<app.ExpressState>;
+
+export function ExpressLeaveRoom():Promise<app.ExpressState>;
+
+export function ExpressReconnect():Promise<app.ExpressState>;
+
+export function ExpressRepairService():Promise<app.ExpressState>;
+
+export function ExpressRevealRoomCode():Promise<string|app.ExpressError>;
+
 export function GenerateInvite(arg1:string):Promise<string>;
 
 export function GetAboutInfo():Promise<app.AboutInfo>;
@@ -28,22 +44,10 @@ export function GetNodesWithLatency():Promise<Array<app.NodeLatencyInfo>>;
 
 export function GetState():Promise<string>;
 
-export function GetWGServers():Promise<Array<app.WGServerInfo>>;
-
 export function IsNetworkAdapterReady():Promise<boolean>;
 
 export function OpenLogs():Promise<void>;
 
-export function SaveWGSettings(arg1:string,arg2:string):Promise<void>;
+export function SaveExpressSettings(arg1:string,arg2:string):Promise<void>;
 
 export function SetMode(arg1:string):Promise<void>;
-
-export function WGCreateRoom(arg1:string,arg2:string):Promise<app.WGCreateRoomResponse>;
-
-export function WGDisconnect():Promise<void>;
-
-export function WGGetInviteCode():Promise<string>;
-
-export function WGGetStatus():Promise<app.WGStatusResponse>;
-
-export function WGJoinRoom(arg1:string,arg2:string,arg3:string):Promise<app.WGJoinRoomResponse>;

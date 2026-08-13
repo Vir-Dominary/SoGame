@@ -11,13 +11,15 @@ import {
   GetConnectionDetails,
   GetMode,
   SetMode,
-  SaveWGSettings,
-  WGCreateRoom,
-  WGJoinRoom,
-  WGDisconnect,
-  WGGetStatus,
-  WGGetInviteCode,
-  GetWGServers,
+  SaveExpressSettings,
+  ExpressGetState,
+  ExpressCreateRoom,
+  ExpressJoinRoom,
+  ExpressDisconnect,
+  ExpressReconnect,
+  ExpressLeaveRoom,
+  ExpressRevealRoomCode,
+  ExpressRepairService,
 } from '../wailsjs/go/app/App'
 import { BrowserOpenURL, ClipboardSetText, EventsOn } from '../wailsjs/runtime/runtime'
 
@@ -34,9 +36,8 @@ function App() {
   const [showSettings, setShowSettings] = useState(false)
   // tabMode: 加入房间 / 创建房间
   const [tabMode, setTabMode] = useState('join')
-  // appMode: classic（经典 n2n+tap）/ express（极速 wireguard+wintun）
+  // appMode: classic（经典 n2n+tap）/ express（极速 NetBird+WireGuard）
   const [appMode, setAppMode] = useState('classic')
-  const [agentRunning, setAgentRunning] = useState(false)
 
   // 经典模式状态
   const [inviteCode, setInviteCode] = useState('')
@@ -46,16 +47,16 @@ function App() {
   const [selectedNode, setSelectedNode] = useState('')
 
   // 极速模式状态
-  const [wgServerURL, setWgServerURL] = useState('')
-  const [wgNickname, setWgNickname] = useState('')
-  const [wgInviteCode, setWgInviteCode] = useState('')
-  const [wgGeneratedCode, setWgGeneratedCode] = useState('')
-  const [wgCopied, setWgCopied] = useState(false)
-  // 极速模式控制服务器列表（按钮选择）
-  const [wgServers, setWgServers] = useState([])
-  const [wgServerLatencyLoading, setWgServerLatencyLoading] = useState(false)
-  const [showCustomServerInput, setShowCustomServerInput] = useState(false)
-  const [customServerURL, setCustomServerURL] = useState('')
+  const [expressNickname, setExpressNickname] = useState('')
+  const [expressRoomCode, setExpressRoomCode] = useState('')
+  const [expressState, setExpressState] = useState(null)
+  const [expressBusy, setExpressBusy] = useState(false)
+  const [expressRoomCodeRevealed, setExpressRoomCodeRevealed] = useState('')
+  const [expressCopied, setExpressCopied] = useState(false)
+  const [expressInRoom, setExpressInRoom] = useState(false)
+  // 启动恢复提示：检测到本地保存的上次房间时询问用户是否恢复
+  const [resumePromptOpen, setResumePromptOpen] = useState(false)
+  const resumePromptHandled = useRef(false)
 
   const [hoverDisconnect, setHoverDisconnect] = useState(false)
   const [connectionTime, setConnectionTime] = useState(null)
@@ -69,10 +70,9 @@ function App() {
   const pollRef = useRef(null)
   const timerRef = useRef(null)
   const latencyRef = useRef(null)
-  const agentPollRef = useRef(null)
+  const expressPollRef = useRef(null)
   const selectedNodeRef = useRef('')
   const appModeRef = useRef('classic')
-  const wgServerURLRef = useRef('')
 
   // 保持 ref 与 state 同步
   useEffect(() => {
@@ -84,21 +84,10 @@ function App() {
   }, [appMode])
 
   useEffect(() => {
-    wgServerURLRef.current = wgServerURL
-  }, [wgServerURL])
-
-  useEffect(() => {
-    // 加载模式与 WG 配置
     GetMode().then(info => {
       if (info) {
         setAppMode(info.current || 'classic')
-        setAgentRunning(info.agentRunning || false)
-        setWgServerURL(info.serverURL || info.defaultServer || '')
-        setWgNickname(info.nickname || '')
-        // 极速模式加载控制服务器列表
-        if ((info.current || 'classic') === 'express') {
-          loadWGServers()
-        }
+        setExpressNickname(info.nickname || '')
       }
     }).catch(e => console.error('GetMode failed:', e))
 
@@ -107,10 +96,8 @@ function App() {
       if (s && s !== 'disconnected') setStatus(s)
     }).catch(e => console.error('GetState failed:', e))
 
-    // 预加载关于信息（作者链接、赞助链接）
     GetAboutInfo().then(info => setAboutInfo(info)).catch(e => console.error('GetAboutInfo failed:', e))
 
-    // 监听后端异步推送的延迟数据
     EventsOn('nodeLatencyUpdated', (data) => {
       if (data && data.length > 0) {
         setNodes(data)
@@ -124,20 +111,11 @@ function App() {
       }
     })
 
-    // 监听极速模式控制服务器延迟数据
-    EventsOn('wgServerLatencyUpdated', (data) => {
-      if (data && data.length > 0) {
-        setWgServers(data)
-        setWgServerLatencyLoading(false)
-        // 当前选中的可用服务器不可达时，自动切换到最快的可用服务器
-        const current = data.find(s => s.url === wgServerURLRef.current)
-        if (current && current.available && current.url && current.latency < 0) {
-          const best = data.find(s => s.available && s.url && s.latency >= 0)
-          if (best) {
-            setWgServerURL(best.url)
-            setShowCustomServerInput(best.name === '自定义')
-          }
-        }
+    EventsOn('express:state-changed', (state) => {
+      if (state) {
+        setExpressState(state)
+        setExpressBusy(!!state.busyCommand)
+        setExpressInRoom(isExpressInRoom(state.state))
       }
     })
 
@@ -145,7 +123,7 @@ function App() {
       if (pollRef.current) clearInterval(pollRef.current)
       if (timerRef.current) clearInterval(timerRef.current)
       if (latencyRef.current) clearInterval(latencyRef.current)
-      if (agentPollRef.current) clearInterval(agentPollRef.current)
+      if (expressPollRef.current) clearInterval(expressPollRef.current)
     }
   }, [])
 
@@ -228,81 +206,121 @@ function App() {
     }
   }, [appMode])
 
-  // 极速模式：轮询 Agent 状态，直到 Agent 就绪。
-  // 用户可能通过 start-wg-test.ps1 在 SoGame 启动后才启动 Agent，
-  // 需要持续探测以更新 "Agent 启动中…" 提示。
+  // 极速模式：定时刷新状态
   useEffect(() => {
-    if (appMode !== 'express' || agentRunning) {
-      if (agentPollRef.current) {
-        clearInterval(agentPollRef.current)
-        agentPollRef.current = null
-      }
+    if (appMode !== 'express') {
+      if (expressPollRef.current) { clearInterval(expressPollRef.current); expressPollRef.current = null }
       return
     }
-    agentPollRef.current = setInterval(async () => {
+    ExpressGetState().then(s => {
+      if (s) { setExpressState(s); setExpressBusy(!!s.busyCommand); setExpressInRoom(isExpressInRoom(s.state)) }
+    }).catch(() => {})
+    expressPollRef.current = setInterval(async () => {
       try {
-        const info = await GetMode()
-        if (info?.agentRunning) {
-          setAgentRunning(true)
-          clearInterval(agentPollRef.current)
-          agentPollRef.current = null
-        }
+        const s = await ExpressGetState()
+        if (s) { setExpressState(s); setExpressBusy(!!s.busyCommand); setExpressInRoom(isExpressInRoom(s.state)) }
       } catch (e) { /* ignore */ }
     }, 3000)
     return () => {
-      if (agentPollRef.current) {
-        clearInterval(agentPollRef.current)
-        agentPollRef.current = null
-      }
+      if (expressPollRef.current) { clearInterval(expressPollRef.current); expressPollRef.current = null }
     }
-  }, [appMode, agentRunning])
+  }, [appMode])
 
-  // ========== 极速模式：控制服务器列表 ==========
-  const loadWGServers = async () => {
-    setWgServerLatencyLoading(true)
+  // ========== 极速模式：NetBird 房间操作 ==========
+  const handleExpressCreate = async () => {
+    resumePromptHandled.current = true
+    setErrorMsg('')
     try {
-      const list = await GetWGServers()
-      setWgServers(list || [])
-      // 若当前选中的 URL 对应"自定义"项，展开输入框并回填
-      const customItem = list.find(s => s.name === '自定义')
-      if (customItem && customItem.url && customItem.url === wgServerURLRef.current) {
-        setShowCustomServerInput(true)
-        setCustomServerURL(customItem.url)
-      }
-      // 若当前未选中任何服务器，或选中的 URL 已不在列表中，默认选第一个可用项
-      const currentInList = list.find(s => s.url === wgServerURLRef.current)
-      if (!wgServerURLRef.current || !currentInList) {
-        const first = list.find(s => s.available && s.url)
-        if (first) {
-          setWgServerURL(first.url)
-          setShowCustomServerInput(first.name === '自定义')
-        }
-      }
-    } catch (e) { console.error('loadWGServers failed:', e) }
-    // wgServerLatencyLoading 由事件回调设为 false
-  }
-
-  const handleSelectWGServer = (server) => {
-    if (!server.available) return
-    setWgServerURL(server.url)
-    setErrorMsg('')
-    if (server.name === '自定义') {
-      setShowCustomServerInput(true)
-      setCustomServerURL(server.url)
-    } else {
-      setShowCustomServerInput(false)
-    }
-    // 持久化（昵称为空时传占位，SaveWGSettings 会校验非空，这里仅在有昵称时保存）
-    if (wgNickname.trim()) {
-      SaveWGSettings(server.url, wgNickname).catch(e => console.error('SaveWGSettings failed:', e))
+      const state = await ExpressCreateRoom(expressNickname)
+      setExpressState(state)
+      setExpressBusy(false)
+      setExpressInRoom(isExpressInRoom(state && state.state))
+    } catch (e) {
+      setErrorMsg(String(e))
     }
   }
 
-  const handleCustomServerChange = (e) => {
-    const url = e.target.value
-    setCustomServerURL(url)
-    setWgServerURL(url)
+  const handleExpressJoin = async () => {
+    if (!expressRoomCode.trim()) { setErrorMsg('请输入房间码'); return }
+    if (!expressNickname.trim()) { setErrorMsg('请输入昵称'); return }
+    resumePromptHandled.current = true
     setErrorMsg('')
+    try {
+      const state = await ExpressJoinRoom(expressRoomCode.trim(), expressNickname)
+      setExpressState(state)
+      setExpressBusy(false)
+      setExpressInRoom(isExpressInRoom(state && state.state))
+    } catch (e) {
+      setErrorMsg(String(e))
+    }
+  }
+
+  const handleExpressCopyCode = async () => {
+    try {
+      await ClipboardSetText((expressState && expressState.roomCode) || expressRoomCodeRevealed)
+      setExpressCopied(true)
+      setTimeout(() => setExpressCopied(false), 2000)
+    } catch (e) { setErrorMsg(String(e)) }
+  }
+
+  useEffect(() => {
+    if (expressInRoom && !expressBusy && !expressRoomCodeRevealed && !(expressState && expressState.roomCode)) {
+      ExpressRevealRoomCode().then(code => { if (code) setExpressRoomCodeRevealed(code) }).catch(e => {
+        console.error('express reveal failed:', e)
+      })
+    } else if (!expressInRoom) {
+      setExpressRoomCodeRevealed('')
+      setExpressCopied(false)
+    }
+  }, [expressInRoom, expressState, expressRoomCodeRevealed, expressBusy])
+
+  // 启动时若保存了上次的房间（后端标记 hasSavedRoom），询问用户是否恢复。
+  // 在用户确认前，程序不会自动进入房间、退出或重连。
+  const hasSavedRoom = !!(expressState && expressState.hasSavedRoom)
+  useEffect(() => {
+    if (hasSavedRoom && !resumePromptHandled.current) {
+      resumePromptHandled.current = true
+      setResumePromptOpen(true)
+    }
+  }, [hasSavedRoom])
+
+  const handleExpressResume = async () => {
+    resumePromptHandled.current = true
+    setResumePromptOpen(false)
+    setErrorMsg('')
+    try {
+      const state = await ExpressReconnect()
+      setExpressState(state)
+      setExpressBusy(!!(state && state.busyCommand))
+      setExpressInRoom(isExpressInRoom(state && state.state))
+    } catch (e) {
+      setErrorMsg(String(e))
+    }
+  }
+
+  const handleExpressDisconnect = async () => {
+    resumePromptHandled.current = true
+    try {
+      const state = await ExpressDisconnect()
+      setExpressState(state)
+    } catch (e) { setErrorMsg(String(e)) }
+  }
+
+  const handleExpressLeave = async () => {
+    resumePromptHandled.current = true
+    try {
+      const state = await ExpressLeaveRoom()
+      setExpressState(state)
+      setExpressInRoom(false)
+      setExpressRoomCodeRevealed('')
+    } catch (e) { setErrorMsg(String(e)) }
+  }
+
+  const handleExpressRepair = async () => {
+    try {
+      const state = await ExpressRepairService()
+      setExpressState(state)
+    } catch (e) { setErrorMsg(String(e)) }
   }
 
   // ========== 经典模式：生成 / 加入 ==========
@@ -326,67 +344,14 @@ function App() {
     }
   }
 
-  // ========== 极速模式：生成 / 加入 ==========
-  const handleWGCreate = async () => {
-    setErrorMsg('')
-    setStatus('connecting')
-    try {
-      const resp = await WGCreateRoom(wgServerURL, wgNickname)
-      if (resp) {
-        setWgGeneratedCode(resp.invite_code || '')
-        setWgCopied(false)
-        setStatus('connected')
-        // 持久化配置
-        await SaveWGSettings(wgServerURL, wgNickname)
-      }
-    } catch (e) {
-      setStatus('failed')
-      setErrorMsg(String(e))
-    }
-  }
-
-  const handleWGJoin = async () => {
-    if (!wgInviteCode.trim()) {
-      setErrorMsg('请输入邀请码')
-      return
-    }
-    if (!wgNickname.trim()) {
-      setErrorMsg('请输入昵称')
-      return
-    }
-    setErrorMsg('')
-    setStatus('connecting')
-    try {
-      await WGJoinRoom(wgServerURL, wgInviteCode.trim(), wgNickname)
-      setStatus('connected')
-      await SaveWGSettings(wgServerURL, wgNickname)
-    } catch (e) {
-      setStatus('failed')
-      setErrorMsg(String(e))
-    }
-  }
-
-  const handleWgCopy = () => {
-    if (wgGeneratedCode) {
-      ClipboardSetText(wgGeneratedCode).catch(e => console.error('clipboard write failed:', e))
-      setWgCopied(true)
-      setTimeout(() => setWgCopied(false), 2000)
-    }
-  }
-
   // ========== 统一连接 / 断开按钮 ==========
   const handleConnect = async () => {
     if (status === 'connected' || status === 'connecting') {
-      // 断开
+      // 断开 (仅经典模式)
       try {
-        if (appMode === 'classic') {
-          await Disconnect()
-        } else {
-          await WGDisconnect()
-        }
+        await Disconnect()
         setStatus('disconnected')
         setErrorMsg('')
-        setWgGeneratedCode('')
       } catch (e) {
         setErrorMsg(String(e))
       }
@@ -411,15 +376,16 @@ function App() {
     } else {
       // 极速模式
       if (tabMode === 'create') {
-        await handleWGCreate()
+        await handleExpressCreate()
       } else {
-        await handleWGJoin()
+        await handleExpressJoin()
       }
     }
   }
 
   const handleSwitchMode = async (newMode) => {
     if (newMode === appMode || modeSwitching) return
+    resumePromptHandled.current = true
     setModeSwitching(true)
     try {
       await SetMode(newMode)
@@ -427,16 +393,9 @@ function App() {
       // 切换模式后重置状态
       setStatus('disconnected')
       setErrorMsg('')
-      setWgGeneratedCode('')
       setGeneratedCode('')
-      // 重新获取 Agent 状态
-      GetMode().then(info => {
-        setAgentRunning(info?.agentRunning || false)
-      }).catch(() => {})
-      // 切换到极速模式时加载控制服务器列表
-      if (newMode === 'express') {
-        loadWGServers()
-      }
+      setExpressRoomCodeRevealed('')
+      setExpressInRoom(false)
     } catch (e) {
       setErrorMsg(String(e))
     } finally {
@@ -461,10 +420,30 @@ function App() {
   const isConnecting = status === 'connecting'
   const isDisabled = isConnecting || modeSwitching
 
+  // 极速模式：是否处于已加入房间的视图（错误态不算房间内，回到表单可重试）
+  const isExpressInRoom = (state) => !!state && state !== 'NoRoom' && state !== 'RecoverableError'
+
+  // 极速模式状态的中文显示
+  const expressStateLabel = (state, busy) => {
+    if (busy) return '处理中...'
+    switch (state) {
+      case 'ConnectedP2P': return '已连接 · 直连'
+      case 'ConnectedRelay': return '已连接 · 中继'
+      case 'Enrolling': return '创建中...'
+      case 'ConnectingPeer': return '连接中...'
+      case 'Reconnecting': return '重连中...'
+      case 'WaitingForPeer': return '等待其他玩家加入'
+      case 'ControlPlaneConnected': return '未连接'
+      case 'RecoverableError': return '出错'
+      case 'NoRoom': return '未加入房间'
+      default: return state
+    }
+  }
+
   // 极速模式 - 创建房间的按钮可用性
-  const expressCreateDisabled = isDisabled || !wgNickname.trim() || !wgServerURL.trim()
+  const expressCreateDisabled = isDisabled || !expressNickname.trim()
   // 极速模式 - 加入房间的按钮可用性
-  const expressJoinDisabled = isDisabled || !wgInviteCode.trim() || !wgNickname.trim() || !wgServerURL.trim()
+  const expressJoinDisabled = isDisabled || !expressRoomCode.trim() || !expressNickname.trim()
   // 经典模式 - 创建房间的按钮可用性
   const classicCreateDisabled = isDisabled || !generatedCode
   const classicJoinDisabled = isDisabled || !inviteCode.trim()
@@ -506,244 +485,96 @@ function App() {
               className={`app-mode-tab ${appMode === 'express' ? 'active' : ''}`}
               onClick={() => handleSwitchMode('express')}
               disabled={modeSwitching || isConnected || isConnecting}
-              title={agentRunning ? 'WireGuard + Wintun（Agent 已就绪）' : 'WireGuard + Wintun（启动中…）'}
+              title="NetBird + WireGuard"
             >
-              极速模式{appMode === 'express' && !agentRunning ? ' ·' : ''}
+              极速模式
             </button>
           </div>
 
-          {!isConnected && !isConnecting ? (
+          {/* ========== 公共 UI：模式选项卡（经典/极速共用） ========== */}
+          {!expressInRoom && !isConnected && !isConnecting && (
+            <div className="mode-tabs">
+              <button className={`mode-tab ${tabMode === 'join' ? 'active' : ''}`} onClick={() => { setTabMode('join'); setErrorMsg('') }}>加入房间</button>
+              <button className={`mode-tab ${tabMode === 'create' ? 'active' : ''}`} onClick={() => { setTabMode('create'); setErrorMsg('') }}>创建房间</button>
+            </div>
+          )}
+
+          {/* ========== 经典模式：加入/创建房间 ========== */}
+          {!expressInRoom && appMode === 'classic' && !isConnected && !isConnecting && (
             <>
-              <div className="mode-tabs">
-                <button
-                  className={`mode-tab ${tabMode === 'join' ? 'active' : ''}`}
-                  onClick={() => { setTabMode('join'); setErrorMsg('') }}
-                >
-                  加入房间
-                </button>
-                <button
-                  className={`mode-tab ${tabMode === 'create' ? 'active' : ''}`}
-                  onClick={() => { setTabMode('create'); setErrorMsg('') }}
-                >
-                  创建房间
-                </button>
-              </div>
-
-              {/* ========== 经典模式 UI ========== */}
-              {appMode === 'classic' && tabMode === 'join' && (
-                <div className="invite-section">
-                  <div className="field">
-                    <label>房间链接</label>
-                    <input
-                      type="text"
-                      value={inviteCode}
-                      onChange={e => { setInviteCode(e.target.value); setErrorMsg('') }}
-                      placeholder="粘贴房间链接"
-                    />
-                  </div>
-                </div>
+              {tabMode === 'join' && (
+                <div className="invite-section"><div className="field"><label>房间链接</label>
+                  <input type="text" value={inviteCode} onChange={e => { setInviteCode(e.target.value); setErrorMsg('') }} placeholder="粘贴房间链接" />
+                </div></div>
               )}
-
-              {appMode === 'classic' && tabMode === 'create' && (
+              {tabMode === 'create' && (
                 <div className="invite-section">
                   <div className="field">
-                    <div className="field-header">
-                      <label>中心节点</label>
-                      <button className="refresh-latency-btn" onClick={loadNodesWithLatency} disabled={latencyLoading}>
-                        {latencyLoading ? '测速中...' : '测速'}
-                      </button>
-                    </div>
+                    <div className="field-header"><label>中心节点</label><button className="refresh-latency-btn" onClick={loadNodesWithLatency} disabled={latencyLoading}>{latencyLoading ? '测速中...' : '测速'}</button></div>
                     <div className="node-chips">
                       {nodes.map(n => (
-                        <button
-                          key={n.name}
-                          className={`node-chip ${selectedNode === n.name ? 'active' : ''} ${n.latency < 0 && n.latency !== -2 ? 'unavailable' : ''}`}
-                          onClick={() => setSelectedNode(n.name)}
-                          disabled={n.latency < 0 && n.latency !== -2}
-                        >
+                        <button key={n.name} className={`node-chip ${selectedNode===n.name?'active':''} ${n.latency<0 && n.latency!==-2?'unavailable':''}`} onClick={()=>setSelectedNode(n.name)} disabled={n.latency<0 && n.latency!==-2}>
                           <span className="node-name">{n.name.replace(/公用节点——/, '').replace(/临时节点——/, '')}</span>
-                          <span className={`node-latency ${n.latency === -2 ? 'measuring' : n.latency < 0 ? 'unavailable' : n.latency < 50 ? 'fast' : n.latency < 150 ? 'medium' : 'slow'}`}>
-                            {n.latency === -2 ? '测量中' : n.latency < 0 ? '不可用' : `${n.latency}ms`}
-                          </span>
+                          <span className={`node-latency ${n.latency===-2?'measuring':n.latency<0?'unavailable':n.latency<50?'fast':n.latency<150?'medium':'slow'}`}>{n.latency===-2?'测量中':n.latency<0?'不可用':`${n.latency}ms`}</span>
                         </button>
                       ))}
                     </div>
                   </div>
-                  <button className="generate-btn" onClick={handleGenerate}>
-                    生成房间链接
-                  </button>
-                  {generatedCode && (
-                    <div className="code-result">
-                      <div className="code-label">房间链接</div>
-                      <div className="code-box">
-                        <span className="code-text">{generatedCode}</span>
-                        <button className="copy-btn" onClick={handleCopy}>
-                          {copied ? '✓' : '复制'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
+                  <button className="generate-btn" onClick={handleGenerate}>生成房间链接</button>
+                  {generatedCode && (<div className="code-result"><div className="code-label">房间链接</div><div className="code-box"><span className="code-text">{generatedCode}</span><button className="copy-btn" onClick={handleCopy}>{copied?'✓':'复制'}</button></div></div>)}
                 </div>
               )}
-
-              {/* ========== 极速模式 UI ========== */}
-              {appMode === 'express' && (
-                <div className="invite-section">
-                  <div className="field">
-                    <div className="field-header">
-                      <label>控制服务器</label>
-                      <button className="refresh-latency-btn" onClick={loadWGServers} disabled={wgServerLatencyLoading}>
-                        {wgServerLatencyLoading ? '测速中...' : '测速'}
-                      </button>
-                    </div>
-                    <div className="node-chips">
-                      {wgServers.map(s => (
-                        <button
-                          key={s.name}
-                          className={`node-chip ${wgServerURL === s.url && s.url ? 'active' : ''} ${!s.available ? 'unavailable' : ''}`}
-                          onClick={() => handleSelectWGServer(s)}
-                          disabled={!s.available}
-                          title={s.url || '即将上线'}
-                        >
-                          <span className="node-name">{s.name}</span>
-                          <span className={`node-latency ${
-                            !s.available ? 'unavailable' :
-                            s.latency === -2 ? 'measuring' :
-                            s.latency < 0 ? 'unavailable' :
-                            s.latency < 50 ? 'fast' : s.latency < 150 ? 'medium' : 'slow'
-                          }`}>
-                            {!s.available ? '即将上线' :
-                             s.latency === -2 ? '测量中' :
-                             s.latency < 0 ? '不可用' : `${s.latency}ms`}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                    {showCustomServerInput && (
-                      <input
-                        type="text"
-                        className="custom-server-input"
-                        value={customServerURL}
-                        onChange={handleCustomServerChange}
-                        placeholder="http://your-server:8080"
-                      />
-                    )}
-                  </div>
-                  <div className="field">
-                    <label>昵称</label>
-                    <input
-                      type="text"
-                      value={wgNickname}
-                      onChange={e => { setWgNickname(e.target.value); setErrorMsg('') }}
-                      placeholder="您的昵称"
-                      maxLength={32}
-                    />
-                  </div>
-
-                  {tabMode === 'join' && (
-                    <div className="field">
-                      <label>邀请码</label>
-                      <input
-                        type="text"
-                        value={wgInviteCode}
-                        onChange={e => { setWgInviteCode(e.target.value); setErrorMsg('') }}
-                        placeholder="粘贴邀请码"
-                      />
-                    </div>
-                  )}
-
-                  {tabMode === 'create' && (
-                    <>
-                      <button className="generate-btn" onClick={handleWGCreate} disabled={expressCreateDisabled}>
-                        创建 WireGuard 房间
-                      </button>
-                      {wgGeneratedCode && (
-                        <div className="code-result">
-                          <div className="code-label">邀请码</div>
-                          <div className="code-box">
-                            <span className="code-text">{wgGeneratedCode}</span>
-                            <button className="copy-btn" onClick={handleWgCopy}>
-                              {wgCopied ? '✓' : '复制'}
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </>
-                  )}
-
-                  <div className="wg-hint">
-                    {agentRunning ? 'WireGuard Agent 已就绪' : 'Agent 启动中…'}
-                  </div>
-                </div>
-              )}
-
-              <button
-                className={`power-btn ${status}`}
-                onClick={handleConnect}
-                disabled={powerDisabled}
-              >
-                <div className="btn-ring" style={{ borderColor: st.ring }}>
-                  <div className="btn-inner">
-                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#3ddc84" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <polygon points="5 3 19 12 5 21 5 3"/>
-                    </svg>
-                  </div>
-                </div>
+              <button className={`power-btn ${status}`} onClick={handleConnect} disabled={powerDisabled}>
+                <div className="btn-ring" style={{ borderColor: st.ring }}><div className="btn-inner"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#3ddc84" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg></div></div>
               </button>
             </>
-          ) : (
-            <>
-              <button
-                className={`power-btn ${status}`}
-                onClick={handleConnect}
-                disabled={isDisabled}
-                onMouseEnter={() => setHoverDisconnect(true)}
-                onMouseLeave={() => setHoverDisconnect(false)}
-              >
-                <div className="btn-ring" style={{ borderColor: st.ring }}>
-                  <div className="btn-inner">
-                    {isConnecting ? (
-                      <div className="spinner" />
-                    ) : hoverDisconnect ? (
-                      <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#ff5252" strokeWidth="2.2" strokeLinecap="round">
-                        <line x1="18" y1="6" x2="6" y2="18"/>
-                        <line x1="6" y1="6" x2="18" y2="18"/>
-                      </svg>
-                    ) : (
-                      <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#3ddc84" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                        <polyline points="20 6 9 17 4 12"/>
-                      </svg>
-                    )}
-                  </div>
-                </div>
-              </button>
+          )}
 
-              <div className="status-block">
-                <div className="status-indicator">
-                  <span className="status-dot" style={{ background: st.color, boxShadow: `0 0 10px ${st.color}` }} />
-                  <span className="status-label" style={{ color: st.color }}>{st.label}</span>
-                </div>
-                {isConnected && elapsed && (
-                  <div className="elapsed">{elapsed}</div>
-                )}
+          {/* ========== 极速模式：加入/创建房间 ========== */}
+          {!expressInRoom && appMode === 'express' && !isConnected && !isConnecting && (
+            <div className="invite-section">
+              <div className="field"><label>昵称</label><input type="text" value={expressNickname} onChange={e => { setExpressNickname(e.target.value); setErrorMsg('') }} placeholder="您的昵称" maxLength={32} /></div>
+              {tabMode === 'join' && (<div className="field"><label>房间码</label><input type="text" value={expressRoomCode} onChange={e => { setExpressRoomCode(e.target.value); setErrorMsg('') }} placeholder="粘贴房间码" /></div>)}
+              <button className="generate-btn" onClick={tabMode === 'create' ? handleExpressCreate : handleExpressJoin} disabled={expressBusy}>{tabMode === 'create' ? '创建房间' : '加入房间'}</button>
+              {expressState && expressState.service && !expressState.service.installed && (<div className="express-hint">NetBird 守护进程未安装 <button className="repair-btn" onClick={handleExpressRepair}>安装</button></div>)}
+              {expressState && expressState.error && (<div className="error-bar">{expressState.error.message}</div>)}
+            </div>
+          )}
+
+          {/* ========== 极速模式：已加入房间 ========== */}
+          {expressInRoom && expressState && (
+            <div className="invite-section">
+              <div className="status-indicator"><span className="status-dot" style={{ background: expressState.connectedPath==='p2p'?'#3ddc84':expressState.connectedPath==='relay'?'#f0a030':'#666', boxShadow:expressState.connectedPath==='p2p'?'0 0 10px #3ddc84':'none' }}/><span style={{color:'#ccc'}}>{expressStateLabel(expressState.state, expressBusy)}</span></div>
+              {expressState.error && (<div className="error-bar">{expressState.error.message}</div>)}
+              {expressState.localIp && (<div className="conn-ip-row"><span className="conn-ip-label">本机 IP</span><span className="conn-ip-value">{expressState.localIp}</span></div>)}
+              <div className="express-peers">
+                <div className="express-peers-header"><span>房间成员</span><span className="express-peers-count">{(expressState.peers || []).length + 1} 人</span></div>
+                {(expressState.peers || []).length > 0 ? (
+                  <div className="express-peers-list">
+                    {(expressState.peers || []).map((peer,i) => (<div key={peer.id||i} className="express-peer-item"><span className={`express-peer-dot ${peer.connected?'connected':'disconnected'}`}/><span className="express-peer-name">{peer.name||'未知'}</span><span className="express-peer-ip">{peer.netbirdIp||''}</span>{peer.connected && peer.path==='p2p' && <span className="express-peer-path">直连</span>}{peer.connected && peer.path==='relay' && <span className="express-peer-path">中继</span>}</div>))}
+                  </div>
+                ) : (<div className="express-peers-empty">等待其他成员加入…</div>)}
               </div>
+              {((expressState && expressState.roomCode) || expressRoomCodeRevealed) && (<div className="code-result"><div className="code-label">房间码</div><div className="code-box"><span className="code-text">{(expressState && expressState.roomCode) || expressRoomCodeRevealed}</span><button className="copy-btn" onClick={handleExpressCopyCode}>{expressCopied?'已复制':'复制'}</button></div></div>)}
+              <div className="express-actions">
+                {(expressState && expressState.disconnected) ? (
+                  <button className="express-leave-btn secondary" onClick={handleExpressResume} disabled={expressBusy}>重新连接</button>
+                ) : (
+                  <button className="express-leave-btn secondary" onClick={handleExpressDisconnect} disabled={expressBusy}>断开</button>
+                )}
+                <button className="express-leave-btn danger" onClick={handleExpressLeave} disabled={expressBusy}>离开房间</button>
+              </div>
+            </div>
+          )}
 
-              {isConnected && connDetails && (
-                <div className="conn-info">
-                  <div className="conn-ip-row">
-                    <span className="conn-ip-label">本机 IP</span>
-                    <div className="conn-ip-value-group">
-                      <span className="conn-ip-value">{connDetails.virtualIP}</span>
-                      <button className="conn-copy-btn" onClick={handleCopyIP}>
-                        {ipCopied ? '已复制' : '复制'}
-                      </button>
-                    </div>
-                  </div>
-                  <p className="conn-desc">
-                    {appMode === 'express' ? 'WireGuard P2P 已建立，开始游戏吧' : '您已成功接入局域网，可以开始游戏了'}
-                  </p>
-                </div>
-              )}
+          {/* ========== 经典模式：已连接 ========== */}
+          {appMode === 'classic' && (isConnected || isConnecting) && (
+            <>
+              <button className={`power-btn ${status}`} onClick={handleConnect} disabled={isDisabled} onMouseEnter={()=>setHoverDisconnect(true)} onMouseLeave={()=>setHoverDisconnect(false)}>
+                <div className="btn-ring" style={{borderColor:st.ring}}><div className="btn-inner">{isConnecting?(<div className="spinner"/>):hoverDisconnect?(<svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#ff5252" strokeWidth="2.2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>):(<svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#3ddc84" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>)}</div></div>
+              </button>
+              <div className="status-block"><div className="status-indicator"><span className="status-dot" style={{background:st.color, boxShadow:`0 0 10px ${st.color}`}}/><span className="status-label" style={{color:st.color}}>{st.label}</span></div>{isConnected && elapsed && (<div className="elapsed">{elapsed}</div>)}</div>
+              {isConnected && connDetails && (<div className="conn-info"><div className="conn-ip-row"><span className="conn-ip-label">本机 IP</span><div className="conn-ip-value-group"><span className="conn-ip-value">{connDetails.virtualIP}</span><button className="conn-copy-btn" onClick={handleCopyIP}>{ipCopied?'已复制':'复制'}</button></div></div><p className="conn-desc">您已成功接入局域网，可以开始游戏了</p></div>)}
             </>
           )}
 
@@ -753,25 +584,44 @@ function App() {
         </div>
 
         <div className="footer">
-          <button
-            className="settings-toggle"
-            onClick={() => setShowSettings(!showSettings)}
-          >
+          <button className="settings-toggle" onClick={() => setShowSettings(!showSettings)}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
             </svg>
             <span>{showSettings ? '收起' : '日志'}</span>
           </button>
-          <button
-            className="settings-toggle"
-            onClick={() => setShowSponsor(!showSponsor)}
-          >
+          <button className="settings-toggle" onClick={() => setShowSponsor(!showSponsor)}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/>
             </svg>
             <span>{showSponsor ? '收起' : '赞助'}</span>
           </button>
         </div>
+
+        {resumePromptOpen && (
+          <div className="modal-overlay">
+            <div className="modal-dialog">
+              <div className="modal-title">检测到上次的房间</div>
+              <div className="modal-text">检测到本机保存了上次的极速模式房间，是否恢复？恢复后可直接继续联机。</div>
+              <div className="modal-actions">
+                <button
+                  className="modal-btn primary"
+                  onClick={handleExpressResume}
+                  disabled={expressBusy}
+                >
+                  恢复
+                </button>
+                <button
+                  className="modal-btn danger"
+                  onClick={async () => { setResumePromptOpen(false); await handleExpressLeave() }}
+                  disabled={expressBusy}
+                >
+                  离开房间
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {showSettings && (
           <div className="settings-panel">

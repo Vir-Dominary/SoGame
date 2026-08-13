@@ -14,6 +14,38 @@ export function Disconnect() {
   return window['go']['app']['App']['Disconnect']();
 }
 
+export function ExpressCreateRoom(arg1) {
+  return window['go']['app']['App']['ExpressCreateRoom'](arg1);
+}
+
+export function ExpressDisconnect() {
+  return window['go']['app']['App']['ExpressDisconnect']();
+}
+
+export function ExpressGetState() {
+  return window['go']['app']['App']['ExpressGetState']();
+}
+
+export function ExpressJoinRoom(arg1, arg2) {
+  return window['go']['app']['App']['ExpressJoinRoom'](arg1, arg2);
+}
+
+export function ExpressLeaveRoom() {
+  return window['go']['app']['App']['ExpressLeaveRoom']();
+}
+
+export function ExpressReconnect() {
+  return window['go']['app']['App']['ExpressReconnect']();
+}
+
+export function ExpressRepairService() {
+  return window['go']['app']['App']['ExpressRepairService']();
+}
+
+export function ExpressRevealRoomCode() {
+  return window['go']['app']['App']['ExpressRevealRoomCode']();
+}
+
 export function GenerateInvite(arg1) {
   return window['go']['app']['App']['GenerateInvite'](arg1);
 }
@@ -54,10 +86,6 @@ export function GetState() {
   return window['go']['app']['App']['GetState']();
 }
 
-export function GetWGServers() {
-  return window['go']['app']['App']['GetWGServers']();
-}
-
 export function IsNetworkAdapterReady() {
   return window['go']['app']['App']['IsNetworkAdapterReady']();
 }
@@ -66,30 +94,10 @@ export function OpenLogs() {
   return window['go']['app']['App']['OpenLogs']();
 }
 
-export function SaveWGSettings(arg1, arg2) {
-  return window['go']['app']['App']['SaveWGSettings'](arg1, arg2);
+export function SaveExpressSettings(arg1, arg2) {
+  return window['go']['app']['App']['SaveExpressSettings'](arg1, arg2);
 }
 
 export function SetMode(arg1) {
   return window['go']['app']['App']['SetMode'](arg1);
-}
-
-export function WGCreateRoom(arg1, arg2) {
-  return window['go']['app']['App']['WGCreateRoom'](arg1, arg2);
-}
-
-export function WGDisconnect() {
-  return window['go']['app']['App']['WGDisconnect']();
-}
-
-export function WGGetInviteCode() {
-  return window['go']['app']['App']['WGGetInviteCode']();
-}
-
-export function WGGetStatus() {
-  return window['go']['app']['App']['WGGetStatus']();
-}
-
-export function WGJoinRoom(arg1, arg2, arg3) {
-  return window['go']['app']['App']['WGJoinRoom'](arg1, arg2, arg3);
 }

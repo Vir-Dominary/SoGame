@@ -2,6 +2,7 @@
 #define MyAppVersion "1.3"
 #define MyAppPublisher "vir_dominary"
 #define MyAppExeName "SoGame.exe"
+#define NetBirdMSI "netbird_installer_0.74.7_windows_amd64.msi"
 
 [Setup]
 AppId={{D3A6F4A0-1234-4F00-ABCD-000000000001}
@@ -44,16 +45,19 @@ chinese.FinishedRestartLabel=要完成安装，需要重新启动计算机。是
 chinese.ConfirmUninstall=确定要卸载 {#MyAppName} 吗？
 
 [Files]
+; 主程序
 Source: "..\build\bin\SoGame.exe"; DestDir: "{app}"; Flags: ignoreversion
+; 经典模式：n2n edge
 Source: "..\bin\edge.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
+; 经典模式：TAP 网卡驱动
 Source: "tap\OemWin2k.inf"; DestDir: "{app}\tap"; Flags: ignoreversion
 Source: "tap\tap0901.cat"; DestDir: "{app}\tap"; Flags: ignoreversion
 Source: "tap\tap0901.sys"; DestDir: "{app}\tap"; Flags: ignoreversion
 Source: "tap\tapinstall.exe"; DestDir: "{app}\tap"; Flags: ignoreversion
-; WireGuard 极速模式
-Source: "..\wireguard\wireguard.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
-Source: "..\wireguard\wg.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
-Source: "..\wireguard\agent\sogame-agent.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
+; 极速模式：NetBird 守护进程安装辅助程序（UAC 提权安装 MSI）
+Source: "..\build\bin\sogame-helper.exe"; DestDir: "{app}"; Flags: ignoreversion
+; 极速模式：官方 NetBird MSI（首次使用极速模式时由 sogame-helper 提权安装为系统服务）
+Source: "..\bin\{#NetBirdMSI}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -89,14 +93,11 @@ var
 begin
   if (CurStep = ssPostInstall) then
   begin
-    Log('Installation completed. TAP driver installation is handled by the application at runtime.');
+    Log('Installation completed. TAP driver and NetBird MSI are handled by the application at runtime.');
 
-    // 添加 WireGuard UDP 51820 入站防火墙规则
-    if Exec('netsh', 'advfirewall firewall add rule name="SoGame WireGuard" dir=in action=allow protocol=UDP localport=51820',
-            '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-      Log('WireGuard firewall rule added')
-    else
-      Log('Failed to add WireGuard firewall rule');
+    // 清理旧版 WireGuard 防火墙规则（极速模式已改用 NetBird，不再使用 51820 端口）
+    Exec('netsh', 'advfirewall firewall delete rule name="SoGame WireGuard"',
+         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;
 
@@ -108,7 +109,7 @@ var
 begin
   if CurUninstallStep = usUninstall then
   begin
-    // 删除防火墙规则
+    // 清理旧版防火墙规则
     Exec('netsh', 'advfirewall firewall delete rule name="SoGame WireGuard"',
          '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 

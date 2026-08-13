@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "version": "0.74.7",
+  "serverImage": "netbirdio/netbird-server:0.74.7",
+  "packagingMode": "official-msi-prerequisite",
+  "windowsX64": {
+    "artifact": "netbird_installer_0.74.7_windows_amd64.msi",
+    "url": "https://github.com/netbirdio/netbird/releases/download/v0.74.7/netbird_installer_0.74.7_windows_amd64.msi",
+    "size": 37974016,
+    "sha256": "1be9ce80767a728a8682bc3c114256b224b8d6657400ac031e458a05b5e5942d",
+    "publisher": {
+      "subjectCommonName": "NetBird GmbH",
+      "organization": "NetBird GmbH",
+      "certificateThumbprintAtRelease": "7B41FCCAFCB794720FE07D381F9CBDF18AB5900F"
+    },
+    "install": {
+      "productCode": "{D656CD63-C692-4494-ABAB-31A779E04E08}",
+      "executable": "msiexec.exe",
+      "arguments": ["/i", "{artifact}", "/quiet", "/qn", "/norestart", "/l*v", "{log}", "AUTOSTART=0"]
+    }
+  }
+}
