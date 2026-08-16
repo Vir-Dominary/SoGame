@@ -1,8 +1,23 @@
 #define MyAppName "SoGame"
-#define MyAppVersion "1.3"
+#define MyAppVersion "2.0"
 #define MyAppPublisher "vir_dominary"
 #define MyAppExeName "SoGame.exe"
 #define NetBirdMSI "netbird_installer_0.74.7_windows_amd64.msi"
+
+; ============================================================================
+; 极速模式（netbird）打包说明
+; ----------------------------------------------------------------------------
+; 1. 主程序运行时按 exe 所在目录查找 sogame-helper.exe 与官方
+; NetBird MSI（文件名见 internal/releasebuild/netbird-release.json 的
+; windowsX64.artifact），找到后通过 UAC 提权（sogame-helper --action install
+; --artifact <msi>）将其安装为 Windows 系统服务。
+; 2. 本项目未随仓库携带 MSI（38MB 二进制产物）。编译安装包前请先下载：
+;    https://github.com/netbirdio/netbird/releases/download/v0.74.7/netbird_installer_0.74.7_windows_amd64.msi
+;    放到 ..\bin\ 目录（与下方 Source 路径一致），并校验 SHA256：
+;    1be9ce80767a728a8682bc3c114256b224b8d6657400ac031e458a05b5e5942d
+; 3. 未放置 MSI 时请保持下方 NetBirdMSI 行注释状态，安装包可正常编译，
+;    仅极速模式首次安装能力缺失（TAP 驱动仍可正常使用）。
+; ============================================================================
 
 [Setup]
 AppId={{D3A6F4A0-1234-4F00-ABCD-000000000001}
@@ -47,60 +62,24 @@ chinese.ConfirmUninstall=确定要卸载 {#MyAppName} 吗？
 [Files]
 ; 主程序
 Source: "..\build\bin\SoGame.exe"; DestDir: "{app}"; Flags: ignoreversion
-; 经典模式：n2n edge
+; 经典模式：n2n edge（应用按 exe 目录 / bin 子目录查找）
 Source: "..\bin\edge.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
-; 经典模式：TAP 网卡驱动
-Source: "tap\OemWin2k.inf"; DestDir: "{app}\tap"; Flags: ignoreversion
-Source: "tap\tap0901.cat"; DestDir: "{app}\tap"; Flags: ignoreversion
-Source: "tap\tap0901.sys"; DestDir: "{app}\tap"; Flags: ignoreversion
-Source: "tap\tapinstall.exe"; DestDir: "{app}\tap"; Flags: ignoreversion
-; 极速模式：NetBird 守护进程安装辅助程序（UAC 提权安装 MSI）
+; 经典模式：TAP 网卡驱动（应用运行时从 {app}\installer\tap 加载并提权安装）
+Source: "tap\OemWin2k.inf"; DestDir: "{app}\installer\tap"; Flags: ignoreversion
+Source: "tap\tap0901.cat"; DestDir: "{app}\installer\tap"; Flags: ignoreversion
+Source: "tap\tap0901.sys"; DestDir: "{app}\installer\tap"; Flags: ignoreversion
+Source: "tap\tapinstall.exe"; DestDir: "{app}\installer\tap"; Flags: ignoreversion
+; 极速模式：sogame-helper 提权助手（应用运行时与 exe 同级目录查找并 UAC 调用）
 Source: "..\build\bin\sogame-helper.exe"; DestDir: "{app}"; Flags: ignoreversion
-; 极速模式：官方 NetBird MSI（首次使用极速模式时由 sogame-helper 提权安装为系统服务）
-Source: "..\bin\{#NetBirdMSI}"; DestDir: "{app}"; Flags: ignoreversion
+; 极速模式：官方 NetBird MSI（应用运行时与 exe 同级目录查找）。MSI 未随仓库
+; 携带，放入 ..\bin\ 后取消本行注释再编译；保持注释则安装包不含极速模式安装能力。
+; Source: "..\bin\{#NetBirdMSI}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\卸载 {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
-
-[Tasks]
-Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加选项:"; Flags: checkedonce
 
 [Code]
-
-function IsTapInstalled(): Boolean;
-var
-  ResultCode: Integer;
-  Output: string;
-begin
-  Result := False;
-  if Exec('powershell', '-Command "Get-NetAdapter -IncludeHidden | Where-Object { $_.InterfaceDescription -match ''tap0901|TAP-Windows'' } | Measure-Object | Select-Object -ExpandProperty Count"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-  begin
-    if (ResultCode = 0) and (Output <> '') and (StrToIntDef(Output, 0) > 0) then
-      Result := True;
-  end;
-end;
-
-function ShouldInstallTap(): Boolean;
-begin
-  Result := not IsTapInstalled();
-end;
-
-procedure CurStepChanged(CurStep: TSetupStep);
-var
-  ResultCode: Integer;
-begin
-  if (CurStep = ssPostInstall) then
-  begin
-    Log('Installation completed. TAP driver and NetBird MSI are handled by the application at runtime.');
-
-    // 清理旧版 WireGuard 防火墙规则（极速模式已改用 NetBird，不再使用 51820 端口）
-    Exec('netsh', 'advfirewall firewall delete rule name="SoGame WireGuard"',
-         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  end;
-end;
-
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   ResultCode: Integer;
@@ -109,11 +88,7 @@ var
 begin
   if CurUninstallStep = usUninstall then
   begin
-    // 清理旧版防火墙规则
-    Exec('netsh', 'advfirewall firewall delete rule name="SoGame WireGuard"',
-         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-
-    if MsgBox('是否删除用户配置文件和密钥？', mbConfirmation, MB_YESNO) = IDYES then
+    if MsgBox('是否同时删除用户配置文件和本地密钥数据？', mbConfirmation, MB_YESNO) = IDYES then
     begin
       ConfigDir := ExpandConstant('{userappdata}\SoGame');
       if DirExists(ConfigDir) then
@@ -121,6 +96,8 @@ begin
       KeyDir := ExpandConstant('{localappdata}\SoGame');
       if DirExists(KeyDir) then
         DelTree(KeyDir, True, True, True);
+      Exec('netsh', 'advfirewall firewall delete rule name="SoGame VPN"',
+           '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     end;
   end;
 end;

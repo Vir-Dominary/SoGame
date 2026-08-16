@@ -2,7 +2,7 @@ package config
 
 const (
 	AppName       = "SoGame"
-	AppVersion    = "1.4"
+	AppVersion    = "2.0"
 	AppAuthor     = "vir_dominary"
 	AppURL        = "https://github.com/vir-dominary"
 	AppBilibili   = "https://space.bilibili.com/454851989"
