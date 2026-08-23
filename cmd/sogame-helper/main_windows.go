@@ -85,7 +85,14 @@ func run(actionValue, artifactPath, logPath string) error {
 	if err := installer.Execute(ctx, action, artifactPath, logPath, metadata.WindowsX64); err != nil {
 		return err
 	}
-	return nil
+	// 安装/修复成功：NetBird 仅作为隐藏守护进程使用。
+	// 清理桌面/开始菜单快捷方式与登录自启动项；清理失败只记录警告，不阻塞主流程。
+	if err := nbdaemon.HideNetBirdSurfaces(); err != nil {
+		fmt.Fprintln(os.Stderr, "warn: hide NetBird surfaces failed:", err)
+	}
+	// 确保守护进程服务已启动（MSI 已尝试启动，这里兜底），
+	// 否则安装"成功"但守护进程不可用。
+	return nbdaemon.EnsureNetBirdServiceRunning(ctx)
 }
 
 func ensureLogDirectory(logPath string) error {

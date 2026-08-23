@@ -11,12 +11,12 @@
 ; NetBird MSI（文件名见 internal/releasebuild/netbird-release.json 的
 ; windowsX64.artifact），找到后通过 UAC 提权（sogame-helper --action install
 ; --artifact <msi>）将其安装为 Windows 系统服务。
-; 2. 本项目未随仓库携带 MSI（38MB 二进制产物）。编译安装包前请先下载：
-;    https://github.com/netbirdio/netbird/releases/download/v0.74.7/netbird_installer_0.74.7_windows_amd64.msi
-;    放到 ..\bin\ 目录（与下方 Source 路径一致），并校验 SHA256：
-;    1be9ce80767a728a8682bc3c114256b224b8d6657400ac031e458a05b5e5942d
-; 3. 未放置 MSI 时请保持下方 NetBirdMSI 行注释状态，安装包可正常编译，
-;    仅极速模式首次安装能力缺失（TAP 驱动仍可正常使用）。
+; 2. MSI（38MB 二进制产物）不随 git 仓库携带，但【必须】打进安装包，
+;    否则新机器上极速模式会报“NetBird 服务未安装”且修复按钮无效。
+;    编译前请确认 ..\bin\ 下存在官方 MSI；缺失时先运行
+;    scripts\build-all.ps1（自动下载并校验 SHA256：
+;    1be9ce80767a728a8682bc3c114256b224b8d6657400ac031e458a05b5e5942d）。
+;    下方 NetBirdMSI 的 Source 行必须保持启用状态。
 ; ============================================================================
 
 [Setup]
@@ -71,12 +71,16 @@ Source: "tap\tap0901.sys"; DestDir: "{app}\installer\tap"; Flags: ignoreversion
 Source: "tap\tapinstall.exe"; DestDir: "{app}\installer\tap"; Flags: ignoreversion
 ; 极速模式：sogame-helper 提权助手（应用运行时与 exe 同级目录查找并 UAC 调用）
 Source: "..\build\bin\sogame-helper.exe"; DestDir: "{app}"; Flags: ignoreversion
-; 极速模式：官方 NetBird MSI（应用运行时与 exe 同级目录查找）。MSI 未随仓库
-; 携带，放入 ..\bin\ 后取消本行注释再编译；保持注释则安装包不含极速模式安装能力。
-; Source: "..\bin\{#NetBirdMSI}"; DestDir: "{app}"; Flags: ignoreversion
+; 极速模式：官方 NetBird MSI（应用运行时与 exe 同级目录查找）。
+; 缺失该文件时极速模式报“NetBird 服务未安装”且无法修复，禁止注释本行。
+Source: "..\bin\{#NetBirdMSI}"; DestDir: "{app}"; Flags: ignoreversion
+
+[Tasks]
+Name: "desktopicon"; Description: "创建桌面快捷方式(&D)"; GroupDescription: "附加任务:"
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 Name: "{group}\卸载 {#MyAppName}"; Filename: "{uninstallexe}"
 
 [Code]

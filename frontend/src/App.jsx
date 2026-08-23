@@ -54,6 +54,11 @@ function App() {
   const [expressRoomCodeRevealed, setExpressRoomCodeRevealed] = useState('')
   const [expressCopied, setExpressCopied] = useState(false)
   const [expressInRoom, setExpressInRoom] = useState(false)
+  // 守护进程安装进行中 / 完成提示
+  const [repairInProgress, setRepairInProgress] = useState(false)
+  const [expressNotice, setExpressNotice] = useState('')
+  const expressNoticeTimerRef = useRef(null)
+  const prevBusyCommandRef = useRef('')
   // 启动恢复提示：检测到本地保存的上次房间时询问用户是否恢复
   const [resumePromptOpen, setResumePromptOpen] = useState(false)
   const resumePromptHandled = useRef(false)
@@ -316,12 +321,37 @@ function App() {
     } catch (e) { setErrorMsg(String(e)) }
   }
 
+  // 一次性提示（数秒后自动消失），用于"守护进程安装完毕"等反馈
+  const showExpressNotice = useCallback((msg) => {
+    setExpressNotice(msg)
+    if (expressNoticeTimerRef.current) clearTimeout(expressNoticeTimerRef.current)
+    expressNoticeTimerRef.current = setTimeout(() => setExpressNotice(''), 5000)
+  }, [])
+
   const handleExpressRepair = async () => {
+    setRepairInProgress(true)
+    setExpressBusy(true)
     try {
       const state = await ExpressRepairService()
       setExpressState(state)
+      setErrorMsg('')
+      // 安装/修复完成后端已同步复查服务状态，返回快照即可判断结果
+      if (state && state.service && state.service.installed) {
+        showExpressNotice('守护进程安装完毕')
+      }
     } catch (e) { setErrorMsg(String(e)) }
+    finally { setRepairInProgress(false); setExpressBusy(false) }
   }
+
+  // 兜底：轮询观察到 busyCommand 由 repair 变为空且服务已就绪时，提示安装完毕
+  useEffect(() => {
+    const busy = expressState ? expressState.busyCommand : ''
+    const prev = prevBusyCommandRef.current
+    prevBusyCommandRef.current = busy
+    if (prev === 'repair' && busy === '' && expressState && expressState.service && expressState.service.installed) {
+      showExpressNotice('守护进程安装完毕')
+    }
+  }, [expressState, showExpressNotice])
 
   // ========== 经典模式：生成 / 加入 ==========
   const handleGenerate = async () => {
@@ -485,7 +515,7 @@ function App() {
               className={`app-mode-tab ${appMode === 'express' ? 'active' : ''}`}
               onClick={() => handleSwitchMode('express')}
               disabled={modeSwitching || isConnected || isConnecting}
-              title="NetBird + WireGuard"
+              title="极速模式"
             >
               极速模式
             </button>
@@ -536,7 +566,9 @@ function App() {
               <div className="field"><label>昵称</label><input type="text" value={expressNickname} onChange={e => { setExpressNickname(e.target.value); setErrorMsg('') }} placeholder="您的昵称" maxLength={32} /></div>
               {tabMode === 'join' && (<div className="field"><label>房间码</label><input type="text" value={expressRoomCode} onChange={e => { setExpressRoomCode(e.target.value); setErrorMsg('') }} placeholder="粘贴房间码" /></div>)}
               <button className="generate-btn" onClick={tabMode === 'create' ? handleExpressCreate : handleExpressJoin} disabled={expressBusy}>{tabMode === 'create' ? '创建房间' : '加入房间'}</button>
-              {expressState && expressState.service && !expressState.service.installed && (<div className="express-hint">NetBird 守护进程未安装 <button className="repair-btn" onClick={handleExpressRepair}>安装</button></div>)}
+              {expressState && expressState.service && (!expressState.service.installed || expressState.service.repairRequired) && (<div className="express-hint">守护进程{expressState.service.installed ? '异常' : '未安装'} <button className="repair-btn" onClick={handleExpressRepair} disabled={expressBusy}>{expressState.service.installed ? '修复' : '安装'}</button></div>)}
+              {repairInProgress && (<div className="express-installing">正在安装守护进程，请稍后…</div>)}
+              {expressNotice && (<div className="express-notice">{expressNotice}</div>)}
               {expressState && expressState.error && (<div className="error-bar">{expressState.error.message}</div>)}
             </div>
           )}
@@ -659,7 +691,7 @@ function App() {
                 <div className="info-row">
                   <span className="info-label">引擎</span>
                   <span className="info-value">
-                    {appMode === 'express' ? 'Powered by WireGuard' : 'Powered by n2n'}
+                    {appMode === 'express' ? 'Powered by wireguard' : 'Powered by n2n'}
                   </span>
                 </div>
               </div>

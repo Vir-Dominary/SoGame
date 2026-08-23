@@ -511,14 +511,17 @@ func (s *Service) enrollUnlocked(ctx context.Context, hostname string, obtain fu
 		}
 	}
 	s.machine.Apply(Facts{EnrollmentInProgress: true})
+	logger.Infof("express enroll: requesting room (hostname=%q)", hostname)
 
 	enrollment, err := obtain(ctx)
 	if err != nil {
+		logger.Errorf("express enroll: room create/join failed: %v", err)
 		return s.fail(err)
 	}
 	defer enrollment.DiscardSetupKey()
 	profile, err := s.netbird.CreateProfile(ctx, clientnetbird.ManagedProfileName)
 	if err != nil {
+		logger.Errorf("express enroll: create managed profile failed: %v", err)
 		return s.fail(&TransactionError{Cause: err})
 	}
 	transaction := enrollmentTransaction{
@@ -548,9 +551,11 @@ func (s *Service) enrollUnlocked(ctx context.Context, hostname string, obtain fu
 		})
 	})
 	if err != nil {
+		logger.Errorf("express enroll: daemon enroll failed: %v", err)
 		return s.fail(transaction.wrap(err, ctx))
 	}
 	if err := s.netbird.Connect(ctx, profile.ID); err != nil {
+		logger.Errorf("express enroll: daemon connect failed: %v", err)
 		return s.fail(transaction.wrap(err, ctx))
 	}
 
@@ -580,6 +585,7 @@ func (s *Service) enrollUnlocked(ctx context.Context, hostname string, obtain fu
 	if status, statusErr := s.netbird.Status(ctx); statusErr == nil {
 		facts.ControlPlaneReady = status.ManagementConnected && status.SignalConnected
 		facts.DaemonPeers = status.Peers
+		logger.Infof("express enroll: room ready (controlPlane=%v daemonPeers=%d)", facts.ControlPlaneReady, len(status.Peers))
 	}
 	return s.machine.Apply(facts), nil
 }

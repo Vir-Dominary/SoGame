@@ -672,7 +672,7 @@ func (a *App) ExpressGetState() ExpressState {
 			Error: &ExpressError{
 				Code:    expressErrServiceUnavailable,
 				Message: "极速模式不可用",
-				Action:  "请检查 NetBird 服务",
+				Action:  "请检查守护进程",
 			},
 		}
 	}

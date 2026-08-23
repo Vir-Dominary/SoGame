@@ -270,7 +270,7 @@ func (c *ExpressController) RepairService() ExpressState {
 	}
 	if repair == nil {
 		c.mu.Lock()
-		c.state.Error = &ExpressError{Code: expressErrServiceMissing, Message: "NetBird 服务未安装", Retryable: true, Action: "修复 NetBird 服务"}
+		c.state.Error = &ExpressError{Code: expressErrServiceMissing, Message: "守护进程未安装", Retryable: true, Action: "重新安装守护进程"}
 		c.state.Service.RepairRequired = true
 		state := c.cloneState()
 		c.mu.Unlock()
@@ -291,12 +291,29 @@ func (c *ExpressController) RepairService() ExpressState {
 		return state
 	}
 	c.state.Error = nil
-	// 修复刚完成时 NetBird 服务可能仍在启动,不立即清除
-	// RepairRequired;由随后的 refreshService 按最新健康状态重判,
-	// 避免修复按钮在服务尚未就绪时反复闪烁。
+	c.mu.Unlock()
+	// 安装/修复完成：同步复查守护进程状态，让返回的状态快照直接反映
+	// 安装结果（前端据此提示"守护进程安装完毕"或安装失败）。
+	c.refreshService(ctx)
+	c.mu.Lock()
+	if !c.state.Service.Installed {
+		// msiexec 成功但服务仍不存在（安装被回滚/服务未创建）：
+		// 给出明确的失败提示，而不是让"守护进程未安装"报错反复出现。
+		c.state.Error = &ExpressError{
+			Code:      expressErrServiceMissing,
+			Message:   "守护进程安装未完成，请查看运行日志",
+			Retryable: true,
+			Action:    "重新安装",
+		}
+		c.state.Service.RepairRequired = true
+	} else if c.state.Error != nil {
+		// 已安装但守护进程尚未就绪（启动需要数秒）：先不报错，
+		// 由后台 waitForDaemonAndReassemble 在就绪后刷新状态，
+		// 避免"安装完毕"与"未运行"同时展示的矛盾界面。
+		c.state.Error = nil
+	}
 	state := c.cloneState()
 	c.mu.Unlock()
-	go c.refreshService(ctx)
 	return state
 }
 
@@ -347,6 +364,8 @@ func (c *ExpressController) runCommandWithInitialState(command, initialState str
 		c.state.State = string(session.StateRecoverableError)
 		c.state.ConnectedPath = string(clientnetbird.PathNone)
 		c.state.Error = expressPublicError(err)
+		logger.Warnf("express: command %q failed: code=%s message=%q cause=%v",
+			command, c.state.Error.Code, c.state.Error.Message, err)
 		return c.cloneState()
 	}
 	c.state.State = string(snapshot.State)
@@ -463,17 +482,21 @@ func (c *ExpressController) refreshService(ctx context.Context) {
 		ExpectedVersion: inspection.ExpectedVersion,
 		RepairRequired:  inspection.Health != nbdaemon.ServiceReady,
 	}
+	if inspection.Health != nbdaemon.ServiceReady {
+		logger.Warnf("express: service health=%s installed=%v running=%v version=%q expected=%q",
+			inspection.Health, inspection.Installed, inspection.Running, inspection.Version, inspection.ExpectedVersion)
+	}
 	if err != nil && c.state.Error == nil {
 		c.state.Error = expressPublicError(err)
 	}
 	if c.state.Error == nil {
 		switch inspection.Health {
 		case nbdaemon.ServiceMissing:
-			c.state.Error = &ExpressError{Code: expressErrServiceMissing, Message: "NetBird 服务未安装", Retryable: true, Action: "修复 NetBird 服务"}
+			c.state.Error = &ExpressError{Code: expressErrServiceMissing, Message: "守护进程未安装", Retryable: true, Action: "重新安装守护进程"}
 		case nbdaemon.ServiceVersionMismatch:
-			c.state.Error = &ExpressError{Code: expressErrVersionMismatch, Message: "NetBird 服务版本不匹配", Action: "修复 NetBird 服务"}
+			c.state.Error = &ExpressError{Code: expressErrVersionMismatch, Message: "守护进程版本不匹配", Action: "重新安装守护进程"}
 		case nbdaemon.ServiceStopped, nbdaemon.ServiceUnhealthy:
-			c.state.Error = &ExpressError{Code: expressErrServiceUnavailable, Message: "NetBird 服务未运行", Retryable: true, Action: "修复或启动服务"}
+			c.state.Error = &ExpressError{Code: expressErrServiceUnavailable, Message: "守护进程未运行", Retryable: true, Action: "修复或启动守护进程"}
 		}
 	}
 }
@@ -519,28 +542,28 @@ func expressPublicError(err error) *ExpressError {
 	}
 	var mismatch *clientnetbird.VersionMismatchError
 	if errors.As(err, &mismatch) {
-		return &ExpressError{Code: expressErrVersionMismatch, Message: fmt.Sprintf("NetBird 版本不匹配，需要 v%s", mismatch.Expected), Action: "修复 NetBird 服务"}
+		return &ExpressError{Code: expressErrVersionMismatch, Message: fmt.Sprintf("守护进程版本不匹配，需要 v%s", mismatch.Expected), Action: "重新安装守护进程"}
 	}
 	if errors.Is(err, clientnetbird.ErrManagedProfileConflict) || errors.Is(err, clientnetbird.ErrManagedProfileInconsistent) {
-		return &ExpressError{Code: expressErrProfileConflict, Message: "NetBird 管理配置与本地房间不一致", Action: "修复 NetBird 服务"}
+		return &ExpressError{Code: expressErrProfileConflict, Message: "守护进程配置与本地房间不一致", Action: "重新安装守护进程"}
 	}
 	if errors.Is(err, nbdaemon.ErrServiceMissing) {
-		return &ExpressError{Code: expressErrServiceMissing, Message: "NetBird 服务未安装", Retryable: true, Action: "修复 NetBird 服务"}
+		return &ExpressError{Code: expressErrServiceMissing, Message: "守护进程未安装", Retryable: true, Action: "重新安装守护进程"}
 	}
 	if errors.Is(err, nbdaemon.ErrServiceUnavailable) {
-		return &ExpressError{Code: expressErrServiceUnavailable, Message: "NetBird 服务暂时不可用", Retryable: true, Action: "检查服务或修复"}
+		return &ExpressError{Code: expressErrServiceUnavailable, Message: "守护进程暂时不可用", Retryable: true, Action: "检查守护进程或重试"}
 	}
 	if errors.Is(err, nbdaemon.ErrServiceAccess) {
-		return &ExpressError{Code: expressErrServiceUnavailable, Message: "无法读取 NetBird 服务状态", Retryable: true, Action: "重试或修复服务"}
+		return &ExpressError{Code: expressErrServiceUnavailable, Message: "无法读取守护进程状态", Retryable: true, Action: "重试或重新安装"}
 	}
 	if errors.Is(err, nbdaemon.ErrElevationCancelled) {
-		return &ExpressError{Code: expressErrOperationConflict, Message: "已取消 NetBird 修复", Action: "可稍后重新点击修复"}
+		return &ExpressError{Code: expressErrOperationConflict, Message: "已取消安装", Action: "可稍后重新点击安装"}
 	}
 	if errors.Is(err, nbdaemon.ErrElevationTimedOut) {
-		return &ExpressError{Code: expressErrInternal, Message: "NetBird 修复未在规定时间内完成", Retryable: true, Action: "稍后重试"}
+		return &ExpressError{Code: expressErrInternal, Message: "安装未在规定时间内完成", Retryable: true, Action: "稍后重试"}
 	}
 	if strings.Contains(strings.ToLower(err.Error()), "room session is unavailable") {
-		return &ExpressError{Code: expressErrServiceUnavailable, Message: "NetBird 服务不可用", Retryable: true, Action: "检查服务后重试"}
+		return &ExpressError{Code: expressErrServiceUnavailable, Message: "守护进程不可用", Retryable: true, Action: "检查后重试"}
 	}
 	return &ExpressError{Code: expressErrEnrollmentFailed, Message: "加入房间失败", Retryable: true, Action: "稍后重试"}
 }

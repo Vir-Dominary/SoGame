@@ -17,6 +17,8 @@ import (
 	"time"
 
 	clientnetbird "sogame/internal/netbird"
+	"sogame/internal/logger"
+	"sogame/internal/observability"
 )
 
 const (
@@ -381,6 +383,7 @@ func (c *Client) doAttempt(ctx context.Context, method, path string, body []byte
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		c.logFailure(method, endpoint.Path, fmt.Sprintf("连接失败: %v", err))
 		return &TransportError{cause: err}
 	}
 	defer response.Body.Close()
@@ -393,12 +396,37 @@ func (c *Client) doAttempt(ctx context.Context, method, path string, body []byte
 		return &ProtocolError{Reason: "response exceeds size limit"}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		c.logFailure(method, endpoint.Path, fmt.Sprintf("返回状态 %d", response.StatusCode))
 		return newHTTPError(response.StatusCode, response.Header.Get("Retry-After"))
 	}
 	if len(bytes.TrimSpace(payload)) == 0 || json.Unmarshal(payload, target) != nil {
 		return &ProtocolError{Reason: "response is not valid JSON"}
 	}
+	c.logSuccess(method, endpoint.Path, response.StatusCode)
 	return nil
+}
+
+// logSuccess 记录 create/join 等非轮询请求的成功结果（含服务端地址），
+// 便于排查"房间创建在了哪台服务器"之类的问题。peers 轮询成功不记录。
+func (c *Client) logSuccess(method, path string, statusCode int) {
+	if strings.Contains(path, "/peers") {
+		return
+	}
+	logger.Infof("roomapi: %s %s://%s%s -> %d",
+		method, c.baseURL.Scheme, c.baseURL.Host, observability.Redact(path), statusCode)
+}
+
+// logFailure 记录一次失败的 Room API 请求（含服务端 scheme://host 与脱敏后的路径）。
+// 创建/加入房间的失败是用户可直接感知的错误，记 WARN；
+// peers 轮询每 5 秒可能重试一次，记 DEBUG 避免日志刷屏。
+func (c *Client) logFailure(method, path, detail string) {
+	message := fmt.Sprintf("roomapi: %s %s://%s%s: %s",
+		method, c.baseURL.Scheme, c.baseURL.Host, observability.Redact(path), detail)
+	if strings.Contains(path, "/peers") {
+		logger.Debugf("%s", message)
+		return
+	}
+	logger.Warnf("%s", message)
 }
 
 type TransportError struct {
