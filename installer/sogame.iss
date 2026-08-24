@@ -1,3 +1,21 @@
+; SPDX-License-Identifier: AGPL-3.0-or-later
+; Copyright (C) 2026 SoGame Contributors
+;
+; This file is part of SoGame.
+;
+; SoGame is free software: you can redistribute it and/or modify
+; it under the terms of the GNU Affero General Public License as published by
+; the Free Software Foundation, either version 3 of the License, or
+; (at your option) any later version.
+;
+; SoGame is distributed in the hope that it will be useful,
+; but WITHOUT ANY WARRANTY; without even the implied warranty of
+; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+; GNU Affero General Public License for more details.
+;
+; You should have received a copy of the GNU Affero General Public License
+; along with SoGame. If not, see <https://www.gnu.org/licenses/>.
+
 #define MyAppName "SoGame"
 #define MyAppVersion "2.0"
 #define MyAppPublisher "vir_dominary"
@@ -74,6 +92,12 @@ Source: "..\build\bin\sogame-helper.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; 极速模式：官方 NetBird MSI（应用运行时与 exe 同级目录查找）。
 ; 缺失该文件时极速模式报“NetBird 服务未安装”且无法修复，禁止注释本行。
 Source: "..\bin\{#NetBirdMSI}"; DestDir: "{app}"; Flags: ignoreversion
+; 许可证与版权信息（AGPLv3 正文、NOTICE、品牌政策、第三方许可证清单）
+; 随安装包分发，确保二进制发行版用户可访问完整的许可证信息。
+Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\NOTICE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\TRADEMARK.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\THIRD_PARTY_LICENSES\*"; DestDir: "{app}\THIRD_PARTY_LICENSES"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式(&D)"; GroupDescription: "附加任务:"

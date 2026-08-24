@@ -98,17 +98,40 @@ wails build
 
 编译产物位于 `build/bin/SoGame.exe`。
 
+## License
+
+The original source code of SoGame is licensed under the
+GNU Affero General Public License v3.0.
+
+See [LICENSE](LICENSE) for the complete license text.
+
+SoGame also includes and/or distributes third-party software under
+their respective licenses. See:
+
+- [NOTICE](NOTICE)
+- [THIRD_PARTY_LICENSES/](THIRD_PARTY_LICENSES/README.md)
+- [TRADEMARK.md](TRADEMARK.md)
+
+for additional copyright, licensing, and brand usage information.
+
+AGPLv3 does not prohibit commercial use. Commercial use is permitted
+provided that the applicable license requirements are complied with.
+
+> 说明：AGPLv3 仅适用于 SoGame 的原创代码。项目包含的第三方组件
+> （NetBird daemon RPC（BSD-3-Clause）、NetBird MSI（AGPLv3）、n2n
+> （GPLv3）、TAP-Windows 驱动与 tapinstall（GPLv2）、Wintun（MIT）、
+> Go/npm 依赖（各自许可证）等）继续受其各自许可证约束，详见
+> `THIRD_PARTY_LICENSES/`。本项目不是"整体 AGPLv3"，第三方组件的
+> 许可证与版权声明未被本项目修改或重新授权。
+
 ## 免责声明
 
 本项目仅供学习和研究使用。使用者需遵守所在地区的法律法规，因不当使用造成的任何后果由使用者自行承担。
 
-本项目基于 n2n 开源项目，n2n 的使用同样需遵循其开源协议。
-
-## 开源协议
-
-本项目采用 [MIT License](LICENSE) 开源。
-
-n2n 组件遵循其自身的开源协议（GPLv3）。
+本项目基于 n2n 开源项目，n2n（GPLv3）与 TAP-Windows 驱动（GPLv2）
+的使用需遵循其各自的开源许可证；极速模式基于官方 NetBird（v0.74.7，
+AGPLv3）守护进程，其分发需遵循 NetBird 自身的许可证条款（详见
+`THIRD_PARTY_LICENSES/`）。
 
 ## 作者
 
