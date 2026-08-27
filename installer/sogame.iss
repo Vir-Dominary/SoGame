@@ -30,7 +30,7 @@
 ; windowsX64.artifact），找到后通过 UAC 提权（sogame-helper --action install
 ; --artifact <msi>）将其安装为 Windows 系统服务。
 ; 2. MSI（38MB 二进制产物）不随 git 仓库携带，但【必须】打进安装包，
-;    否则新机器上极速模式会报“NetBird 服务未安装”且修复按钮无效。
+;    否则新机器上极速模式会报“NetBird 服务未安装”。
 ;    编译前请确认 ..\bin\ 下存在官方 MSI；缺失时先运行
 ;    scripts\build-all.ps1（自动下载并校验 SHA256：
 ;    1be9ce80767a728a8682bc3c114256b224b8d6657400ac031e458a05b5e5942d）。
