@@ -1,0 +1,211 @@
+:root {
+  --bg: #fff;
+  --text: #111;
+  --muted: #666;
+  --line: #e7e7e7;
+  --soft: #f7f7f7;
+  --green: #39d36b;
+  --green-dark: #0b1710;
+  --green-line: #1c4d2b;
+  --green-soft: #102319;
+  --radius: 18px;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  font-family: Inter, "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  line-height: 1.6;
+}
+a { color: inherit; text-decoration: none; }
+button, a { -webkit-tap-highlight-color: transparent; }
+
+.site-header {
+  height: 72px;
+  display: flex;
+  align-items: center;
+  gap: 36px;
+  padding: 0 5vw;
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: rgba(255,255,255,.94);
+  backdrop-filter: blur(12px);
+}
+.brand {
+  font-weight: 800;
+  font-size: 19px;
+  letter-spacing: -.03em;
+  margin-right: auto;
+}
+nav { display: flex; gap: 28px; font-size: 14px; color: #555; }
+nav a:hover { color: #111; }
+.nav-download {
+  background: #111;
+  color: white;
+  border-radius: 9px;
+  padding: 9px 15px;
+  font-size: 13px;
+}
+
+.page { min-height: calc(100vh - 145px); }
+.container { width: min(1120px, 90vw); margin: auto; }
+
+.hero {
+  min-height: 620px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  padding: 80px 0;
+}
+.eyebrow {
+  font-size: 12px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 18px;
+}
+.hero h1 {
+  font-size: clamp(48px, 8vw, 88px);
+  line-height: .98;
+  letter-spacing: -.065em;
+  margin: 0;
+}
+.hero p {
+  color: var(--muted);
+  margin: 26px auto 34px;
+  font-size: 16px;
+}
+.actions { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 132px;
+  padding: 12px 18px;
+  border: 1px solid #111;
+  border-radius: 10px;
+  font-size: 14px;
+  transition: .2s ease;
+}
+.btn.primary { background: #111; color: white; }
+.btn:hover { transform: translateY(-2px); }
+.btn.secondary { background: white; }
+
+.section { padding: 70px 0; }
+.section-title { margin-bottom: 28px; }
+.section-title h2 { margin: 0; font-size: 28px; letter-spacing: -.04em; }
+.section-title p { margin: 7px 0 0; color: var(--muted); }
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+.card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 32px;
+  min-height: 245px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  transition: .2s ease;
+}
+.card:hover { border-color: #aaa; transform: translateY(-3px); }
+.icon {
+  width: 42px; height: 42px;
+  display: grid; place-items: center;
+  border: 1px solid #ddd;
+  border-radius: 12px;
+  font-size: 20px;
+}
+.card h3 { margin: 22px 0 5px; font-size: 25px; letter-spacing: -.04em; }
+.card p { margin: 0; color: var(--muted); }
+.card-link { margin-top: 24px; font-size: 13px; font-weight: 600; }
+
+.simple-page { padding: 100px 0; }
+.simple-page h1 { font-size: clamp(42px, 7vw, 72px); line-height: 1; letter-spacing: -.06em; margin: 0 0 18px; }
+.lead { color: var(--muted); font-size: 17px; max-width: 620px; }
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-top: 50px;
+}
+.feature {
+  border: 1px solid var(--line);
+  padding: 22px;
+  border-radius: 14px;
+}
+.feature strong { display: block; margin-bottom: 5px; }
+.feature span { color: var(--muted); font-size: 13px; }
+
+.sogame {
+  --bg: #060907;
+  --text: #f3f7f3;
+  --muted: #9ba89e;
+  --line: #1a241d;
+  --green: #39d36b;
+  background: var(--bg);
+  color: var(--text);
+}
+.sogame .site-header {
+  background: rgba(6,9,7,.94);
+  border-color: var(--line);
+}
+.sogame .brand, .sogame nav a { color: var(--text); }
+.sogame nav { color: var(--muted); }
+.sogame .nav-download { background: var(--green); color: #041008; }
+.sogame .site-footer { border-color: var(--line); }
+.sogame .hero { text-align: left; min-height: 600px; }
+.sogame .hero-inner { width: 100%; }
+.sogame .hero h1 { font-size: clamp(52px, 8vw, 86px); max-width: 800px; }
+.sogame .hero p { margin-left: 0; }
+.sogame .btn.primary { background: var(--green); color: #061008; border-color: var(--green); }
+.sogame .btn.secondary { background: transparent; color: var(--text); border-color: var(--green-line); }
+.sogame .card, .sogame .feature { border-color: var(--line); background: #0a0f0c; }
+.sogame .card:hover { border-color: #2b5938; }
+.sogame .icon { border-color: var(--green-line); }
+.sogame .card p, .sogame .lead, .sogame .section-title p { color: var(--muted); }
+.sogame .download-panel {
+  border: 1px solid var(--green-line);
+  border-radius: var(--radius);
+  padding: 32px;
+  background: linear-gradient(135deg, #0a110c, #08100a);
+}
+.download-options { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-top: 28px; }
+.download-card {
+  padding: 28px;
+  border: 1px solid var(--green-line);
+  border-radius: 14px;
+  background: #0b120d;
+}
+.download-card h3 { margin: 0 0 5px; }
+.download-card p { margin: 0 0 20px; color: var(--muted); font-size: 13px; }
+
+.site-footer {
+  min-height: 73px;
+  border-top: 1px solid var(--line);
+  padding: 22px 5vw;
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.site-footer div { display: flex; gap: 24px; }
+
+@media (max-width: 760px) {
+  .site-header { padding: 0 20px; gap: 16px; }
+  nav { display: none; }
+  .cards, .feature-grid, .download-options { grid-template-columns: 1fr; }
+  .hero { min-height: 520px; padding: 60px 0; }
+  .simple-page { padding: 70px 0; }
+  .site-footer { flex-direction: column; }
+  .sogame .hero { text-align: left; }
+}
