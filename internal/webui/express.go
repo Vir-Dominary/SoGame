@@ -54,6 +54,11 @@ type ExpressState struct {
 	HasSavedRoom   bool           `json:"hasSavedRoom"`   // 本地保存了上次的房间且等待用户确认恢复
 	Disconnected   bool           `json:"disconnected"`
 	RoomCode       string         `json:"roomCode"`   // 用户已主动断开（可重新连接）
+	// RelayEnabled 该房间所属服务器是否允许 Relay 中继（由服务器下发，客户端被动遵循）。
+	RelayEnabled bool `json:"relayEnabled"`
+	// RelayBlocked 服务器不允许 Relay，但底层 daemon 检测到中继连接（被忽略）：
+	// 用于前端提示"该服务器已关闭中继，无法建立 P2P 直连"。
+	RelayBlocked bool `json:"relayBlocked"`
 }
 
 // ExpressPeer 是房间内的一个成员。
@@ -413,6 +418,8 @@ func (c *ExpressController) clearActiveRoom() {
 	c.state.HasSavedRoom = false
 	c.state.Disconnected = false
 	c.state.RoomCode = ""
+	c.state.RelayEnabled = false
+	c.state.RelayBlocked = false
 }
 
 // refreshRoomView 从 session.Service 拉取最新的房间视图（含对等体列表）。
@@ -462,11 +469,19 @@ func (c *ExpressController) refreshRoomView(ctx context.Context) {
 		}
 	}
 
+	// Relay 允许性由服务器随房间下发；纯 P2P 模式下，底层中继连接被忽略并提示"无法直连"。
+	relayEnabled := view.Metadata.RelayEnabled
+	c.state.RelayEnabled = relayEnabled
+	relayBlocked := false
 	c.state.Peers = make([]ExpressPeer, 0, len(view.Peers))
 	for _, peer := range view.Peers {
 		path := string(clientnetbird.PathNone)
 		if dp, ok := daemonByIP[ipHostOnly(peer.NetBirdIP)]; ok {
 			path = string(dp.Path)
+			if !relayEnabled && dp.Path == clientnetbird.PathRelay {
+				path = string(clientnetbird.PathNone)
+				relayBlocked = true
+			}
 		}
 		c.state.Peers = append(c.state.Peers, ExpressPeer{
 			ID:        peer.ID,
@@ -476,6 +491,7 @@ func (c *ExpressController) refreshRoomView(ctx context.Context) {
 			Path:      path,
 		})
 	}
+	c.state.RelayBlocked = relayBlocked
 	// 如果连接状态发生变化，通过 Wails 事件通知前端
 	if c.ctx != nil {
 		runtime.EventsEmit(c.ctx, "express:state-changed", c.cloneState())

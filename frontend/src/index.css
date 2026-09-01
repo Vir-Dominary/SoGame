@@ -861,6 +861,25 @@ body {
   border: 1px solid rgba(88, 166, 255, 0.2);
 }
 
+/* 极速模式信息提示（如"该服务器已关闭中继"） */
+.express-hint {
+  font-size: 12px;
+  color: #58a6ff;
+  text-align: center;
+  max-width: 280px;
+  line-height: 1.5;
+  padding: 8px 16px;
+  background: rgba(88, 166, 255, 0.08);
+  border-radius: 8px;
+  border: 1px solid rgba(88, 166, 255, 0.2);
+}
+
+.express-hint.warn {
+  color: #f0a030;
+  background: rgba(240, 160, 48, 0.08);
+  border-color: rgba(240, 160, 48, 0.25);
+}
+
 /* 守护进程安装完成提示 */
 .express-notice {
   font-size: 12px;

@@ -598,6 +598,8 @@ function App() {
             <div className="invite-section">
               <div className="status-indicator"><span className="status-dot" style={{ background: expressState.connectedPath==='p2p'?'#3ddc84':expressState.connectedPath==='relay'?'#f0a030':'#666', boxShadow:expressState.connectedPath==='p2p'?'0 0 10px #3ddc84':'none' }}/><span style={{color:'#ccc'}}>{expressStateLabel(expressState.state, expressBusy)}</span></div>
               {expressState.error && (<div className="error-bar">{expressState.error.message}</div>)}
+              {expressState.relayEnabled === false && (<div className="express-hint">该服务器已关闭中继，仅支持 P2P 直连</div>)}
+              {expressState.relayBlocked && (<div className="express-hint warn">检测到无法建立 P2P 直连，请检查双方网络环境</div>)}
               {expressState.localIp && (<div className="conn-ip-row"><span className="conn-ip-label">本机 IP</span><span className="conn-ip-value">{expressState.localIp}</span></div>)}
               <div className="express-peers">
                 <div className="express-peers-header"><span>房间成员</span><span className="express-peers-count">{(expressState.peers || []).length + 1} 人</span></div>

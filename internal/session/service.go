@@ -204,6 +204,8 @@ func (s *Service) View(ctx context.Context) (RoomViewSnapshot, error) {
 		MembershipKnown:   true,
 		UserDisconnected:  disconnected,
 		DaemonPeers:       status.Peers,
+		// Relay 允许性由服务器随房间下发并持久化在元数据中，客户端被动遵循
+		RelayAllowed: metadata.RelayEnabled,
 	}
 	view := RoomViewSnapshot{
 		Session:        s.machine.Apply(facts),
@@ -590,6 +592,7 @@ func (s *Service) enrollUnlocked(ctx context.Context, hostname string, obtain fu
 		ManagementURL: enrollment.ManagementURL,
 		ProfileID:     profile.ID,
 		CreatedAt:     s.now().UTC(),
+		RelayEnabled:  enrollment.RelayEnabled,
 	}); err != nil {
 		return s.fail(transaction.wrap(err, ctx))
 	}

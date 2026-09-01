@@ -21,3 +21,6 @@ Thumbs.db
 
 # 官方 NetBird MSI（38MB 二进制产物，不入库；scripts\build-all.ps1 自动下载）
 bin/*.msi
+
+# 本机 SSH 调试工具与密钥（严禁入库）
+.ssh-tools/

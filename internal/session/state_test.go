@@ -39,7 +39,8 @@ func TestDeriveAllNormalizedStates(t *testing.T) {
 		{"waiting", Facts{RoomSaved: true, ControlPlaneReady: true, MembershipKnown: true}, StateWaitingForPeer, clientnetbird.PathNone},
 		{"connecting peer", Facts{RoomSaved: true, ControlPlaneReady: true, MembershipKnown: true, OtherRoomPeerCount: 1}, StateConnectingPeer, clientnetbird.PathNone},
 		{"P2P", Facts{RoomSaved: true, ControlPlaneReady: true, MembershipKnown: true, OtherRoomPeerCount: 1, DaemonPeers: []clientnetbird.Peer{p2pPeer}}, StateConnectedP2P, clientnetbird.PathP2P},
-		{"Relay", Facts{RoomSaved: true, ControlPlaneReady: true, MembershipKnown: true, OtherRoomPeerCount: 1, DaemonPeers: []clientnetbird.Peer{relayPeer}}, StateConnectedRelay, clientnetbird.PathRelay},
+		{"Relay", Facts{RoomSaved: true, ControlPlaneReady: true, MembershipKnown: true, OtherRoomPeerCount: 1, DaemonPeers: []clientnetbird.Peer{relayPeer}, RelayAllowed: true}, StateConnectedRelay, clientnetbird.PathRelay},
+		{"relay ignored when server disallows", Facts{RoomSaved: true, ControlPlaneReady: true, MembershipKnown: true, OtherRoomPeerCount: 1, DaemonPeers: []clientnetbird.Peer{relayPeer}}, StateConnectingPeer, clientnetbird.PathNone},
 		{"reconnecting command", Facts{RoomSaved: true, ReconnectInProgress: true}, StateReconnecting, clientnetbird.PathNone},
 		{"control plane outage", Facts{RoomSaved: true}, StateReconnecting, clientnetbird.PathNone},
 		{"recoverable error", Facts{RecoverableError: true}, StateRecoverableError, clientnetbird.PathNone},
@@ -59,6 +60,7 @@ func TestDerivePrefersP2PButAcceptsRelay(t *testing.T) {
 		ControlPlaneReady:  true,
 		MembershipKnown:    true,
 		OtherRoomPeerCount: 2,
+		RelayAllowed:       true,
 		DaemonPeers: []clientnetbird.Peer{
 			{State: clientnetbird.PeerConnected, Path: clientnetbird.PathRelay},
 			{State: clientnetbird.PeerConnected, Path: clientnetbird.PathP2P},

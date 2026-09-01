@@ -102,7 +102,12 @@ type Enrollment struct {
 	RoomID        string
 	RoomCode      string
 	ManagementURL string
-	secret        *enrollmentSecret
+	// RelayEnabled 表示该房间所属服务器是否允许 Relay 中继。
+	// 由服务器（提供服务的控制平面）掌握并随房间下发；客户端被动遵循：
+	//   false → 纯 P2P 优先，中继连接不视为已连接
+	//   true  → 允许中继回退
+	RelayEnabled bool
+	secret       *enrollmentSecret
 }
 
 var ErrSetupKeyConsumed = errors.New("enrollment Setup Key is no longer available")
@@ -485,6 +490,7 @@ type enrollmentResponse struct {
 	RoomCode      string `json:"room_code"`
 	ManagementURL string `json:"management_url"`
 	SetupKey      string `json:"setup_key"`
+	RelayEnabled  bool   `json:"relay_enabled"`
 }
 
 func (r *enrollmentResponse) enrollment(requireRoomCode bool, joinedCode string) (Enrollment, error) {
@@ -504,6 +510,7 @@ func (r *enrollmentResponse) enrollment(requireRoomCode bool, joinedCode string)
 		RoomID:        r.RoomID,
 		RoomCode:      roomCode,
 		ManagementURL: managementURL.String(),
+		RelayEnabled:  r.RelayEnabled,
 		secret: &enrollmentSecret{
 			key: clientnetbird.NewSetupKey([]byte(r.SetupKey)),
 		},
