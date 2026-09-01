@@ -53,6 +53,11 @@ type NetBirdAPI interface {
 type Config struct {
 	ManagementURL string
 	EncryptionKey []byte
+	// RelayEnabled 表示该服务器是否允许房间使用 Relay 中继。
+	// 由提供服务的服务器掌握，随房间 enrollment 下发给客户端：
+	//   false（默认）→ 纯 P2P 优先
+	//   true → 允许中继回退
+	RelayEnabled bool
 }
 
 type Service struct {
@@ -66,6 +71,8 @@ type RoomResponse struct {
 	RoomCode      string `json:"room_code,omitempty"`
 	ManagementURL string `json:"management_url"`
 	SetupKey      string `json:"setup_key"`
+	// RelayEnabled 随房间下发给客户端：false 表示该服务器不允许中继（纯 P2P）。
+	RelayEnabled bool `json:"relay_enabled"`
 }
 
 type PeerView struct {
@@ -193,7 +200,7 @@ func (s *Service) Create(ctx context.Context, idempotencyKey string) (RoomRespon
 	if err := s.store.SetStatus(ctx, roomID, "active", ""); err != nil {
 		return RoomResponse{}, err
 	}
-	response := RoomResponse{RoomID: roomID, RoomCode: code, ManagementURL: s.cfg.ManagementURL, SetupKey: key.Key}
+	response := RoomResponse{RoomID: roomID, RoomCode: code, ManagementURL: s.cfg.ManagementURL, SetupKey: key.Key, RelayEnabled: s.cfg.RelayEnabled}
 	if idempotencyKey != "" {
 		clear, _ := json.Marshal(response)
 		ciphertext, sealErr := roomcrypto.Seal(s.cfg.EncryptionKey, clear)
@@ -277,7 +284,7 @@ func (s *Service) Join(ctx context.Context, code string) (RoomResponse, error) {
 		return RoomResponse{}, err
 	}
 	audit.Event("room_joined", map[string]any{"room_id": room.ID})
-	return RoomResponse{RoomID: room.ID, ManagementURL: s.cfg.ManagementURL, SetupKey: string(key)}, nil
+	return RoomResponse{RoomID: room.ID, ManagementURL: s.cfg.ManagementURL, SetupKey: string(key), RelayEnabled: s.cfg.RelayEnabled}, nil
 }
 
 func (s *Service) Peers(ctx context.Context, code string) (PeerResponse, error) {

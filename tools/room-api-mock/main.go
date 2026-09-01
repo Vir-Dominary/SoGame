@@ -64,6 +64,12 @@ func envOrDefault(name, fallback string) string {
 var listenAddr = envOrDefault("ROOM_API_ADDR", "127.0.0.1:9099")
 var mockManagementURL = envOrDefault("MOCK_MANAGEMENT", "https://legengen.top")
 
+// mockRelayEnabled 模拟"服务器是否允许 Relay 中继"（由提供服务的服务器掌握）。
+// 默认 false（纯 P2P 优先）；私有服务器联调时可设 MOCK_RELAY_ENABLED=true。
+func mockRelayEnabled() bool {
+	return envOrDefault("MOCK_RELAY_ENABLED", "false") == "true"
+}
+
 func main() {
 	service := newMockService()
 	server := &http.Server{
@@ -145,7 +151,8 @@ func (s *mockService) join(body json.RawMessage) (int, any) {
 		RoomID        string `json:"room_id"`
 		ManagementURL string `json:"management_url"`
 		SetupKey      string `json:"setup_key"`
-	}{RoomID: room.ID, ManagementURL: mockManagementURL, SetupKey: room.SetupKey}
+		RelayEnabled  bool   `json:"relay_enabled"`
+	}{RoomID: room.ID, ManagementURL: mockManagementURL, SetupKey: room.SetupKey, RelayEnabled: mockRelayEnabled()}
 }
 
 func (s *mockService) create(ik string) (int, []byte, error) {
@@ -167,7 +174,8 @@ func (s *mockService) create(ik string) (int, []byte, error) {
 		RoomCode      string `json:"room_code"`
 		ManagementURL string `json:"management_url"`
 		SetupKey      string `json:"setup_key"`
-	}{RoomID: id, RoomCode: code, ManagementURL: mockManagementURL, SetupKey: key})
+		RelayEnabled  bool   `json:"relay_enabled"`
+	}{RoomID: id, RoomCode: code, ManagementURL: mockManagementURL, SetupKey: key, RelayEnabled: mockRelayEnabled()})
 	return 201, body, nil
 }
 

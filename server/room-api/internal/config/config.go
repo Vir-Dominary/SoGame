@@ -39,6 +39,11 @@ type Config struct {
 	PeerRatePerMinute    int
 	MaxBodyBytes         int64
 	ProvisionConcurrency int
+	// RelayEnabled 表示该服务器是否允许房间使用 Relay 中继。
+	// 由提供服务的服务器掌握，随房间 enrollment 下发给客户端：
+	//   false（默认）→ 纯 P2P 优先，客户端不把中继连接视为已连接
+	//   true → 允许中继，客户端 P2P 失败时可使用中继回退
+	RelayEnabled bool
 }
 
 func Load() (Config, error) {
@@ -53,6 +58,7 @@ func Load() (Config, error) {
 		PeerRatePerMinute:    intEnv("ROOM_API_PEER_RATE_PER_MINUTE", 60),
 		MaxBodyBytes:         int64Env("ROOM_API_MAX_BODY_BYTES", 4096),
 		ProvisionConcurrency: intEnv("ROOM_API_PROVISION_CONCURRENCY", 2),
+		RelayEnabled:         boolEnv("ROOM_API_RELAY_ENABLED", false),
 	}
 	if c.PAT == "" {
 		return Config{}, fmt.Errorf("NETBIRD_PAT is required")
@@ -89,6 +95,19 @@ func int64Env(name string, fallback int64) int64 {
 		return fallback
 	}
 	return value
+}
+
+// boolEnv 解析布尔环境变量；无法解析时返回 fallback。
+func boolEnv(name string, fallback bool) bool {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 func encryptionKey(value string) ([]byte, error) {
