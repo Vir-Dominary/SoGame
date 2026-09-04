@@ -3,7 +3,26 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Virdy — 连接更简单，想法更快落地。" />
+  <meta name="description" content="Virdy — 连接更简单,想法更快落地。SoGame:免费、便捷的局域网联机工具。" />
+  <link rel="canonical" href="https://virdy.cn/" />
+
+  <!-- Open Graph / 分享卡片 -->
+  <meta property="og:site_name" content="Virdy" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://virdy.cn/" />
+  <meta property="og:title" content="Virdy — 连接更简单,想法更快落地" />
+  <meta property="og:description" content="SoGame:免费、便捷的局域网联机工具。专注网络工具与 AI 应用交付。" />
+  <meta property="og:locale" content="zh_CN" />
+  <meta name="twitter:card" content="summary" />
+
+  <!-- 手写体大标题字体:Google Fonts 国内官方镜像(fonts.googleapis.cn / fonts.gstatic.cn),国内直连 -->
+  <link rel="preconnect" href="https://fonts.googleapis.cn" />
+  <link rel="preconnect" href="https://fonts.gstatic.cn" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.cn/css2?family=Zhi+Mang+Xing&display=swap" />
+
+  <!-- favicon:内联 SVG,⌁ 品牌符号,无需额外资源文件 -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23060907'/%3E%3Ctext x='32' y='45' font-size='38' text-anchor='middle' fill='%2339d36b' font-family='sans-serif'%3E%E2%8C%81%3C/text%3E%3C/svg%3E" />
+
   <title>Virdy</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -19,6 +38,13 @@
     <a class="nav-download" href="#/sogame/download">立即下载</a>
   </header>
 
+  <!-- 禁用 JavaScript 时的降级提示(页面为纯 JS 渲染) -->
+  <noscript>
+    <div class="noscript-notice">
+      Virdy 页面需要启用 JavaScript 才能正常显示。请在浏览器设置中开启 JavaScript 后刷新。
+    </div>
+  </noscript>
+
   <main id="app"></main>
 
   <footer class="site-footer">
@@ -27,6 +53,7 @@
       <a href="#/about">关于我们</a>
       <a href="#/changelog">更新日志</a>
       <a href="#/contact">联系我们</a>
+      <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">皖ICP备2026029501号</a>
     </div>
   </footer>
 

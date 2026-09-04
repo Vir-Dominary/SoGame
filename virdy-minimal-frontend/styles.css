@@ -209,3 +209,175 @@ nav a:hover { color: #111; }
   .site-footer { flex-direction: column; }
   .sogame .hero { text-align: left; }
 }
+
+/* ============ 新增:补全部分的样式 ============ */
+
+/* 首页黑白分屏 hero */
+.split-hero {
+  display: flex;
+  min-height: calc(100vh - 72px); /* 整屏高,扣除 72px 顶部导航 */
+}
+.split-half {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center; /* 标题+卡片成组居中,彼此靠近 */
+  gap: 28px;
+  padding: 6vh 5vw;
+}
+.split-half.light {
+  /* 白底 + 极淡的斜向细线,增加生气 */
+  background-color: #fff;
+  background-image: repeating-linear-gradient(115deg, rgba(17,17,17,.05) 0 1px, transparent 1px 140px);
+  color: #111;
+}
+.split-half.dark {
+  /* 黑底 + 品牌绿的细线 */
+  background-color: #060907;
+  background-image: repeating-linear-gradient(115deg, rgba(57,211,107,.08) 0 1px, transparent 1px 160px);
+  color: #f3f7f3;
+}
+/* 标题在各自半区内居中 */
+.split-title-wrap {
+  display: grid;
+  place-items: center;
+}
+.split-title {
+  margin: 0;
+  position: relative;
+  /* 志莽行书:带行书笔意的同时保持辨识度;失败时回退楷体 */
+  font-family: "Zhi Mang Xing", "Ma Shan Zheng", "Noto Serif SC", "Kaiti SC", "STKaiti", "KaiTi", serif;
+  font-weight: 400;
+  font-size: clamp(56px, 7.5vw, 112px);
+  letter-spacing: .08em;
+  line-height: 1.15;
+  text-align: center;
+}
+/* 标题下加一笔微微倾斜的手写线条,呼应草书气质 */
+.split-title::after {
+  content: "";
+  display: block;
+  width: 62%;
+  height: 3px;
+  margin: 14px auto 0;
+  border-radius: 2px;
+  transform: rotate(-1.2deg);
+}
+.split-half.light .split-title::after { background: rgba(17,17,17,.75); }
+.split-half.dark .split-title::after { background: #39d36b; }
+.split-card {
+  display: block;
+  max-width: 460px;
+  width: 100%;
+  border: 1px solid #e7e7e7;
+  border-radius: 18px;
+  padding: 28px;
+  background: #fff;
+  transition: .2s ease;
+}
+.split-card .icon {
+  width: 42px; height: 42px;
+  display: grid; place-items: center;
+  border: 1px solid #ddd;
+  border-radius: 12px;
+  font-size: 20px;
+}
+.split-card h3 { margin: 18px 0 6px; font-size: 24px; letter-spacing: -.03em; }
+.split-card p { margin: 0 0 18px; color: #666; }
+.split-card .card-link { font-size: 13px; font-weight: 600; }
+.split-half.light .split-card:hover {
+  border-color: #111;
+  transform: translateY(-3px);
+}
+.split-half.dark .split-card {
+  background: #0a0f0c;
+  border-color: #1a241d;
+  color: #f3f7f3;
+}
+.split-half.dark .split-card .icon { border-color: #1c4d2b; }
+.split-half.dark .split-card p { color: #9ba89e; }
+.split-half.dark .split-card:hover {
+  border-color: #2b5938;
+  transform: translateY(-3px);
+}
+@media (max-width: 860px) {
+  /* 窄屏:上下堆叠,白在上黑在下 */
+  .split-hero { flex-direction: column; }
+  .split-half { min-height: 60vh; padding: 7vh 6vw; }
+}
+
+/* noscript 降级提示 */
+.noscript-notice {
+  padding: 14px 5vw;
+  background: #fff8e6;
+  border-bottom: 1px solid #f0e0b0;
+  color: #7a5b00;
+  font-size: 13px;
+  text-align: center;
+}
+
+/* 禁用态按钮(如 macOS 即将推出) */
+button.btn[disabled], .btn.disabled {
+  opacity: .45;
+  cursor: not-allowed;
+  transform: none;
+}
+button.btn[disabled]:hover { transform: none; }
+
+/* 变灰的卡片(macOS 占位) */
+.download-card.dim { opacity: .6; }
+
+/* 下载页的补充说明与 SHA256 */
+.download-note { margin-top: 26px; color: var(--muted); font-size: 13px; }
+.download-note a { text-decoration: underline; }
+.sha { margin: 16px 0 0; font-size: 12px; color: var(--muted); word-break: break-all; }
+.sha code { font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
+
+/* 使用教程步骤列表 */
+.steps { list-style: none; padding: 0; margin: 40px 0 0; counter-reset: step; }
+.steps li {
+  counter-increment: step;
+  position: relative;
+  padding: 18px 0 18px 64px;
+  border-bottom: 1px solid var(--line);
+}
+.steps li::before {
+  content: counter(step);
+  position: absolute; left: 0; top: 16px;
+  width: 36px; height: 36px;
+  display: grid; place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  font-weight: 700;
+  font-size: 15px;
+}
+.sogame .steps li::before { border-color: var(--green-line); color: var(--green); }
+.steps li strong { display: block; margin-bottom: 4px; }
+.steps li span { color: var(--muted); font-size: 14px; }
+.steps a { text-decoration: underline; }
+.guide-note { margin-top: 34px; padding: 20px; border: 1px solid var(--line); border-radius: 14px; }
+.guide-note p { margin: 6px 0 0; color: var(--muted); font-size: 14px; }
+.guide-note a { text-decoration: underline; }
+
+/* 更新日志 */
+.changelog { margin-top: 36px; }
+.changelog .release { padding: 24px 0; border-bottom: 1px solid var(--line); }
+.changelog .release h3 { margin: 0 0 12px; font-size: 19px; }
+.changelog .release ul { margin: 0; padding-left: 20px; color: var(--muted); font-size: 14px; line-height: 1.9; }
+.changelog .release p { margin: 0; color: var(--muted); font-size: 14px; }
+.changelog a { text-decoration: underline; }
+
+/* 可点击的 feature 卡片(联系页入口) */
+.feature.linkable { transition: .2s ease; }
+.feature.linkable:hover { border-color: #aaa; transform: translateY(-2px); }
+
+/* 404 页内的路径显示 */
+.simple-page code {
+  font-family: ui-monospace, Consolas, monospace;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 13px;
+}
+.sogame .simple-page code { background: #0a0f0c; }
