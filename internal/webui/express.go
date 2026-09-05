@@ -59,6 +59,8 @@ type ExpressState struct {
 	// RelayBlocked 服务器不允许 Relay，但底层 daemon 检测到中继连接（被忽略）：
 	// 用于前端提示"该服务器已关闭中继，无法建立 P2P 直连"。
 	RelayBlocked bool `json:"relayBlocked"`
+	// IsOwner 本机是当前房间的创建者(房主)：UI 据此把"离开"换成"解散房间"。
+	IsOwner bool `json:"isOwner"`
 }
 
 // ExpressPeer 是房间内的一个成员。
@@ -98,6 +100,7 @@ func (e *ExpressError) Error() string {
 const (
 	expressErrInvalidInput       = "INVALID_INPUT"
 	expressErrRoomUnavailable    = "ROOM_UNAVAILABLE"
+	expressErrRoomClosed         = "ROOM_CLOSED" // 房主解散或离线被回收
 	expressErrRoomAPIRateLimited = "ROOM_API_RATE_LIMITED"
 	expressErrRoomAPIUnavailable = "ROOM_API_UNAVAILABLE"
 	expressErrServiceMissing     = "NETBIRD_SERVICE_MISSING"
@@ -417,6 +420,7 @@ func (c *ExpressController) clearActiveRoom() {
 	c.state.PeersStale = false
 	c.state.HasSavedRoom = false
 	c.state.Disconnected = false
+	c.state.IsOwner = false
 	c.state.RoomCode = ""
 	c.state.RelayEnabled = false
 	c.state.RelayBlocked = false
@@ -432,6 +436,15 @@ func (c *ExpressController) refreshRoomView(ctx context.Context) {
 	}
 	view, err := rooms.View(ctx)
 	if err != nil {
+		if errors.Is(err, session.ErrRoomClosed) {
+			// 房间被房主解散(或离线回收):转无房态 + 明确提示;不可重试。
+			c.mu.Lock()
+			c.state.State = string(session.StateNoRoom)
+			c.state.Error = &ExpressError{Code: expressErrRoomClosed, Message: "房主已解散房间", Action: "可创建或加入新房间"}
+			c.clearActiveRoom()
+			c.mu.Unlock()
+			return
+		}
 		if errors.Is(err, session.ErrStoredStateConflict) || errors.Is(err, session.ErrRoomAlreadySaved) {
 			c.mu.Lock()
 			c.state.State = string(session.StateRecoverableError)
@@ -450,6 +463,7 @@ func (c *ExpressController) refreshRoomView(ctx context.Context) {
 	c.state.PeersStale = view.PeersStale
 	c.state.HasSavedRoom = view.ResumePending
 	c.state.Disconnected = view.Disconnected
+	c.state.IsOwner = view.IsOwner
 	c.state.RoomCode = ""
 	if view.Session.State != session.StateNoRoom && view.Session.State != session.StateEnrolling {
 		if code, err := rooms.RevealRoomCode(ctx); err == nil {
@@ -558,6 +572,9 @@ func expressPublicError(err error) *ExpressError {
 			return &ExpressError{Code: expressErrRoomAPIUnavailable, Message: "房间服务暂时不可用", Retryable: true, Action: "稍后重试"}
 		}
 		return &ExpressError{Code: expressErrInternal, Message: "房间请求未完成", Retryable: httpError.Transient(), Action: "稍后重试"}
+	}
+	if errors.Is(err, session.ErrRoomClosed) {
+		return &ExpressError{Code: expressErrRoomClosed, Message: "房主已解散房间", Action: "可创建或加入新房间"}
 	}
 	if errors.Is(err, session.ErrRoomAlreadySaved) || errors.Is(err, session.ErrCommandInProgress) {
 		return &ExpressError{Code: expressErrOperationConflict, Message: "当前已有一个已保存房间", Action: "先离开当前房间"}

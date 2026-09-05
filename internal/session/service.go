@@ -37,6 +37,9 @@ const (
 	cleanupTimeout    = 5 * time.Second
 	commandTimeout    = 30 * time.Second
 	peerWaitTimeout   = 30 * time.Second
+	// ownerHeartbeatInterval 房主心跳间隔;服务端 OwnerOfflineAfter 默认 5 分钟,
+	// 一分钟一跳,容忍四次网络抖动仍不会被误清扫。
+	ownerHeartbeatInterval = 60 * time.Second
 	// roomMaxAge 定义本地保存的房间最长有效期。超过该时长后房间视为失效,
 	// 不再提示恢复或允许重新连接,防止用户加入一个早已解散的房间。
 	roomMaxAge = 24 * time.Hour
@@ -49,6 +52,9 @@ var (
 	ErrCommandInProgress          = errors.New("a room command is already in progress")
 	ErrSwitchConfirmationRequired = errors.New("switching rooms requires confirmation")
 	ErrInvalidSwitchMode          = errors.New("switch mode must be create or join")
+	// ErrRoomClosed 表示房间已被房主解散(或房主离线被服务端看门狗回收)。
+	// 收到它的客户端应转回无房态,且不再展示"重新连接"。
+	ErrRoomClosed = errors.New("room closed by owner")
 )
 
 type RoomAPI interface {
@@ -66,6 +72,20 @@ type RoomCodeStorage interface {
 	Load() ([]byte, error)
 	Save([]byte) error
 	Clear() error
+}
+
+// OwnerTokenStorage 保存房主令牌；仅房间创建者本地有值。
+type OwnerTokenStorage interface {
+	Load() ([]byte, error)
+	Save([]byte) error
+	Clear() error
+}
+
+// OwnerAPI 是房主才能调用的服务端动作（关闭 / 心跳）。RoomAPI 的具体实现
+// 若同时实现该接口,房主能力自动生效（与 PeerAPI 同款注入模式）。
+type OwnerAPI interface {
+	CloseRoom(ctx context.Context, roomCode, ownerToken string) error
+	Heartbeat(ctx context.Context, roomCode, ownerToken string) error
 }
 
 type TransactionError struct {
@@ -103,10 +123,16 @@ type Service struct {
 	// 仅在应用启动时置位;在此状态下 View 保持"未加入"的 NoRoom 视图,
 	// 不自动进入房间界面、不触发重连,等待用户显式"恢复"或"离开"。
 	resumePending bool
-	// lastLocalIP 记录最近一次观察到(或注册)的本机虚拟 IP。
-	// daemon 断开时 LocalNetBirdIP 为空,用它仍能把房间成员中的
-	// 自己排除,避免断开后自己被打成"其他成员"导致人数 +1。
+	// lastLocalIP 记录最近一次观察到(或注�?的本机虚�?IP
+	// daemon 断开�?LocalNetBirdIP 为空,用它仍能把房间成员中�?
+	// 自己排除,避免断开后自己被打成"其他成员"导致人数 +1�?
 	lastLocalIP string
+	// tokens 保存房主令牌;nil 表示该构建未启用房主能力(向后兼容)。
+	tokens OwnerTokenStorage
+	// ownerAPI 由 rooms 满足 OwnerAPI 时自动启用（房主关闭/心跳）。
+	ownerAPI OwnerAPI
+	// heartbeatCancel 停止房主心跳协程;nil 表示未在跑。
+	heartbeatCancel context.CancelFunc
 }
 
 func NewService(rooms RoomAPI, netbird clientnetbird.Adapter, metadata MetadataStorage, codes RoomCodeStorage) *Service {
@@ -114,7 +140,7 @@ func NewService(rooms RoomAPI, netbird clientnetbird.Adapter, metadata MetadataS
 	if api, ok := rooms.(PeerAPI); ok {
 		peers = NewPeerRefresher(api, codes)
 	}
-	return &Service{
+	service := &Service{
 		rooms:    rooms,
 		netbird:  netbird,
 		metadata: metadata,
@@ -124,6 +150,34 @@ func NewService(rooms RoomAPI, netbird clientnetbird.Adapter, metadata MetadataS
 		peers:    peers,
 		now:      time.Now,
 	}
+	if api, ok := rooms.(OwnerAPI); ok {
+		service.ownerAPI = api
+	}
+	return service
+}
+
+// SetOwnerTokenStore 注入房主令牌存储；注入后房主能力（解散按钮/心跳）生效。
+func (s *Service) SetOwnerTokenStore(tokens OwnerTokenStorage) {
+	s.mu.Lock()
+	s.tokens = tokens
+	s.mu.Unlock()
+}
+
+// isOwner 当前房间是否本机创建（房主）。
+func (s *Service) isOwner() bool {
+	s.mu.Lock()
+	tokens := s.tokens
+	s.mu.Unlock()
+	if tokens == nil {
+		return false
+	}
+	token, err := tokens.Load()
+	if err != nil {
+		return false
+	}
+	isOwner := len(token) > 0
+	clearBytes(token)
+	return isOwner
 }
 
 type RoomViewSnapshot struct {
@@ -142,6 +196,9 @@ type RoomViewSnapshot struct {
 	// Disconnected 表示用户已主动断开(NatBird daemon 已下线但房间
 	// 注册保留),上层据此把"断开"按钮切换为"重新连接"。
 	Disconnected bool
+	// IsOwner 表示当前房间由本机创建(房主):UI 据此把"离开"换成"解散",
+	// 服务端以房主令牌校验。
+	IsOwner bool
 }
 
 func (s *Service) View(ctx context.Context) (RoomViewSnapshot, error) {
@@ -214,9 +271,20 @@ func (s *Service) View(ctx context.Context) (RoomViewSnapshot, error) {
 		LocalNetBirdIP: status.LocalNetBirdIP,
 		DaemonPeers:    append([]clientnetbird.Peer(nil), status.Peers...),
 		Disconnected:   disconnected,
+		IsOwner:        s.isOwner(),
 	}
 	if s.peers != nil {
-		peerSnapshot, _ := s.peers.Refresh(ctx)
+		peerSnapshot, peerErr := s.peers.Refresh(ctx)
+		if peerErr != nil {
+			var httpErr *roomapi.HTTPError
+			if errors.As(peerErr, &httpErr) && httpErr.Code == roomapi.ErrorRoomClosed {
+				// 房间已被房主解散(或被看门狗回收):本地强制清档,
+				// 之后视图回到无房态,上层弹出"房间已解散"提示。
+				s.stopOwnerHeartbeat()
+				_, _ = s.forceClear(context.WithoutCancel(ctx))
+				return RoomViewSnapshot{}, ErrRoomClosed
+			}
+		}
 		localIP := status.LocalNetBirdIP
 		if ipHost(localIP) == "" {
 			s.mu.Lock()
@@ -405,6 +473,10 @@ func (s *Service) Reconnect(ctx context.Context) (Snapshot, error) {
 	status, err := s.monitor.Resume(ctx, metadata.ProfileID)
 	if err != nil {
 		return s.fail(err)
+	}
+	// 房主重连回房间:恢复心跳,防止被看门狗误判离线
+	if s.isOwner() {
+		s.startOwnerHeartbeat()
 	}
 	facts := Facts{
 		RoomSaved:         true,
@@ -596,7 +668,22 @@ func (s *Service) enrollUnlocked(ctx context.Context, hostname string, obtain fu
 	}); err != nil {
 		return s.fail(transaction.wrap(err, ctx))
 	}
+	// 房主令牌(仅 Create 响应携带):与房间码同级保护落盘,支撑解散/心跳
+	transaction.ownerTokenWriteAttempted = true
+	if enrollment.OwnerToken != "" && s.tokens != nil {
+		ownerToken := []byte(enrollment.OwnerToken)
+		err := s.tokens.Save(ownerToken)
+		clearBytes(ownerToken)
+		if err != nil {
+			return s.fail(transaction.wrap(err, ctx))
+		}
+	}
 	committed = true
+
+	// 房主:创建成功起心跳,防服务端看门狗误判离线
+	if enrollment.OwnerToken != "" && s.tokens != nil {
+		s.startOwnerHeartbeat()
+	}
 
 	s.mu.Lock()
 	s.disconnected = false
@@ -617,9 +704,12 @@ func (s *Service) leaveUnlocked(ctx context.Context) (Snapshot, error) {
 		if errors.Is(err, securestore.ErrNoRoomMetadata) {
 			return s.machine.Apply(Facts{}), nil
 		}
-		// 存储冲突(孤儿状态):走强制清理路径,不因远端失败阻塞恢复。
+		// 存储冲突等情形:走强制清理路径,不因远端失败阻塞恢复。
 		return s.forceClear(ctx)
 	}
+	s.stopOwnerHeartbeat()
+	// 房主:先在服务端解散房间(成员由此掉线),再走本地断开流程。
+	s.closeRoomIfOwner(ctx)
 	if err := s.netbird.Deregister(ctx, metadata.ProfileID); err != nil && !profileAlreadyGone(err) {
 		return s.fail(err)
 	}
@@ -644,17 +734,24 @@ func (s *Service) clearLocalRoom() int {
 		clearFailures++
 	}
 	s.mu.Lock()
+	tokens := s.tokens
 	s.disconnected = false
 	s.peerWaitStart = time.Time{}
 	s.resumePending = false
 	s.lastLocalIP = ""
 	s.mu.Unlock()
+	if tokens != nil {
+		if err := tokens.Clear(); err != nil {
+			clearFailures++
+		}
+	}
 	return clearFailures
 }
 
 // forceClear 在本地存储不一致或 NetBird profile 无法验证时强制清理:
 // 尽力移除远端 profile(失败不阻塞),本地文件清理失败则报错。
 func (s *Service) forceClear(ctx context.Context) (Snapshot, error) {
+	s.stopOwnerHeartbeat()
 	if metadata, err := s.metadata.Load(); err == nil && metadata.ProfileID != "" {
 		if expiredRoom(metadata, s.now()) {
 			logger.Infof("express force-clear: room expired, skipping remote cleanup")
@@ -742,6 +839,98 @@ func (s *Service) SetResumePending(pending bool) {
 	s.resumePending = false
 }
 
+// closeRoomIfOwner 房主离开房间前先解散服务端房间。尽力而为：
+// 网络故障也不阻塞本地离开（服务端看门狗会在 OwnerOfflineAfter 后兜底）。
+func (s *Service) closeRoomIfOwner(ctx context.Context) {
+	s.mu.Lock()
+	tokens := s.tokens
+	ownerAPI := s.ownerAPI
+	s.mu.Unlock()
+	if tokens == nil || ownerAPI == nil {
+		return
+	}
+	token, err := tokens.Load()
+	if err != nil || len(token) == 0 {
+		return // 普通成员或旧数据,无房主令牌
+	}
+	defer clearBytes(token)
+	code, err := s.codes.Load()
+	if err != nil {
+		return
+	}
+	defer clearBytes(code)
+	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if err := ownerAPI.CloseRoom(closeCtx, string(code), string(token)); err != nil {
+		logger.Warnf("express leave: close room as owner failed (本地离开仍继续): %v", err)
+	} else {
+		logger.Infof("express leave: room closed by owner")
+	}
+}
+
+// startOwnerHeartbeat 房主心跳：周期性向服务端证明房主在线,
+// 防止被"房主离线自动解散"的看门狗误回收。调用会重启已在跑的心跳。
+func (s *Service) startOwnerHeartbeat() {
+	s.mu.Lock()
+	tokens := s.tokens
+	ownerAPI := s.ownerAPI
+	if s.heartbeatCancel != nil {
+		s.heartbeatCancel()
+		s.heartbeatCancel = nil
+	}
+	s.mu.Unlock()
+	if tokens == nil || ownerAPI == nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.mu.Lock()
+	s.heartbeatCancel = cancel
+	s.mu.Unlock()
+	go func() {
+		ticker := time.NewTicker(ownerHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				token, err := tokens.Load()
+				if err != nil {
+					return // 令牌被清(已离开):停止心跳
+				}
+				code, codeErr := s.codes.Load()
+				if codeErr != nil {
+					clearBytes(token)
+					return
+				}
+				hbCtx, hbCancel := context.WithTimeout(ctx, 10*time.Second)
+				err = ownerAPI.Heartbeat(hbCtx, string(code), string(token))
+				hbCancel()
+				clearBytes(token)
+				clearBytes(code)
+				if err != nil {
+					var httpErr *roomapi.HTTPError
+					if errors.As(err, &httpErr) && httpErr.Code == roomapi.ErrorRoomClosed {
+						return // 房间已被关闭:停止心跳,View 轮询会做本地收尾
+					}
+					// 其他错误(网络抖动)下一拍重试
+					logger.Warnf("express owner heartbeat failed: %v", err)
+				}
+			}
+		}
+	}()
+}
+
+func (s *Service) stopOwnerHeartbeat() {
+	s.mu.Lock()
+	cancel := s.heartbeatCancel
+	s.heartbeatCancel = nil
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 // profileAlreadyGone 判断错误是否表示"远端/守护进程中的 profile 已不存在"。
 // 残留房间记录对应的 profile 被删除后,Leave 应视为已清理并继续本地清理,
 // 避免用户永远无法离开一个"远端已不存在"的房间。
@@ -767,6 +956,7 @@ type enrollmentTransaction struct {
 	enrollmentAttempted    bool
 	codeWriteAttempted     bool
 	metadataWriteAttempted bool
+	ownerTokenWriteAttempted bool
 	compensated            bool
 	cleanupFailures        int
 }
@@ -788,6 +978,11 @@ func (t *enrollmentTransaction) compensate(parent context.Context) {
 	}
 	if t.metadataWriteAttempted {
 		if err := t.service.metadata.Clear(); err != nil {
+			t.cleanupFailures++
+		}
+	}
+	if t.ownerTokenWriteAttempted && t.service.tokens != nil {
+		if err := t.service.tokens.Clear(); err != nil {
 			t.cleanupFailures++
 		}
 	}

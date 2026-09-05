@@ -60,6 +60,7 @@ type ErrorCode string
 const (
 	ErrorInvalidRequest     ErrorCode = "invalid_request"
 	ErrorRoomUnavailable    ErrorCode = "room_unavailable"
+	ErrorRoomClosed         ErrorCode = "room_closed"
 	ErrorOperationConflict  ErrorCode = "operation_conflict"
 	ErrorRateLimited        ErrorCode = "rate_limited"
 	ErrorServiceUnavailable ErrorCode = "service_unavailable"
@@ -107,6 +108,9 @@ type Enrollment struct {
 	//   false → 纯 P2P 优先，中继连接不视为已连接
 	//   true  → 允许中继回退
 	RelayEnabled bool
+	// OwnerToken 房主令牌:仅 Create 响应携带(加入者为空),
+	// 持有者可调用 CloseRoom 解散房间、Heartbeat 维持房间不被自动回收。
+	OwnerToken string
 	secret       *enrollmentSecret
 }
 
@@ -330,6 +334,35 @@ func newJoinIdempotencyKey() (string, error) {
 	return key, nil
 }
 
+// CloseRoom 房主解散房间：房主令牌校验失败返回 403（HTTPError,码 invalid_request 之外的
+// 显式 StatusCode=403）；已关闭视为幂等成功。成员调用无意义，服务端会拒绝。
+func (c *Client) CloseRoom(ctx context.Context, roomCode, ownerToken string) error {
+	return c.postOwnerAction(ctx, roomCode, "close", ownerToken)
+}
+
+// Heartbeat 房主心跳：服务端重置房主在线计时；房间已关闭时返回 410（ErrorRoomClosed），
+// 客户端应据此本地清理并停止心跳。
+func (c *Client) Heartbeat(ctx context.Context, roomCode, ownerToken string) error {
+	return c.postOwnerAction(ctx, roomCode, "heartbeat", ownerToken)
+}
+
+func (c *Client) postOwnerAction(ctx context.Context, roomCode, action, ownerToken string) error {
+	roomCode, err := normalizeRoomCode(roomCode)
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(struct {
+		OwnerToken string `json:"owner_token"`
+	}{OwnerToken: ownerToken})
+	if err != nil {
+		return errors.New("encode owner action request")
+	}
+	defer clearBytes(body)
+	return c.do(ctx, http.MethodPost, "/rooms/"+roomCode+"/"+action, body, map[string]string{
+		"Content-Type": "application/json",
+	}, nil)
+}
+
 func (c *Client) Peers(ctx context.Context, roomCode string) (PeerList, error) {
 	roomCode, err := normalizeRoomCode(roomCode)
 	if err != nil {
@@ -491,6 +524,7 @@ type enrollmentResponse struct {
 	ManagementURL string `json:"management_url"`
 	SetupKey      string `json:"setup_key"`
 	RelayEnabled  bool   `json:"relay_enabled"`
+	OwnerToken    string `json:"owner_token"`
 }
 
 func (r *enrollmentResponse) enrollment(requireRoomCode bool, joinedCode string) (Enrollment, error) {
@@ -511,6 +545,7 @@ func (r *enrollmentResponse) enrollment(requireRoomCode bool, joinedCode string)
 		RoomCode:      roomCode,
 		ManagementURL: managementURL.String(),
 		RelayEnabled:  r.RelayEnabled,
+		OwnerToken:    r.OwnerToken,
 		secret: &enrollmentSecret{
 			key: clientnetbird.NewSetupKey([]byte(r.SetupKey)),
 		},
@@ -535,6 +570,8 @@ func newHTTPError(statusCode int, retryAfter string) error {
 		code = ErrorInvalidRequest
 	case statusCode == http.StatusNotFound:
 		code = ErrorRoomUnavailable
+	case statusCode == http.StatusGone:
+		code = ErrorRoomClosed
 	case statusCode == http.StatusConflict:
 		code = ErrorOperationConflict
 	case statusCode == http.StatusTooManyRequests:

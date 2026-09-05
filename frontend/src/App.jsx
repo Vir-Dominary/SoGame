@@ -332,6 +332,11 @@ function App() {
   }
 
   const handleExpressLeave = async () => {
+    // 房主离开即解散:先确认,再执行(成员会被强制断开)
+    if (expressState && expressState.isOwner) {
+      const confirmed = window.confirm('你是房主,解散后所有成员都会被断开。确定要解散房间吗?')
+      if (!confirmed) return
+    }
     resumePromptHandled.current = true
     try {
       const state = await ExpressLeaveRoom()
@@ -616,7 +621,7 @@ function App() {
                 ) : (
                   <button className="express-leave-btn secondary" onClick={handleExpressDisconnect} disabled={expressBusy}>断开</button>
                 )}
-                <button className="express-leave-btn danger" onClick={handleExpressLeave} disabled={expressBusy}>离开房间</button>
+                <button className="express-leave-btn danger" onClick={handleExpressLeave} disabled={expressBusy}>{expressState && expressState.isOwner ? '解散房间' : '离开房间'}</button>
               </div>
             </div>
           )}

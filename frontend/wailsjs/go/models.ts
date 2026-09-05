@@ -138,6 +138,7 @@ export namespace app {
 	    roomCode: string;
 	    relayEnabled: boolean;
 	    relayBlocked: boolean;
+	    isOwner: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ExpressState(source);
@@ -160,6 +161,7 @@ export namespace app {
 	        this.roomCode = source["roomCode"];
 	        this.relayEnabled = source["relayEnabled"];
 	        this.relayBlocked = source["relayBlocked"];
+	        this.isOwner = source["isOwner"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

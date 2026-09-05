@@ -119,6 +119,16 @@ func assembleWindowsExpress(controller *ExpressController, roomAPIBaseURL string
 	// 4. 组装 session.Service
 	sessionService := session.NewService(rooms, adapter, metadata, codes)
 
+	// 房主令牌存储(房主才能解散房间/维持心跳);失败仅降级为无房主能力,不影响使用
+	ownerTokenPath, tokenErr := securestore.DefaultOwnerTokenPath()
+	if tokenErr == nil {
+		if tokenStore, storeErr := securestore.NewOwnerTokenStore(ownerTokenPath); storeErr == nil {
+			sessionService.SetOwnerTokenStore(tokenStore)
+		} else {
+			logger.Warnf("express: owner token store unavailable: %v", storeErr)
+		}
+	}
+
 	// 5. 配置服务检查器与修复函数
 	inspector := nbdaemon.NewServiceInspector(clientnetbird.ExpectedVersion, netbirdProductCode(), adapter)
 	controller.Configure(sessionService, rpcAdapter.Close, inspector, windowsRepairFunc(roomAPIBaseURL, controller))
