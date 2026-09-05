@@ -42,6 +42,12 @@ type Room struct {
 	CreatedAt          time.Time
 	DisabledAt         *time.Time
 	LastError          string
+	// 房主机制（房间回收）:
+	// OwnerTokenHash 是创建者令牌的 SHA256(hex),空串表示老房间(无房主能力)。
+	OwnerTokenHash     string
+	LastOwnerHeartbeat *time.Time
+	ClosedAt           *time.Time
+	ClosedReason       string
 }
 
 type Operation struct {
@@ -97,6 +103,46 @@ CREATE TABLE IF NOT EXISTS operations (
   created_at INTEGER NOT NULL
 );
 `)
+	if err != nil {
+		return err
+	}
+	// 房主机制列:SQLite 不支持 IF NOT EXISTS 的 ADD COLUMN,先查再加。
+	for _, column := range []struct{ name, ddl string }{
+		{"owner_token_hash", "ALTER TABLE rooms ADD COLUMN owner_token_hash TEXT NOT NULL DEFAULT ''"},
+		{"last_owner_heartbeat", "ALTER TABLE rooms ADD COLUMN last_owner_heartbeat INTEGER"},
+		{"closed_at", "ALTER TABLE rooms ADD COLUMN closed_at INTEGER"},
+		{"closed_reason", "ALTER TABLE rooms ADD COLUMN closed_reason TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := s.ensureRoomColumn(ctx, column.name, column.ddl); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) ensureRoomColumn(ctx context.Context, name, ddl string) error {
+	rows, err := s.DB.QueryContext(ctx, `PRAGMA table_info(rooms)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var columnName, columnType string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &columnName, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if columnName == name {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = s.DB.ExecContext(ctx, ddl)
 	return err
 }
 
@@ -152,15 +198,57 @@ func (s *Store) Disable(ctx context.Context, roomID string) error {
 }
 
 func (s *Store) GetRoomByCodeHash(ctx context.Context, hash []byte) (Room, error) {
-	return s.scanRoom(s.DB.QueryRowContext(ctx, `SELECT id, code_hash, code_ciphertext, group_id, setup_key_id, setup_key_ciphertext, policy_id, status, created_at, disabled_at, last_error FROM rooms WHERE code_hash=?`, hash))
+	return s.scanRoom(s.DB.QueryRowContext(ctx, `SELECT id, code_hash, code_ciphertext, group_id, setup_key_id, setup_key_ciphertext, policy_id, status, created_at, disabled_at, last_error, owner_token_hash, last_owner_heartbeat, closed_at, closed_reason FROM rooms WHERE code_hash=?`, hash))
 }
 
 func (s *Store) GetRoom(ctx context.Context, id string) (Room, error) {
-	return s.scanRoom(s.DB.QueryRowContext(ctx, `SELECT id, code_hash, code_ciphertext, group_id, setup_key_id, setup_key_ciphertext, policy_id, status, created_at, disabled_at, last_error FROM rooms WHERE id=?`, id))
+	return s.scanRoom(s.DB.QueryRowContext(ctx, `SELECT id, code_hash, code_ciphertext, group_id, setup_key_id, setup_key_ciphertext, policy_id, status, created_at, disabled_at, last_error, owner_token_hash, last_owner_heartbeat, closed_at, closed_reason FROM rooms WHERE id=?`, id))
+}
+
+// SetOwnerTokenHash 记录房主令牌哈希（只在创建阶段调用一次）。
+func (s *Store) SetOwnerTokenHash(ctx context.Context, roomID, tokenHash string) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE rooms SET owner_token_hash=? WHERE id=?`, tokenHash, roomID)
+	return err
+}
+
+// TouchOwnerHeartbeat 记录房主心跳时间。
+func (s *Store) TouchOwnerHeartbeat(ctx context.Context, roomID string, at time.Time) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE rooms SET last_owner_heartbeat=? WHERE id=?`, at.UnixNano(), roomID)
+	return err
+}
+
+// MarkRoomClosed 将房间标记为已关闭（含原因与时刻）。
+func (s *Store) MarkRoomClosed(ctx context.Context, roomID, reason string, at time.Time) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE rooms SET status='closed', closed_reason=?, closed_at=? WHERE id=?`, reason, at.UnixNano(), roomID)
+	return err
+}
+
+// ListOwnerSweepCandidates 返回需要被清扫的 active 房间：
+// 有房主令牌（新机制房间）且房主心跳已过期（或从未心跳且创建超过 cutoff）。
+func (s *Store) ListOwnerSweepCandidates(ctx context.Context, cutoff time.Time) ([]Room, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT id, code_hash, code_ciphertext, group_id, setup_key_id, setup_key_ciphertext, policy_id, status, created_at, disabled_at, last_error, owner_token_hash, last_owner_heartbeat, closed_at, closed_reason
+FROM rooms
+WHERE status='active' AND owner_token_hash <> ''
+  AND ((last_owner_heartbeat IS NULL AND created_at <= ?) OR (last_owner_heartbeat IS NOT NULL AND last_owner_heartbeat <= ?))`,
+		cutoff.UnixNano(), cutoff.UnixNano())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var rooms []Room
+	for rows.Next() {
+		room, err := s.scanRoom(rows)
+		if err != nil {
+			return nil, err
+		}
+		rooms = append(rooms, room)
+	}
+	return rooms, rows.Err()
 }
 
 func (s *Store) ListRoomsByStatus(ctx context.Context, status string) ([]Room, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT id, code_hash, code_ciphertext, group_id, setup_key_id, setup_key_ciphertext, policy_id, status, created_at, disabled_at, last_error FROM rooms WHERE status=?`, status)
+	rows, err := s.DB.QueryContext(ctx, `SELECT id, code_hash, code_ciphertext, group_id, setup_key_id, setup_key_ciphertext, policy_id, status, created_at, disabled_at, last_error, owner_token_hash, last_owner_heartbeat, closed_at, closed_reason FROM rooms WHERE status=?`, status)
 	if err != nil {
 		return nil, err
 	}
@@ -198,8 +286,8 @@ type rowScanner interface{ Scan(dest ...any) error }
 func (s *Store) scanRoom(row rowScanner) (Room, error) {
 	var room Room
 	var created int64
-	var disabled sql.NullInt64
-	err := row.Scan(&room.ID, &room.CodeHash, &room.CodeCiphertext, &room.GroupID, &room.SetupKeyID, &room.SetupKeyCiphertext, &room.PolicyID, &room.Status, &created, &disabled, &room.LastError)
+	var disabled, heartbeat, closed sql.NullInt64
+	err := row.Scan(&room.ID, &room.CodeHash, &room.CodeCiphertext, &room.GroupID, &room.SetupKeyID, &room.SetupKeyCiphertext, &room.PolicyID, &room.Status, &created, &disabled, &room.LastError, &room.OwnerTokenHash, &heartbeat, &closed, &room.ClosedReason)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Room{}, ErrNotFound
 	}
@@ -210,6 +298,14 @@ func (s *Store) scanRoom(row rowScanner) (Room, error) {
 	if disabled.Valid {
 		t := time.Unix(0, disabled.Int64).UTC()
 		room.DisabledAt = &t
+	}
+	if heartbeat.Valid {
+		t := time.Unix(0, heartbeat.Int64).UTC()
+		room.LastOwnerHeartbeat = &t
+	}
+	if closed.Valid {
+		t := time.Unix(0, closed.Int64).UTC()
+		room.ClosedAt = &t
 	}
 	return room, nil
 }

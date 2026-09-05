@@ -109,12 +109,13 @@ type mockService struct {
 }
 
 type mockRoom struct {
-	ID        string
-	Code      string
-	SetupKey  string
-	Status    string
-	CreatedAt int64
-	Peers     []mockPeer
+	ID         string
+	Code       string
+	SetupKey   string
+	OwnerToken string
+	Status     string
+	CreatedAt  int64
+	Peers      []mockPeer
 }
 
 type mockPeer struct {
@@ -144,7 +145,13 @@ func (s *mockService) join(body json.RawMessage) (int, any) {
 	s.mu.RLock()
 	room, found := s.rooms[s.hash(request.RoomCode)]
 	s.mu.RUnlock()
-	if !found || room.Status != "active" {
+	if !found {
+		return 404, apiError("room_unavailable")
+	}
+	if room.Status == "closed" {
+		return 410, apiError("room_closed")
+	}
+	if room.Status != "active" {
 		return 404, apiError("room_unavailable")
 	}
 	return 200, struct {
@@ -162,9 +169,10 @@ func (s *mockService) create(ik string) (int, []byte, error) {
 	}
 	id := randomHex(12)
 	key := randomHex(32)
+	ownerToken := randomHex(32)
 	s.mu.Lock()
 	s.rooms[s.hash(code)] = &mockRoom{
-		ID: id, Code: code, SetupKey: key, Status: "active",
+		ID: id, Code: code, SetupKey: key, OwnerToken: ownerToken, Status: "active",
 		CreatedAt: time.Now().UnixNano(),
 		Peers:     []mockPeer{},
 	}
@@ -175,15 +183,66 @@ func (s *mockService) create(ik string) (int, []byte, error) {
 		ManagementURL string `json:"management_url"`
 		SetupKey      string `json:"setup_key"`
 		RelayEnabled  bool   `json:"relay_enabled"`
-	}{RoomID: id, RoomCode: code, ManagementURL: mockManagementURL, SetupKey: key, RelayEnabled: mockRelayEnabled()})
+		OwnerToken    string `json:"owner_token"`
+	}{RoomID: id, RoomCode: code, ManagementURL: mockManagementURL, SetupKey: key, RelayEnabled: mockRelayEnabled(), OwnerToken: ownerToken})
 	return 201, body, nil
+}
+
+// close 房主解散：校验 owner_token,匹配则置 closed(成员下一步拉 peers 会收到 410)。
+func (s *mockService) close(code string, body json.RawMessage) (int, any) {
+	var request struct {
+		OwnerToken string `json:"owner_token"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil || request.OwnerToken == "" {
+		return 400, apiError("invalid_request")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	room, found := s.rooms[s.hash(code)]
+	if !found {
+		return 404, apiError("room_unavailable")
+	}
+	if room.OwnerToken != request.OwnerToken {
+		return 403, apiError("forbidden")
+	}
+	room.Status = "closed"
+	return 204, nil
+}
+
+// heartbeat 房主心跳：active 续命;closed 返回 410 让房主端尽快转本地无房态。
+func (s *mockService) heartbeat(code string, body json.RawMessage) (int, any) {
+	var request struct {
+		OwnerToken string `json:"owner_token"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil || request.OwnerToken == "" {
+		return 400, apiError("invalid_request")
+	}
+	s.mu.RLock()
+	room, found := s.rooms[s.hash(code)]
+	s.mu.RUnlock()
+	if !found {
+		return 404, apiError("room_unavailable")
+	}
+	if room.OwnerToken != request.OwnerToken {
+		return 403, apiError("forbidden")
+	}
+	if room.Status == "closed" {
+		return 410, apiError("room_closed")
+	}
+	return 204, nil
 }
 
 func (s *mockService) peers(code string) (int, any, error) {
 	s.mu.RLock()
 	room, found := s.rooms[s.hash(code)]
 	s.mu.RUnlock()
-	if !found || room.Status != "active" {
+	if !found {
+		return 404, apiError("room_unavailable"), nil
+	}
+	if room.Status == "closed" {
+		return 410, apiError("room_closed"), nil
+	}
+	if room.Status != "active" {
 		return 404, apiError("room_unavailable"), nil
 	}
 	return 200, struct {
@@ -224,12 +283,39 @@ func (s *mockService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case strings.HasPrefix(r.URL.Path, "/rooms/"):
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-		if len(parts) == 3 && parts[2] == "peers" {
-			status, response, _ := s.peers(parts[1])
-			writeJSON(w, status, response)
+		if len(parts) != 3 {
+			http.NotFound(w, r)
 			return
 		}
-		http.NotFound(w, r)
+		switch parts[2] {
+		case "peers":
+			if r.Method != http.MethodGet {
+				http.NotFound(w, r)
+				return
+			}
+			status, response, _ := s.peers(parts[1])
+			writeJSON(w, status, response)
+		case "close", "heartbeat":
+			if r.Method != http.MethodPost {
+				http.NotFound(w, r)
+				return
+			}
+			body, _ := io.ReadAll(io.LimitReader(r.Body, 4096))
+			var status int
+			var response any
+			if parts[2] == "close" {
+				status, response = s.close(parts[1], body)
+			} else {
+				status, response = s.heartbeat(parts[1], body)
+			}
+			if status == http.StatusNoContent {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			writeJSON(w, status, response)
+		default:
+			http.NotFound(w, r)
+		}
 
 	default:
 		http.NotFound(w, r)

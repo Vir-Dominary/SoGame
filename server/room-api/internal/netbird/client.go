@@ -183,6 +183,12 @@ func (c *Client) DeleteGroup(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/api/groups/"+id, nil, nil)
 }
 
+// DeletePeer 删除一个 NetBird peer（强制其客户端下线并从账号移除）。
+// 房间解散时用于强制断开成员。
+func (c *Client) DeletePeer(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/api/peers/"+id, nil, nil)
+}
+
 func (c *Client) ListSetupKeys(ctx context.Context) ([]SetupKey, error) {
 	var keys []SetupKey
 	err := c.do(ctx, http.MethodGet, "/api/setup-keys", nil, &keys)

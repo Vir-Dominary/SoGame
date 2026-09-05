@@ -25,6 +25,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -44,6 +45,10 @@ type Config struct {
 	//   false（默认）→ 纯 P2P 优先，客户端不把中继连接视为已连接
 	//   true → 允许中继，客户端 P2P 失败时可使用中继回退
 	RelayEnabled bool
+	// 房主离线超时：超过该时长未收到房主心跳即自动解散房间。<=0 关闭本机制。
+	OwnerOfflineAfter time.Duration
+	// 房主看门狗扫描间隔。
+	OwnerSweepInterval time.Duration
 }
 
 func Load() (Config, error) {
@@ -59,6 +64,8 @@ func Load() (Config, error) {
 		MaxBodyBytes:         int64Env("ROOM_API_MAX_BODY_BYTES", 4096),
 		ProvisionConcurrency: intEnv("ROOM_API_PROVISION_CONCURRENCY", 2),
 		RelayEnabled:         boolEnv("ROOM_API_RELAY_ENABLED", false),
+		OwnerOfflineAfter:    durationEnv("ROOM_API_OWNER_OFFLINE_AFTER", 5*time.Minute),
+		OwnerSweepInterval:   durationEnv("ROOM_API_OWNER_SWEEP_INTERVAL", time.Minute),
 	}
 	if c.PAT == "" {
 		return Config{}, fmt.Errorf("NETBIRD_PAT is required")
@@ -95,6 +102,19 @@ func int64Env(name string, fallback int64) int64 {
 		return fallback
 	}
 	return value
+}
+
+// durationEnv 解析时长环境变量（如 "5m"、"30s"）；无法解析时返回 fallback。
+func durationEnv(name string, fallback time.Duration) time.Duration {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 // boolEnv 解析布尔环境变量；无法解析时返回 fallback。

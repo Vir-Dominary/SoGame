@@ -141,6 +141,10 @@ func (s *Server) joinRoom(w *statusWriter, r *http.Request) {
 		return
 	}
 	response, err := s.rooms.Join(r.Context(), request.RoomCode)
+	if errors.Is(err, rooms.ErrRoomClosed) {
+		writeError(w, http.StatusGone, "room_closed")
+		return
+	}
 	if errors.Is(err, rooms.ErrInvalidRoom) {
 		writeError(w, http.StatusNotFound, "room unavailable")
 		return
@@ -168,6 +172,10 @@ func (s *Server) roomAction(w *statusWriter, r *http.Request) {
 			return
 		}
 		response, err := s.rooms.Peers(r.Context(), code)
+		if errors.Is(err, rooms.ErrRoomClosed) {
+			writeError(w, http.StatusGone, "room_closed")
+			return
+		}
 		if errors.Is(err, rooms.ErrInvalidRoom) {
 			writeError(w, http.StatusNotFound, "room unavailable")
 			return
@@ -178,6 +186,61 @@ func (s *Server) roomAction(w *statusWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, response)
+	case r.Method == http.MethodPost && action == "close":
+		// 房主解散房间（标题"房主离开即断开"）。令牌与房间码同强度；挂在 join 限流下。
+		if !s.joinLimit.Allow(remoteIP(r)) {
+			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+			return
+		}
+		var request struct {
+			OwnerToken string `json:"owner_token"`
+		}
+		if !decodeJSON(w, r, s.cfg.MaxBodyBytes, &request) || strings.TrimSpace(request.OwnerToken) == "" {
+			writeError(w, http.StatusBadRequest, "invalid request")
+			return
+		}
+		err := s.rooms.Close(r.Context(), code, request.OwnerToken)
+		if err == nil {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if errors.Is(err, rooms.ErrCloseForbidden) {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		if errors.Is(err, rooms.ErrInvalidRoom) {
+			writeError(w, http.StatusNotFound, "room unavailable")
+			return
+		}
+		log.Printf("room close failed: %v", err)
+		writeError(w, http.StatusBadGateway, "room close failed")
+	case r.Method == http.MethodPost && action == "heartbeat":
+		// 房主心跳：证明房主在线，避免被看门狗清扫。挂在 peer 限流档位。
+		if !s.peerLimit.Allow(remoteIP(r)) {
+			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+			return
+		}
+		var request struct {
+			OwnerToken string `json:"owner_token"`
+		}
+		if !decodeJSON(w, r, s.cfg.MaxBodyBytes, &request) || strings.TrimSpace(request.OwnerToken) == "" {
+			writeError(w, http.StatusBadRequest, "invalid request")
+			return
+		}
+		err := s.rooms.Heartbeat(r.Context(), code, request.OwnerToken)
+		switch {
+		case err == nil:
+			w.WriteHeader(http.StatusNoContent)
+		case errors.Is(err, rooms.ErrRoomClosed):
+			writeError(w, http.StatusGone, "room_closed")
+		case errors.Is(err, rooms.ErrCloseForbidden):
+			writeError(w, http.StatusForbidden, "forbidden")
+		case errors.Is(err, rooms.ErrInvalidRoom):
+			writeError(w, http.StatusNotFound, "room unavailable")
+		default:
+			log.Printf("room heartbeat failed: %v", err)
+			writeError(w, http.StatusBadGateway, "room heartbeat failed")
+		}
 	case r.Method == http.MethodPost && action == "disable":
 		if !s.authorizedAdmin(r) {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
