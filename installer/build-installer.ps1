@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-or-later
+﻿# SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 SoGame Contributors
 #
 # This file is part of SoGame.
@@ -61,6 +61,7 @@ if ($missing.Count -gt 0) { throw "缺少上述文件，拒绝打包（否则安
 
 # ---- 定位 ISCC.exe ----
 $isccCandidates = @(
+    "C:\application\inno\Inno Setup 6\ISCC.exe",   # 本机自定义安装位置
     "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
     "C:\Program Files\Inno Setup 6\ISCC.exe",
     "C:\Program Files (x86)\Inno Setup 5\ISCC.exe",
