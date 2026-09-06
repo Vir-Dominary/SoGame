@@ -224,14 +224,16 @@ func (s *Store) MarkRoomClosed(ctx context.Context, roomID, reason string, at ti
 }
 
 // ListOwnerSweepCandidates 返回需要被清扫的 active 房间：
-// 有房主令牌（新机制房间）且房主心跳已过期（或从未心跳且创建超过 cutoff）。
+// 有房主令牌，且房主有过心跳但已超时。
+// 注：从不心跳的房间不扫描——旧版客户端建房后没有心跳能力，
+// 混部期间不能把用户正常房间误杀；这些例外由客户端 24h 本地过期兜底。
 func (s *Store) ListOwnerSweepCandidates(ctx context.Context, cutoff time.Time) ([]Room, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 SELECT id, code_hash, code_ciphertext, group_id, setup_key_id, setup_key_ciphertext, policy_id, status, created_at, disabled_at, last_error, owner_token_hash, last_owner_heartbeat, closed_at, closed_reason
 FROM rooms
 WHERE status='active' AND owner_token_hash <> ''
-  AND ((last_owner_heartbeat IS NULL AND created_at <= ?) OR (last_owner_heartbeat IS NOT NULL AND last_owner_heartbeat <= ?))`,
-		cutoff.UnixNano(), cutoff.UnixNano())
+  AND last_owner_heartbeat IS NOT NULL AND last_owner_heartbeat <= ?`,
+		cutoff.UnixNano())
 	if err != nil {
 		return nil, err
 	}
