@@ -133,6 +133,10 @@ type Service struct {
 	ownerAPI OwnerAPI
 	// heartbeatCancel 停止房主心跳协程;nil 表示未在跑。
 	heartbeatCancel context.CancelFunc
+	// 身份自愈状态(见 repair.go):控制面死亡/房间归属漂移的防抖计数与冷却
+	repairPolls       int
+	repairRunning     bool
+	lastRepairAttempt time.Time
 }
 
 func NewService(rooms RoomAPI, netbird clientnetbird.Adapter, metadata MetadataStorage, codes RoomCodeStorage) *Service {
@@ -285,6 +289,9 @@ func (s *Service) View(ctx context.Context) (RoomViewSnapshot, error) {
 				return RoomViewSnapshot{}, ErrRoomClosed
 			}
 		}
+		// 自愈:控制面死亡(enroll 后卡死)或房间归属漂移(房主复旧身份)
+		// 都靠"同一房间码重新 Join"修复,观测防抖见 repair.go
+		s.maybeRepairIdentity(ctx, status, peerSnapshot.Peers)
 		localIP := status.LocalNetBirdIP
 		if ipHost(localIP) == "" {
 			s.mu.Lock()
@@ -588,9 +595,9 @@ func (s *Service) enroll(ctx context.Context, hostname string, obtain func(conte
 
 func (s *Service) enrollUnlocked(ctx context.Context, hostname string, obtain func(context.Context) (roomapi.Enrollment, error)) (Snapshot, error) {
 	if err := s.requireEmptyStorage(); err != nil {
-		// 用户在待恢复状态下显式创建/加入新房间:视为放弃上次的房间,
-		// 先强制清理旧记录与远端 profile,再继续新房间流程。
-		// 过期房间同样在 requireEmptyStorage 中已清除并放行。
+		// 用户在待恢复状态下显式创建/加入新房:视为放弃上次的房,
+		// 先强制清理旧记录与远�?profile,再继续新房间流程�?
+		// 过期房间同样�?requireEmptyStorage 中已清除并放行�?
 		s.mu.Lock()
 		pending := s.resumePending
 		s.mu.Unlock()
@@ -602,6 +609,13 @@ func (s *Service) enrollUnlocked(ctx context.Context, hostname string, obtain fu
 			return s.failValidation(err)
 		}
 	}
+	return s.performEnrollment(ctx, hostname, obtain)
+}
+
+// performEnrollment 执行"获取房间凭证 → 重置 daemon 身份 → 注册并进房"的完整事务。
+// 从 enrollUnlocked(前端命令)与 repairRoomIdentity(自愈)两个入口共用;
+// repair 路径不检查本地存储(目标就是保留当前房间、仅修复身份)。
+func (s *Service) performEnrollment(ctx context.Context, hostname string, obtain func(context.Context) (roomapi.Enrollment, error)) (Snapshot, error) {
 	s.machine.Apply(Facts{EnrollmentInProgress: true})
 	logger.Infof("express enroll: requesting room (hostname=%q)", hostname)
 
@@ -611,6 +625,9 @@ func (s *Service) enrollUnlocked(ctx context.Context, hostname string, obtain fu
 		return s.fail(err)
 	}
 	defer enrollment.DiscardSetupKey()
+	// NetBird setup key 的 auto_groups 只在 peer 首次注册时生效;
+	// 重复进房必须废弃旧身份,否则 peer 留在旧房间组,成员互相不可见。
+	s.resetManagedIdentity(ctx)
 	profile, err := s.netbird.CreateProfile(ctx, clientnetbird.ManagedProfileName)
 	if err != nil {
 		logger.Errorf("express enroll: create managed profile failed: %v", err)
@@ -688,6 +705,7 @@ func (s *Service) enrollUnlocked(ctx context.Context, hostname string, obtain fu
 	s.mu.Lock()
 	s.disconnected = false
 	s.peerWaitStart = time.Time{}
+	s.repairPolls = 0
 	s.mu.Unlock()
 	facts := Facts{RoomSaved: true}
 	if status, statusErr := s.netbird.Status(ctx); statusErr == nil {
@@ -739,6 +757,7 @@ func (s *Service) clearLocalRoom() int {
 	s.peerWaitStart = time.Time{}
 	s.resumePending = false
 	s.lastLocalIP = ""
+	s.repairPolls = 0
 	s.mu.Unlock()
 	if tokens != nil {
 		if err := tokens.Clear(); err != nil {
