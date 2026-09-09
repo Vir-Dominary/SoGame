@@ -455,6 +455,12 @@ func (c *Client) doAttempt(ctx context.Context, method, path string, body []byte
 		c.logFailure(method, endpoint.Path, fmt.Sprintf("返回状态 %d", response.StatusCode))
 		return newHTTPError(response.StatusCode, response.Header.Get("Retry-After"))
 	}
+	// target 为空表示调用方不关心响应体(如 close/heartbeat 的 204 No Content);
+	// 此时只要状态码为 2xx 即视为成功,无需也无法解析 JSON。
+	if target == nil {
+		c.logSuccess(method, endpoint.Path, response.StatusCode)
+		return nil
+	}
 	if len(bytes.TrimSpace(payload)) == 0 || json.Unmarshal(payload, target) != nil {
 		return &ProtocolError{Reason: "response is not valid JSON"}
 	}

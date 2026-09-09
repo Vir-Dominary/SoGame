@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"time"
 
 	"sogame/internal/securestore"
 )
@@ -199,5 +200,40 @@ func TestViewDetectsRoomClosedAndClearsLocalState(t *testing.T) {
 	// 后续视图应回到无房态(不再报错)
 	if _, err := service.View(context.Background()); err != nil && !errors.Is(err, securestore.ErrNoRoomMetadata) {
 		t.Fatalf("post-close view should behave like fresh state, got %v", err)
+	}
+}
+
+// TestOwnerHeartbeatFiresImmediately 验证房主心跳首跳立即发出(而非等满 60s 间隔):
+// 这样服务端能尽早记录 last_owner_heartbeat,让看门狗对新建房间生效。
+func TestOwnerHeartbeatFiresImmediately(t *testing.T) {
+	backend := &ownerRoomServer{}
+	rooms, server := newSessionRoomAPI(t, backend.handler())
+	defer server.Close()
+	adapter := &fakeSessionAdapter{fail: map[string]error{}}
+	service := NewService(rooms, adapter, &memoryMetadata{}, &memoryRoomCode{})
+	service.SetOwnerTokenStore(&memoryOwnerToken{})
+
+	if _, err := service.Create(context.Background(), "gaming-pc"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// 首跳应远早于 ownerHeartbeatInterval(60s) 发出:最多等 3s。
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		backend.mu.Lock()
+		heartbeats := len(backend.heartbeats)
+		backend.mu.Unlock()
+		if heartbeats > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("owner heartbeat did not fire promptly after create")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if backend.heartbeats[0].token != "the-owner-token" {
+		t.Fatalf("heartbeat must carry owner token, got %q", backend.heartbeats[0].token)
 	}
 }

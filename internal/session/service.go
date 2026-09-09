@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +41,9 @@ const (
 	// ownerHeartbeatInterval 房主心跳间隔;服务端 OwnerOfflineAfter 默认 5 分钟,
 	// 一分钟一跳,容忍四次网络抖动仍不会被误清扫。
 	ownerHeartbeatInterval = 60 * time.Second
+	// ownerHeartbeatMaxBackoff 心跳连续失败时的最大退避间隔,防止服务端不可达时
+	// 客户端以固定频率空打;封顶 2 分钟,保证即便退避也不会逼近服务端 OwnerOfflineAfter(5 分钟)。
+	ownerHeartbeatMaxBackoff = 2 * time.Minute
 	// roomMaxAge 定义本地保存的房间最长有效期。超过该时长后房间视为失效,
 	// 不再提示恢复或允许重新连接,防止用户加入一个早已解散的房间。
 	roomMaxAge = 24 * time.Hour
@@ -906,13 +910,17 @@ func (s *Service) startOwnerHeartbeat() {
 	s.heartbeatCancel = cancel
 	s.mu.Unlock()
 	go func() {
-		ticker := time.NewTicker(ownerHeartbeatInterval)
-		defer ticker.Stop()
+		// 首跳立即发出:让服务端尽早记录 last_owner_heartbeat,
+		// 这样看门狗(只清扫"有过心跳且超时"的房间)才能对新建房间生效;
+		// 否则房主在首个 60s tick 之前崩溃,房间会因从未心跳而永不被回收。
+		delay := time.Duration(0)
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case <-timer.C:
 				token, err := tokens.Load()
 				if err != nil {
 					return // 令牌被清(已离开):停止心跳
@@ -929,12 +937,27 @@ func (s *Service) startOwnerHeartbeat() {
 				clearBytes(code)
 				if err != nil {
 					var httpErr *roomapi.HTTPError
-					if errors.As(err, &httpErr) && httpErr.Code == roomapi.ErrorRoomClosed {
-						return // 房间已被关闭:停止心跳,View 轮询会做本地收尾
+					if errors.As(err, &httpErr) {
+						if httpErr.Code == roomapi.ErrorRoomClosed || httpErr.StatusCode == http.StatusForbidden {
+							// 房间已被解散(410)或房主令牌失效(403):停止心跳,
+							// 房间已解散由 View 轮询做本地收尾;令牌失效则继续跳也只会 403。
+							return
+						}
 					}
-					// 其他错误(网络抖动)下一拍重试
-					logger.Warnf("express owner heartbeat failed: %v", err)
+					// 失败指数退避(60s→120s→240s,封顶 2 分钟),成功复位。
+					if delay <= 0 {
+						delay = ownerHeartbeatInterval
+					} else if delay < ownerHeartbeatMaxBackoff {
+						delay *= 2
+						if delay > ownerHeartbeatMaxBackoff {
+							delay = ownerHeartbeatMaxBackoff
+						}
+					}
+					logger.Warnf("express owner heartbeat failed (backoff %v): %v", delay, err)
+				} else {
+					delay = ownerHeartbeatInterval
 				}
+				timer.Reset(delay)
 			}
 		}
 	}()
