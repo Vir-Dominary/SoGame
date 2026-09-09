@@ -53,6 +53,10 @@ type RoomMetadata struct {
 	ManagementURL string    `json:"managementUrl"`
 	ProfileID     string    `json:"profileId"`
 	CreatedAt     time.Time `json:"createdAt"`
+	// RelayEnabled 记录该房间所属服务器是否允许 Relay 中继。
+	// 由服务器随房间 enrollment 下发；客户端仅持久化并遵循。
+	// 旧版本房间数据缺少该字段时默认 false（纯 P2P 优先）。
+	RelayEnabled bool `json:"relayEnabled"`
 }
 
 type MetadataStore struct {

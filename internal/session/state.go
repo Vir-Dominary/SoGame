@@ -49,6 +49,11 @@ type Facts struct {
 	OtherRoomPeerCount     int
 	PeerConnectionTimedOut bool
 	DaemonPeers            []clientnetbird.Peer
+	// RelayAllowed 表示该房间所属服务器是否允许 Relay 中继。
+	// 由服务器（提供服务的控制平面）掌握并随房间下发给客户端：
+	//   false（默认）→ 纯 P2P 优先，中继连接不视为已连接
+	//   true → 允许中继，P2P 失败时可回退
+	RelayAllowed bool
 }
 
 func FactsFromDaemon(roomSaved, membershipKnown bool, otherRoomPeerCount int, snapshot clientnetbird.Snapshot) Facts {
@@ -113,7 +118,7 @@ func Derive(facts Facts) (State, clientnetbird.PathType) {
 		return StateControlPlaneConnected, clientnetbird.PathNone
 	}
 
-	path := preferredConnectedPath(facts.DaemonPeers)
+	path := preferredConnectedPath(facts.DaemonPeers, facts.RelayAllowed)
 	switch path {
 	case clientnetbird.PathP2P:
 		return StateConnectedP2P, path
@@ -135,7 +140,9 @@ func Derive(facts Facts) (State, clientnetbird.PathType) {
 	return StateConnectingPeer, clientnetbird.PathNone
 }
 
-func preferredConnectedPath(peers []clientnetbird.Peer) clientnetbird.PathType {
+// preferredConnectedPath 返回首选连接路径：P2P 直连优先；仅当服务器允许
+// Relay 时，中继连接才被视为可用的"已连接"路径（纯 P2P 模式下中继被忽略）。
+func preferredConnectedPath(peers []clientnetbird.Peer, relayAllowed bool) clientnetbird.PathType {
 	path := clientnetbird.PathNone
 	for _, peer := range peers {
 		if peer.State != clientnetbird.PeerConnected {
@@ -145,7 +152,9 @@ func preferredConnectedPath(peers []clientnetbird.Peer) clientnetbird.PathType {
 		case clientnetbird.PathP2P:
 			return clientnetbird.PathP2P
 		case clientnetbird.PathRelay:
-			path = clientnetbird.PathRelay
+			if relayAllowed {
+				path = clientnetbird.PathRelay
+			}
 		}
 	}
 	return path

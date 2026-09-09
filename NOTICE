@@ -1,0 +1,82 @@
+SoGame NOTICE
+=============
+
+This file is part of the SoGame project.
+
+SoGame
+Copyright (C) 2026 SoGame Contributors
+
+SoGame is a lightweight peer-to-peer (P2P) virtual networking tool for
+LAN parties. The original source code of SoGame is licensed under the
+GNU Affero General Public License version 3 (AGPLv3). See the LICENSE
+file in the root of this repository for the complete license text.
+
+This NOTICE is provided for information only. It does not modify the
+terms of the GNU Affero General Public License, and it does not grant
+any rights or permissions beyond those granted by the applicable
+software licenses. In particular, nothing in this NOTICE restricts
+copying, modification, redistribution, or sale of the software in any
+way that the applicable licenses would otherwise permit.
+
+1. SoGame Original Code
+-----------------------
+
+The original source code of SoGame (Go backend, React frontend, build
+scripts, documentation, and related files authored by the SoGame
+project) is distributed under the GNU Affero General Public License
+version 3, as published by the Free Software Foundation, with the
+option of any later version. See LICENSE.
+
+The project's copyright holder is currently recorded in the project
+metadata as "vir_dominary". The unified copyright line used in the
+source files is "Copyright (C) 2026 SoGame Contributors". If you
+contribute to SoGame, you agree that your contributions are licensed
+under the same AGPLv3 terms as the rest of the project.
+
+2. Third-Party Software
+-----------------------
+
+SoGame includes, bundles, links, or invokes third-party software that
+remains subject to its own copyright and license terms. The licenses of
+these third-party components are independent of the AGPLv3 license that
+applies to SoGame's original code. SoGame does not relicense
+third-party software; their copyright notices and license texts are
+preserved and documented in the THIRD_PARTY_LICENSES/ directory.
+
+Notable third-party components include (but are not limited to):
+
+  - NetBird daemon RPC contract (vendored)  - BSD 3-Clause
+  - NetBird official MSI v0.74.7            - AGPLv3 (upstream NetBird
+                                              license), NetBird GmbH
+  - n2n (edge.exe)                          - GPLv3, ntop project
+  - TAP-Windows driver (tap0901)            - GPLv2, OpenVPN
+                                              Technologies, Inc.
+  - tapinstall.exe                          - GPLv2 (distributed via
+                                              OpenVPN; originally a
+                                              Microsoft Windows DDK tool)
+  - Wintun driver                           - MIT (bundled inside the
+                                              NetBird MSI)
+  - Go modules and npm packages             - MIT / BSD / Apache-2.0 /
+                                              ISC and other permissive
+                                              licenses
+
+Please refer to THIRD_PARTY_LICENSES/ for the complete inventory,
+including the license texts that must be preserved when redistributing
+this software.
+
+3. Trademark / Brand Policy
+---------------------------
+
+The SoGame name and any logos or visual identities associated with the
+SoGame project are not granted under the AGPLv3 license or any other
+software license. Permission to use the SoGame name or logos for
+commercial or promotional purposes is governed by the project's brand
+policy, described in TRADEMARK.md.
+
+4. How to Reach the Project
+---------------------------
+
+Upstream repository: https://github.com/vir-dominary/SoGame.git
+
+Questions about licensing, redistribution, or third-party components
+should be directed to the project maintainers.

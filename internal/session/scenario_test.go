@@ -39,7 +39,7 @@ func TestSingleRoomStateScenarioIsDeterministic(t *testing.T) {
 		{"empty room is healthy", Facts{RoomSaved: true, ControlPlaneReady: true, MembershipKnown: true}, StateWaitingForPeer, clientnetbird.PathNone},
 		{"peer membership appears", Facts{RoomSaved: true, ControlPlaneReady: true, MembershipKnown: true, OtherRoomPeerCount: 1}, StateConnectingPeer, clientnetbird.PathNone},
 		{"direct tunnel", Facts{RoomSaved: true, ControlPlaneReady: true, MembershipKnown: true, OtherRoomPeerCount: 1, DaemonPeers: []clientnetbird.Peer{p2p}}, StateConnectedP2P, clientnetbird.PathP2P},
-		{"relay fallback", Facts{RoomSaved: true, ControlPlaneReady: true, MembershipKnown: true, OtherRoomPeerCount: 1, DaemonPeers: []clientnetbird.Peer{relay}}, StateConnectedRelay, clientnetbird.PathRelay},
+		{"relay fallback", Facts{RoomSaved: true, ControlPlaneReady: true, MembershipKnown: true, OtherRoomPeerCount: 1, DaemonPeers: []clientnetbird.Peer{relay}, RelayAllowed: true}, StateConnectedRelay, clientnetbird.PathRelay},
 		{"daemon or network outage", Facts{RoomSaved: true, ReconnectInProgress: true}, StateReconnecting, clientnetbird.PathNone},
 		{"leave", Facts{}, StateNoRoom, clientnetbird.PathNone},
 	}

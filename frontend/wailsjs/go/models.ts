@@ -136,6 +136,9 @@ export namespace app {
 	    hasSavedRoom: boolean;
 	    disconnected: boolean;
 	    roomCode: string;
+	    relayEnabled: boolean;
+	    relayBlocked: boolean;
+	    isOwner: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ExpressState(source);
@@ -156,6 +159,9 @@ export namespace app {
 	        this.hasSavedRoom = source["hasSavedRoom"];
 	        this.disconnected = source["disconnected"];
 	        this.roomCode = source["roomCode"];
+	        this.relayEnabled = source["relayEnabled"];
+	        this.relayBlocked = source["relayBlocked"];
+	        this.isOwner = source["isOwner"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
