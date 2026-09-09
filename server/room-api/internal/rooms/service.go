@@ -33,6 +33,7 @@ import (
 	"sogame/server/room-api/internal/netbird"
 	"sogame/server/room-api/internal/store"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -40,6 +41,13 @@ var ErrInvalidRoom = errors.New("room not found")
 var ErrRoomClosed = errors.New("room closed")
 var ErrCloseForbidden = errors.New("owner token mismatch")
 var ErrOperationInProgress = errors.New("room operation is already in progress")
+
+const (
+	// ownerSweepWorkers 房主离线看门狗每次清扫的并发回收 worker 数。
+	ownerSweepWorkers = 4
+	// ownerSweepBudget 单次清扫的总超时预算；防止积压房间时一次 sweep 长时间阻塞后续 ticker。
+	ownerSweepBudget = 30 * time.Second
+)
 
 type NetBirdAPI interface {
 	ListGroups(context.Context) ([]netbird.Group, error)
@@ -421,6 +429,9 @@ func (s *Service) StartOwnerWatchdog(ctx context.Context) {
 	}()
 }
 
+// sweepOwnerOffline 清扫"房主离线超时"的房间。使用有界 worker 池并发回收，
+// 并对单次清扫施加总超时预算，避免大量积压房间时一次 sweep 长时间串行阻塞、
+// 拖垮后续 ticker。单个 room 回收失败不影响本次 sweep 的其余房间。
 func (s *Service) sweepOwnerOffline(ctx context.Context, offlineAfter time.Duration) {
 	cutoff := time.Now().UTC().Add(-offlineAfter)
 	rooms, err := s.store.ListOwnerSweepCandidates(ctx, cutoff)
@@ -428,11 +439,42 @@ func (s *Service) sweepOwnerOffline(ctx context.Context, offlineAfter time.Durat
 		audit.Event("room_owner_sweep_failed", map[string]any{"error": err.Error()})
 		return
 	}
+	if len(rooms) == 0 {
+		return
+	}
+
+	// 单次 sweep 的总超时预算；批次大的时候不让回收越过下一拍。
+	sweepCtx, cancel := context.WithTimeout(ctx, ownerSweepBudget)
+	defer cancel()
+
+	const workers = ownerSweepWorkers
+	jobs := make(chan store.Room)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for room := range jobs {
+				if sweepCtx.Err() != nil {
+					// 超时后丢弃剩余任务，留待下一拍重试。
+					continue
+				}
+				if err := s.teardownRoom(sweepCtx, room, "owner_offline"); err != nil {
+					audit.Event("room_owner_sweep_close_failed", map[string]any{"room_id": room.ID, "error": err.Error()})
+				}
+			}
+		}()
+	}
+
 	for _, room := range rooms {
-		if err := s.teardownRoom(ctx, room, "owner_offline"); err != nil {
-			audit.Event("room_owner_sweep_close_failed", map[string]any{"room_id": room.ID, "error": err.Error()})
+		select {
+		case jobs <- room:
+		case <-sweepCtx.Done():
+			// 预算耗尽：停止投递，worker 处理完已接收的批次后退出。
 		}
 	}
+	close(jobs)
+	wg.Wait()
 }
 
 // teardownRoom 执行实际的资源回收。任一步失败会把状态还原回 active（允许重试），
@@ -455,12 +497,16 @@ func (s *Service) teardownRoom(ctx context.Context, room store.Room, reason stri
 			failures = append(failures, "delete setup key: "+err.Error())
 		}
 	}
-	// 强制断开组内所有 peer（这是让成员真正掉线的手段）
+	// 强制断开组内所有 peer（这是让成员真正掉线的手段）。
+	// DeletePeer 失败不阻塞关闭：删 policy 已切断组内数据面、吊销 setup key
+	// 已阻断新成员入网，成员客户端最终靠轮询 ErrRoomClosed(410) 自行退出。
+	// 但 ListPeers 失败则无法确定成员是否仍在线，必须视为需要重试的硬失败。
 	if room.GroupID != "" {
 		peers, err := s.nb.ListPeers(ctx)
 		if err != nil {
 			failures = append(failures, "list peers: "+err.Error())
 		} else {
+			var kicked []string
 			for _, peer := range peers {
 				inRoom := false
 				for _, group := range peer.Groups {
@@ -473,8 +519,13 @@ func (s *Service) teardownRoom(ctx context.Context, room store.Room, reason stri
 					continue
 				}
 				if err := s.nb.DeletePeer(ctx, peer.ID); err != nil {
-					failures = append(failures, "delete peer "+peer.ID+": "+err.Error())
+					kicked = append(kicked, peer.ID)
+					audit.Event("room_close_peer_kick_failed", map[string]any{"peer_id": peer.ID, "error": err.Error()})
 				}
+			}
+			if len(kicked) > 0 {
+				// 成员未即时下线，记录警告但仍继续关闭（客户端会自行退出）。
+				audit.Event("room_close_peer_kick_warn", map[string]any{"room_id": room.ID, "group_id": room.GroupID, "kicked_count": len(kicked)})
 			}
 		}
 		if err := s.nb.DeleteGroup(ctx, room.GroupID); err != nil {

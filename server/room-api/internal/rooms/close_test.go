@@ -43,6 +43,11 @@ type fakeNetBird struct {
 	revokedKeys     []string
 	deletedPeers    []string
 	deletedGroups   []string
+
+	// failDeletePeer 为真时 DeletePeer 一律失败,用于验证"成员下线失败不阻塞房间关闭"。
+	failDeletePeer bool
+	// failListPeers 为真时 ListPeers 一律失败,用于验证"无法确定成员在线必须硬失败"。
+	failListPeers bool
 }
 
 func newFakeNetBird() *fakeNetBird {
@@ -130,6 +135,9 @@ func (f *fakeNetBird) DeletePolicy(_ context.Context, id string) error {
 func (f *fakeNetBird) DisablePolicy(context.Context, netbird.Policy) error { return nil }
 
 func (f *fakeNetBird) ListPeers(context.Context) ([]netbird.Peer, error) {
+	if f.failListPeers {
+		return nil, errors.New("list peers failed")
+	}
 	peers := make([]netbird.Peer, 0, len(f.peers))
 	for _, p := range f.peers {
 		peers = append(peers, p)
@@ -138,6 +146,9 @@ func (f *fakeNetBird) ListPeers(context.Context) ([]netbird.Peer, error) {
 }
 
 func (f *fakeNetBird) DeletePeer(_ context.Context, id string) error {
+	if f.failDeletePeer {
+		return errors.New("delete peer failed")
+	}
 	if _, ok := f.peers[id]; !ok {
 		return nil
 	}
@@ -315,5 +326,54 @@ func TestCloseTeardownFailureKeepsActiveAndRetryable(t *testing.T) {
 	}
 	if err := service.Close(context.Background(), response.RoomCode, response.OwnerToken); err != nil {
 		t.Fatalf("normal close should succeed: %v", err)
+	}
+}
+
+// TestCloseSucceedsWhenPeerKickFails 验证 DeletePeer 失败被降级为警告、
+// 不阻塞房间关闭(删 policy + 吊销 key 已切断数据面,成员靠轮询 410 自行退出)。
+func TestCloseSucceedsWhenPeerKickFails(t *testing.T) {
+	service, database, fake := newTestService(t)
+	response, err := service.Create(context.Background(), "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	room, err := database.GetRoom(context.Background(), response.RoomID)
+	if err != nil {
+		t.Fatalf("load room: %v", err)
+	}
+	fake.peers["peer-member"] = netbird.Peer{ID: "peer-member", Groups: []netbird.GroupMinimum{{ID: room.GroupID}}}
+	fake.failDeletePeer = true
+
+	if err := service.Close(context.Background(), response.RoomCode, response.OwnerToken); err != nil {
+		t.Fatalf("close must succeed despite peer kick failure: %v", err)
+	}
+	closed, err := database.GetRoom(context.Background(), response.RoomID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if closed.Status != "closed" {
+		t.Fatalf("room must be closed despite DeletePeer failure, got %s", closed.Status)
+	}
+}
+
+// TestCloseFailsWhenPeerListingFails 验证 ListPeers 失败仍是硬失败:
+// 无法确定成员是否在线时,房间保持 active 可重试。
+func TestCloseFailsWhenPeerListingFails(t *testing.T) {
+	service, database, fake := newTestService(t)
+	response, err := service.Create(context.Background(), "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	fake.failListPeers = true
+
+	if err := service.Close(context.Background(), response.RoomCode, response.OwnerToken); err == nil {
+		t.Fatal("close must fail when peer listing fails")
+	}
+	room, err := database.GetRoom(context.Background(), response.RoomID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if room.Status != "active" {
+		t.Fatalf("room must stay active when peer listing fails, got %s", room.Status)
 	}
 }

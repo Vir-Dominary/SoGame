@@ -45,6 +45,9 @@ type Config struct {
 	//   false（默认）→ 纯 P2P 优先，客户端不把中继连接视为已连接
 	//   true → 允许中继，客户端 P2P 失败时可使用中继回退
 	RelayEnabled bool
+	// TrustProxy 表示请求是否经由可信反向代理转发；
+	// 为 true 时信任 X-Forwarded-For 用于限流与审计，否则只取 TCP 对端地址。
+	TrustProxy bool
 	// 房主离线超时：超过该时长未收到房主心跳即自动解散房间。<=0 关闭本机制。
 	OwnerOfflineAfter time.Duration
 	// 房主看门狗扫描间隔。
@@ -64,6 +67,7 @@ func Load() (Config, error) {
 		MaxBodyBytes:         int64Env("ROOM_API_MAX_BODY_BYTES", 4096),
 		ProvisionConcurrency: intEnv("ROOM_API_PROVISION_CONCURRENCY", 2),
 		RelayEnabled:         boolEnv("ROOM_API_RELAY_ENABLED", false),
+		TrustProxy:           boolEnv("ROOM_API_TRUST_PROXY", false),
 		OwnerOfflineAfter:    durationEnv("ROOM_API_OWNER_OFFLINE_AFTER", 5*time.Minute),
 		OwnerSweepInterval:   durationEnv("ROOM_API_OWNER_SWEEP_INTERVAL", time.Minute),
 	}

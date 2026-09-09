@@ -40,6 +40,10 @@ type Config struct {
 	JoinRatePerMinute    int
 	PeerRatePerMinute    int
 	ProvisionConcurrency int
+	// TrustProxy 表示请求是否经由可信反向代理（traefik/nginx）转发。
+	// 为 true 时才信任 X-Forwarded-For 头用于限流计数与审计；
+	// 为 false（默认）时只取 TCP 对端地址，防止公网直连下伪造头部绕过限流。
+	TrustProxy bool
 }
 
 type Server struct {
@@ -71,7 +75,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"path":        r.URL.Path,
 			"status":      status.status,
 			"duration_ms": time.Since(started).Milliseconds(),
-			"remote":      remoteIP(r),
+			"remote":      s.clientIP(r),
 		})
 	}()
 
@@ -99,7 +103,7 @@ func (s *Server) createRoom(w *statusWriter, r *http.Request) {
 		writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
 		return
 	}
-	if !s.createLimit.Allow(remoteIP(r)) {
+	if !s.createLimit.Allow(s.clientIP(r)) {
 		writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 		return
 	}
@@ -129,7 +133,11 @@ func (s *Server) createRoom(w *statusWriter, r *http.Request) {
 }
 
 func (s *Server) joinRoom(w *statusWriter, r *http.Request) {
-	if !s.joinLimit.Allow(remoteIP(r)) {
+	if r.ContentLength > s.cfg.MaxBodyBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		return
+	}
+	if !s.joinLimit.Allow(s.clientIP(r)) {
 		writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 		return
 	}
@@ -167,7 +175,7 @@ func (s *Server) roomAction(w *statusWriter, r *http.Request) {
 	code, action := parts[1], parts[2]
 	switch {
 	case r.Method == http.MethodGet && action == "peers":
-		if !s.peerLimit.Allow(remoteIP(r)) {
+		if !s.peerLimit.Allow(s.clientIP(r)) {
 			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 			return
 		}
@@ -188,7 +196,7 @@ func (s *Server) roomAction(w *statusWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, response)
 	case r.Method == http.MethodPost && action == "close":
 		// 房主解散房间（标题"房主离开即断开"）。令牌与房间码同强度；挂在 join 限流下。
-		if !s.joinLimit.Allow(remoteIP(r)) {
+		if !s.joinLimit.Allow(s.clientIP(r)) {
 			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 			return
 		}
@@ -216,7 +224,7 @@ func (s *Server) roomAction(w *statusWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "room close failed")
 	case r.Method == http.MethodPost && action == "heartbeat":
 		// 房主心跳：证明房主在线，避免被看门狗清扫。挂在 peer 限流档位。
-		if !s.peerLimit.Allow(remoteIP(r)) {
+		if !s.peerLimit.Allow(s.clientIP(r)) {
 			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 			return
 		}
@@ -298,9 +306,14 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
 }
 
-func remoteIP(r *http.Request) string {
-	if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); forwarded != "" {
-		return forwarded
+// clientIP 返回用于限流计数与审计的客户端地址。
+// 仅当配置了可信反向代理时信任 X-Forwarded-For 首值；否则回退到 TCP 对端地址，
+// 防止公网直连下攻击者伪造头部绕过基于 IP 的限流。
+func (s *Server) clientIP(r *http.Request) string {
+	if s.cfg.TrustProxy {
+		if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); forwarded != "" {
+			return forwarded
+		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err == nil {

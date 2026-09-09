@@ -90,6 +90,7 @@ func main() {
 		JoinRatePerMinute:    cfg.JoinRatePerMinute,
 		PeerRatePerMinute:    cfg.PeerRatePerMinute,
 		ProvisionConcurrency: cfg.ProvisionConcurrency,
+		TrustProxy:           cfg.TrustProxy,
 	})
 	server := &http.Server{
 		Addr:              cfg.Addr,
