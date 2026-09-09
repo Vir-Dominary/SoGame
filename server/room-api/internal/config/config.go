@@ -54,7 +54,7 @@ type Config struct {
 func Load() (Config, error) {
 	c := Config{
 		Addr:                 env("ROOM_API_ADDR", ":8080"),
-		ManagementURL:        strings.TrimRight(env("NETBIRD_MANAGEMENT_URL", "https://legengen.top"), "/"),
+		ManagementURL:        strings.TrimRight(env("NETBIRD_MANAGEMENT_URL", "https://virdy.cn"), "/"),
 		PAT:                  os.Getenv("NETBIRD_PAT"),
 		DBPath:               env("ROOM_API_DB_PATH", "room-api.db"),
 		AdminToken:           os.Getenv("ROOM_API_ADMIN_TOKEN"),
