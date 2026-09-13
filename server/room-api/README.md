@@ -72,8 +72,22 @@ docker run --rm -p 8080:8080 \
 
 ## 密钥与数据备份
 
-`ROOM_API_ENCRYPTION_KEY` 用于加密 SQLite 中的房间码与 Setup Key。密钥一旦丢失，
-库里已加密字段将**不可逆**（无法恢复房间码/Setup Key）。请：
+`ROOM_API_ENCRYPTION_KEY` 是唯一的 AES-256-GCM 主密钥，用于加密 SQLite 中的两类字段：
+
+- `code_ciphertext` — 房间码明文（幂等重放时还原下发）
+- `setup_key_ciphertext` — Setup Key 明文（成员加入时解密下发）
+
+Room 匹配靠 `code_hash = SHA256(房间码)` 独立完成，与主密钥无关；**房主令牌**
+（`owner_token`）也只存 SHA256、常数时间比对，同样不依赖主密钥。
+
+密钥一旦更换，受影响的是：
+
+1. **无法再加入历史房间** — `Join` 解密 `setup_key_ciphertext` 失败，换钥前创建的
+   房间新成员无法加入；
+2. **幂等重放失效** — 老房间的 Create 幂等重放因 `code_ciphertext` 解密失败报错；
+3. 敏感字段（房间码 / Setup Key）的解密能力不可逆丢失。
+
+因此：**绝不可"不迁移密文就换密钥"**。请：
 
 1. 生成后妥善保存，并与 `room-api.db` 一起纳入备份；
 2. 轮换密钥前需先迁移全部密文（当前版本未提供在线迁移，需停服手动重加密或接受
@@ -84,6 +98,18 @@ docker run --rm -p 8080:8080 \
 ```bash
 openssl rand -base64 32
 ```
+
+## 部署环境初始化（幂等脚本）
+
+`deploy/prep-room-api.sh` 用于生成/对齐 `/root/room-api.env`。相比早期的一次性脚本，
+它修复了两个隐患：
+
+- **密钥复用**：`ROOM_API_ENCRYPTION_KEY` 若已存在则复用、绝不重新随机生成；
+- **补 `ROOM_API_ADMIN_TOKEN`**：管理端点 `/rooms/{code}/disable` 的鉴权令牌，缺失则生成并落盘到
+  `room-api-data/admin-token.txt`。
+
+脚本可安全重复执行（idempotent）。PAT 仍需手工预置到 `ROOM_API_PAT_FILE`
+（默认 `/root/room-api-pat.txt`）。
 
 ## 命令行开关
 
