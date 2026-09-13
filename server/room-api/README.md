@@ -46,7 +46,7 @@ docker run --rm -p 8080:8080 \
 | `ROOM_API_ENCRYPTION_KEY` | ✅ | — | 房间码/Setup Key 落库加密密钥（32 字节，可给 base64 或任意口令） |
 | `ROOM_API_ADMIN_TOKEN` | ✅ | — | 管理令牌（`/rooms/{code}/disable` 用 `X-Room-Admin-Token` 校验） |
 | `ROOM_API_ADDR` | | `:8080` | HTTP 监听地址 |
-| `NETBIRD_MANAGEMENT_URL` | | `https://virdy.cn` | 下发给客户端的 NetBird Management 地址 |
+| `NETBIRD_MANAGEMENT_URL` | | `https://legengen.top` | 下发给客户端的 NetBird Management 地址（NetBird 控制平面，非网站域名 virdy.cn） |
 | `ROOM_API_DB_PATH` | | `room-api.db` | SQLite 文件路径 |
 | `ROOM_API_CREATE_RATE_PER_MINUTE` | | `5` | 每 IP 每分钟建房限流 |
 | `ROOM_API_JOIN_RATE_PER_MINUTE` | | `30` | 每 IP 每分钟入房限流 |
