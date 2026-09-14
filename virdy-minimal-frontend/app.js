@@ -8,7 +8,7 @@ const RELEASE = {
   // 安装包 SHA256（构建完成后用 scripts\build-all.ps1 产物计算：
   // (Get-FileHash .\installer\output\SoGame-Setup-2.0.exe -Algorithm SHA256).Hash.ToLower()）
   // 替换服务器上的安装包时必须同步更新此值！
-  sha256: "",
+  sha256: "c855bbb0477c512d89a91d83317e0c70a2875c3c603ee909416168e61299aa29",
 };
 
 const SITE = {

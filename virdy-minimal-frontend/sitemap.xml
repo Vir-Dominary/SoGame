@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 站点使用 hash 路由,搜索引擎只索引入口页;子页面通过站内导航触达 -->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://virdy.cn/</loc>
+    <priority>1.0</priority>
+  </url>
+</urlset>
