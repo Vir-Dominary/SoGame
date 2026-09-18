@@ -75,32 +75,6 @@ function home() {
         </a>
       </div>
     </section>
-    <section class="section">
-      <div class="container">
-        <div class="section-title">
-          <h2>项目</h2>
-          <p>正在做的事情</p>
-        </div>
-        <div class="cards">
-          <a class="card" href="#/sogame">
-            <div>
-              <div class="icon">⌁</div>
-              <h3>SoGame</h3>
-              <p>免费、便捷的局域网联机工具</p>
-            </div>
-            <div class="card-link">了解更多 →</div>
-          </a>
-          <a class="card" href="#/delivery">
-            <div>
-              <div class="icon">□</div>
-              <h3>项目交付</h3>
-              <p>AI 应用开发与部署</p>
-            </div>
-            <div class="card-link">了解更多 →</div>
-          </a>
-        </div>
-      </div>
-    </section>
   `);
 }
 
