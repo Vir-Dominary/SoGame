@@ -75,6 +75,7 @@ function App() {
   const [expressRoomCodeRevealed, setExpressRoomCodeRevealed] = useState('')
   const [expressCopied, setExpressCopied] = useState(false)
   const [expressInRoom, setExpressInRoom] = useState(false)
+  const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false)
   // 守护进程安装进行中 / 完成提示
   const [repairInProgress, setRepairInProgress] = useState(false)
   const [expressNotice, setExpressNotice] = useState('')
@@ -332,12 +333,8 @@ function App() {
     } catch (e) { setErrorMsg(String(e)) }
   }
 
-  const handleExpressLeave = async () => {
-    // 房主离开即解散:先确认,再执行(成员会被强制断开)
-    if (expressState && expressState.isOwner) {
-      const confirmed = window.confirm('你是房主,解散后所有成员都会被断开。确定要解散房间吗?')
-      if (!confirmed) return
-    }
+  const doExpressLeave = async () => {
+    setLeaveConfirmOpen(false)
     resumePromptHandled.current = true
     try {
       const state = await ExpressLeaveRoom()
@@ -345,6 +342,15 @@ function App() {
       setExpressInRoom(false)
       setExpressRoomCodeRevealed('')
     } catch (e) { setErrorMsg(String(e)) }
+  }
+
+  const handleExpressLeave = async () => {
+    // 房主离开即解散:先确认,再执行(成员会被强制断开)
+    if (expressState && expressState.isOwner) {
+      setLeaveConfirmOpen(true)
+      return
+    }
+    await doExpressLeave()
   }
 
   // 一次性提示（数秒后自动消失），用于"守护进程安装完毕"等反馈
@@ -671,6 +677,30 @@ function App() {
             <span>{showSponsor ? '收起' : '赞助'}</span>
           </button>
         </div>
+
+        {leaveConfirmOpen && (
+          <div className="modal-overlay">
+            <div className="modal-dialog">
+              <div className="modal-title">解散房间</div>
+              <div className="modal-text">你是房主，解散后所有成员都会被断开。确定要解散房间吗？</div>
+              <div className="modal-actions">
+                <button
+                  className="modal-btn"
+                  onClick={() => setLeaveConfirmOpen(false)}
+                >
+                  取消
+                </button>
+                <button
+                  className="modal-btn danger"
+                  onClick={doExpressLeave}
+                  disabled={expressBusy}
+                >
+                  解散
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {resumePromptOpen && (
           <div className="modal-overlay">

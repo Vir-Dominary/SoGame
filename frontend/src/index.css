@@ -1037,6 +1037,12 @@ body {
   outline: none;
   border: 1px solid var(--border);
   background: var(--surface);
+  color: var(--text-secondary);
+}
+
+.modal-btn:hover:not(:disabled) {
+  border-color: var(--border-hover);
+  color: var(--text);
 }
 
 .modal-btn.primary {
@@ -1044,7 +1050,7 @@ body {
 }
 
 .modal-btn.primary:hover:not(:disabled) {
-  border-color: var(--border-hover);
+  border-color: var(--accent);
 }
 
 .modal-btn.danger {
