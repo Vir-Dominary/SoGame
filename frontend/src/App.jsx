@@ -624,42 +624,6 @@ function App() {
             </button>
           </div>
 
-          {/* ========== NAT 类型检测卡片 ========== */}
-          {!expressInRoom && !isConnected && !isConnecting && (
-            <div className="nat-card">
-              {natDetecting ? (
-                <div className="nat-detecting">
-                  <div className="spinner-sm"></div>
-                  <span>正在检测 NAT 类型…</span>
-                </div>
-              ) : natResult ? (
-                <div className="nat-result">
-                  <div className="nat-header">
-                    <span className={`nat-type ${natResult.type}`}>{natTypeLabel(natResult.type)}</span>
-                    <button className="nat-redetect-btn" onClick={handleDetectNAT}>重新检测</button>
-                  </div>
-                  {natResult.publicIp && (
-                    <div className="nat-ip-row">
-                      <span className="nat-label">公网地址</span>
-                      <span className="nat-value">{natResult.publicIp}:{natResult.publicPort}</span>
-                    </div>
-                  )}
-                  {natResult.suggestion && (
-                    <div className="nat-suggestion">{natResult.suggestion}</div>
-                  )}
-                  {natResult.error && (
-                    <div className="nat-error">{natResult.error}</div>
-                  )}
-                </div>
-              ) : (
-                <div className="nat-idle">
-                  <span className="nat-label">网络环境检测</span>
-                  <button className="nat-detect-btn" onClick={handleDetectNAT}>检测</button>
-                </div>
-              )}
-            </div>
-          )}
-
           {/* ========== 公共 UI：模式选项卡（经典/极速共用） ========== */}
           {!expressInRoom && !isConnected && !isConnecting && (
             <div className="mode-tabs">
@@ -749,6 +713,41 @@ function App() {
               <div className="status-block"><div className="status-indicator"><span className="status-dot" style={{background:st.color, boxShadow:`0 0 10px ${st.color}`}}/><span className="status-label" style={{color:st.color}}>{st.label}</span></div>{isConnected && elapsed && (<div className="elapsed">{elapsed}</div>)}</div>
               {isConnected && connDetails && (<div className="conn-info"><div className="conn-ip-row"><span className="conn-ip-label">本机 IP</span><div className="conn-ip-value-group"><span className="conn-ip-value">{connDetails.virtualIP}</span><button className="conn-copy-btn" onClick={handleCopyIP}>{ipCopied?'已复制':'复制'}</button></div></div><p className="conn-desc">您已成功接入局域网，可以开始游戏了</p></div>)}
             </>
+          )}
+
+          {!expressInRoom && !isConnected && !isConnecting && (
+            <div className="nat-card">
+              {natDetecting ? (
+                <div className="nat-detecting">
+                  <div className="spinner-sm"></div>
+                  <span>正在检测 NAT 类型…</span>
+                </div>
+              ) : natResult ? (
+                <div className="nat-result">
+                  <div className="nat-header">
+                    <span className={`nat-type ${natResult.type}`}>{natTypeLabel(natResult.type)}</span>
+                    <button className="nat-redetect-btn" onClick={handleDetectNAT}>重新检测</button>
+                  </div>
+                  {natResult.publicIp && (
+                    <div className="nat-ip-row">
+                      <span className="nat-label">公网地址</span>
+                      <span className="nat-value">{natResult.publicIp}:{natResult.publicPort}</span>
+                    </div>
+                  )}
+                  {natResult.suggestion && (
+                    <div className="nat-suggestion">{natResult.suggestion}</div>
+                  )}
+                  {natResult.error && (
+                    <div className="nat-error">{natResult.error}</div>
+                  )}
+                </div>
+              ) : (
+                <div className="nat-idle">
+                  <span className="nat-label">网络环境检测</span>
+                  <button className="nat-detect-btn" onClick={handleDetectNAT}>检测</button>
+                </div>
+              )}
+            </div>
           )}
 
           {errorMsg && (
