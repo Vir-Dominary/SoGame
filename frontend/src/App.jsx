@@ -40,6 +40,8 @@ import {
   ExpressLeaveRoom,
   ExpressRevealRoomCode,
   ExpressRepairService,
+  CheckUpdate,
+  PerformUpdate,
 } from '../wailsjs/go/app/App'
 import { BrowserOpenURL, ClipboardSetText, EventsOn } from '../wailsjs/runtime/runtime'
 
@@ -94,6 +96,10 @@ function App() {
   const [ipCopied, setIpCopied] = useState(false)
   const [showSponsor, setShowSponsor] = useState(false)
   const [modeSwitching, setModeSwitching] = useState(false)
+  const [updateInfo, setUpdateInfo] = useState(null)
+  const [updateProgress, setUpdateProgress] = useState(0)
+  const [updating, setUpdating] = useState(false)
+  const [updateModalOpen, setUpdateModalOpen] = useState(false)
   const pollRef = useRef(null)
   const timerRef = useRef(null)
   const latencyRef = useRef(null)
@@ -144,6 +150,10 @@ function App() {
         setExpressBusy(!!state.busyCommand)
         setExpressInRoom(isExpressInRoom(state.state))
       }
+    })
+
+    EventsOn('updateProgress', (percent) => {
+      setUpdateProgress(percent)
     })
 
     return () => {
@@ -465,6 +475,26 @@ function App() {
     }
   }
 
+  const handleCheckUpdate = async () => {
+    try {
+      const info = await CheckUpdate()
+      setUpdateInfo(info)
+      if (info.hasUpdate) setUpdateModalOpen(true)
+    } catch (e) { console.error('CheckUpdate failed:', e) }
+  }
+
+  const handlePerformUpdate = async () => {
+    if (!updateInfo || !updateInfo.downloadUrl) return
+    setUpdating(true)
+    setUpdateProgress(0)
+    try {
+      await PerformUpdate(updateInfo.downloadUrl, updateInfo.sha256)
+    } catch (e) {
+      setErrorMsg(String(e))
+      setUpdating(false)
+    }
+  }
+
   const handleOpenLogs = async () => {
     try { await OpenLogs() } catch (e) { console.error('OpenLogs failed:', e) }
   }
@@ -656,6 +686,11 @@ function App() {
         </div>
 
         <div className="footer">
+          <button className="settings-toggle" onClick={handleCheckUpdate}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            <span>更新</span>
+            {updateInfo && updateInfo.hasUpdate && <span className="update-badge"></span>}
+          </button>
           <button className="theme-toggle" onClick={toggleTheme}>
             {theme === 'dark' ? (
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
@@ -677,6 +712,27 @@ function App() {
             <span>{showSponsor ? '收起' : '赞助'}</span>
           </button>
         </div>
+
+        {updateModalOpen && updateInfo && (
+          <div className="modal-overlay">
+            <div className="modal-dialog">
+              <div className="modal-title">发现新版本</div>
+              <div className="modal-text">{'当前版本 ' + (updateInfo.currentVersion || '') + ' → 最新版本 ' + (updateInfo.latestVersion || '')}</div>
+              {updateInfo.releaseNotes && <div className="update-notes">{updateInfo.releaseNotes}</div>}
+              {updating ? (
+                <div className="update-progress-section">
+                  <div className="update-progress-bar"><div className="update-progress-fill" style={{width: updateProgress + '%'}}></div></div>
+                  <div className="update-progress-text">{updateProgress}%</div>
+                </div>
+              ) : (
+                <div className="modal-actions">
+                  <button className="modal-btn" onClick={() => setUpdateModalOpen(false)}>稍后</button>
+                  <button className="modal-btn primary" onClick={handlePerformUpdate}>立即更新</button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {leaveConfirmOpen && (
           <div className="modal-overlay">

@@ -28,8 +28,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -37,6 +39,7 @@ import (
 	"sogame/internal/logger"
 	"sogame/internal/n2n"
 	"sogame/internal/platform"
+	"sogame/internal/updater"
 )
 
 type AppState string
@@ -578,6 +581,42 @@ func (a *App) GetAboutInfo() AboutInfo {
 		AppDesc:       config.AppDesc,
 		AppSponsorURL: config.AppSponsorURL,
 	}
+}
+
+func (a *App) CheckUpdate() updater.UpdateInfo {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	info, err := updater.Check(ctx, config.AppVersion, config.UpdateURL)
+	if err != nil {
+		return updater.UpdateInfo{CurrentVersion: config.AppVersion, Error: err.Error()}
+	}
+	return info
+}
+
+func (a *App) PerformUpdate(downloadURL, sha256sum string) error {
+	ctx := context.Background()
+	zipPath, err := updater.Download(ctx, downloadURL, sha256sum, func(percent int) {
+		runtime.EventsEmit(a.ctx, "updateProgress", percent)
+	})
+	if err != nil {
+		return err
+	}
+	extractDir := filepath.Join(os.TempDir(), "sogame-update")
+	if err := updater.Extract(zipPath, extractDir); err != nil {
+		updater.CleanupTemp(zipPath, extractDir)
+		return err
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, "--update-apply", filepath.Dir(exe))
+	cmd.Dir = extractDir
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	os.Exit(0)
+	return nil
 }
 
 func (a *App) GetLogContent() string {

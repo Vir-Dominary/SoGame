@@ -20,7 +20,12 @@ package main
 
 import (
 	"embed"
+	"flag"
 	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -36,6 +41,14 @@ import (
 var assets embed.FS
 
 func main() {
+	updateApply := flag.String("update-apply", "", "apply update from the given directory and exit")
+	flag.Parse()
+
+	if *updateApply != "" {
+		runUpdateApply(*updateApply)
+		return
+	}
+
 	logger.SetAppInfo(config.AppName, config.AppVersion, config.AppAuthor, config.AppURL)
 	if err := logger.Init(); err != nil {
 		log.Printf("warning: logger init failed: %v", err)
@@ -68,4 +81,38 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+func runUpdateApply(targetDir string) {
+	srcDir := filepath.Dir(os.Args[0])
+	if abs, err := filepath.Abs(srcDir); err == nil {
+		srcDir = abs
+	}
+	for i := 0; i < 50; i++ {
+		time.Sleep(100 * time.Millisecond)
+	}
+	exeName := filepath.Base(os.Args[0])
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, entry := range entries {
+		src := filepath.Join(srcDir, entry.Name())
+		dst := filepath.Join(targetDir, entry.Name())
+		if entry.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(src)
+		if err != nil {
+			log.Printf("warning: copy %s failed: %v", entry.Name(), err)
+			continue
+		}
+		if err := os.WriteFile(dst, data, 0755); err != nil {
+			log.Printf("warning: write %s failed: %v", entry.Name(), err)
+		}
+	}
+	cmd := exec.Command(filepath.Join(targetDir, exeName))
+	cmd.Dir = targetDir
+	cmd.Start()
+	os.Exit(0)
 }

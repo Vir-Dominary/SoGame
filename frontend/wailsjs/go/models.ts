@@ -227,7 +227,40 @@ export namespace app {
 	        this.address = source["address"];
 	        this.latency = source["latency"];
 	    }
+}
+
+export namespace updater {
+	
+	export class UpdateInfo {
+	    hasUpdate: boolean;
+	    currentVersion: string;
+	    latestVersion: string;
+	    downloadUrl: string;
+	    sha256: string;
+	    size: number;
+	    releaseNotes: string;
+	    minVersion: string;
+	    error: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new UpdateInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hasUpdate = source["hasUpdate"];
+	        this.currentVersion = source["currentVersion"];
+	        this.latestVersion = source["latestVersion"];
+	        this.downloadUrl = source["downloadUrl"];
+	        this.sha256 = source["sha256"];
+	        this.size = source["size"];
+	        this.releaseNotes = source["releaseNotes"];
+	        this.minVersion = source["minVersion"];
+	        this.error = source["error"];
+	    }
 	}
+
+}
 
 }
 
