@@ -301,8 +301,8 @@ func (s *Service) View(ctx context.Context) (RoomViewSnapshot, error) {
 		view.Peers = excludeLocalPeer(peerSnapshot.Peers, localIP)
 		view.PeersStale = peerSnapshot.Stale
 		view.LastPeerRefresh = peerSnapshot.LastRefreshAt
-		facts.OtherRoomPeerCount = countDistinctPeers(status.Peers, view.Peers, localIP)
-		facts.PeerConnectionTimedOut = s.updatePeerWait(status.Peers, facts.OtherRoomPeerCount)
+		facts.OtherRoomPeerCount = len(view.Peers)
+		facts.PeerConnectionTimedOut = s.updatePeerWait(status.Peers, view.Peers, facts.OtherRoomPeerCount)
 		view.Session = s.machine.Apply(facts)
 		logger.Infof("express view: localIP=%q mgmt=%v signal=%v daemonPeers=%d roomMembers=%d otherMembers=%d excluded=%d state=%s",
 			status.LocalNetBirdIP,
@@ -371,8 +371,18 @@ func (s *Service) viewWhileBusy() RoomViewSnapshot {
 // updatePeerWait 跟踪"房间成员已出现但隧道尚未建立"的时长。
 // 超过 peerWaitTimeout 后返回超时事实,使状态机从
 // StateConnectingPeer 降级为 StateReconnecting。
-func (s *Service) updatePeerWait(daemonPeers []clientnetbird.Peer, memberCount int) bool {
-	progressing := len(daemonPeers) > 0
+func (s *Service) updatePeerWait(daemonPeers []clientnetbird.Peer, roomMembers []roomapi.Peer, memberCount int) bool {
+	roomIPs := make(map[string]struct{})
+	for _, member := range roomMembers {
+		roomIPs[ipHost(member.NetBirdIP)] = struct{}{}
+	}
+	progressing := false
+	for _, peer := range daemonPeers {
+		if _, ok := roomIPs[ipHost(peer.NetBirdIP)]; ok {
+			progressing = true
+			break
+		}
+	}
 	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()

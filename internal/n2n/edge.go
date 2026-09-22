@@ -1402,17 +1402,19 @@ func terminateEdgeProcessWindows(pid int, done <-chan struct{}, mgmtPort int) er
 // scheduleRegistrationRetry 在检测到认证冲突（IP/MAC 已被占用）时自动重试
 func (e *Edge) scheduleRegistrationRetry() {
 	e.mu.Lock()
-	if e.authConflictRetries >= maxAuthConflictRetry {
+	retries := e.authConflictRetries
+	if retries >= maxAuthConflictRetry {
 		e.mu.Unlock()
-		logger.Warnf("auth conflict retry limit reached (%d/%d), giving up", e.authConflictRetries, maxAuthConflictRetry)
+		logger.Warnf("auth conflict retry limit reached (%d/%d), giving up", retries, maxAuthConflictRetry)
 		return
 	}
 	e.authConflictRetries++
+	retries = e.authConflictRetries
 	e.registrationRetryPending = true
 	cfg := e.config
 	e.mu.Unlock()
 
-	logger.Infof("scheduling auth conflict retry %d/%d after %v", e.authConflictRetries, maxAuthConflictRetry, authRetryDelay)
+	logger.Infof("scheduling auth conflict retry %d/%d after %v", retries, maxAuthConflictRetry, authRetryDelay)
 
 	time.AfterFunc(authRetryDelay, func() {
 		if err := e.Start(cfg); err != nil {

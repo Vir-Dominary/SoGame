@@ -162,9 +162,10 @@ func (c *Client) do(ctx context.Context, method, path string, input, output any)
 		return fmt.Errorf("netbird API %s %s returned HTTP %d", method, path, resp.StatusCode)
 	}
 	if output == nil {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 2048))
 		return nil
 	}
-	return json.NewDecoder(resp.Body).Decode(output)
+	return json.NewDecoder(io.LimitReader(resp.Body, 10<<20)).Decode(output)
 }
 
 func (c *Client) ListGroups(ctx context.Context) ([]Group, error) {

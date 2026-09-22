@@ -21,6 +21,7 @@ package rooms
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,6 +35,7 @@ import (
 
 var ErrInvalidRoom = errors.New("room not found")
 var ErrOperationInProgress = errors.New("room operation is already in progress")
+var ErrRoomGone = errors.New("room has been closed")
 
 type NetBirdAPI interface {
 	ListGroups(context.Context) ([]netbird.Group, error)
@@ -53,6 +55,7 @@ type NetBirdAPI interface {
 type Config struct {
 	ManagementURL string
 	EncryptionKey []byte
+	RelayEnabled  bool
 }
 
 type Service struct {
@@ -66,6 +69,8 @@ type RoomResponse struct {
 	RoomCode      string `json:"room_code,omitempty"`
 	ManagementURL string `json:"management_url"`
 	SetupKey      string `json:"setup_key"`
+	RelayEnabled  bool   `json:"relay_enabled"`
+	OwnerToken    string `json:"owner_token,omitempty"`
 }
 
 type PeerView struct {
@@ -137,9 +142,14 @@ func (s *Service) Create(ctx context.Context, idempotencyKey string) (RoomRespon
 	if err != nil {
 		return RoomResponse{}, err
 	}
+	ownerToken, err := randomID()
+	if err != nil {
+		return RoomResponse{}, err
+	}
+	ownerTokenHash := roomcrypto.Hash(ownerToken)
 	if err := s.store.CreateRoom(ctx, store.Room{
 		ID: roomID, CodeHash: roomcrypto.Hash(code), CodeCiphertext: codeCiphertext,
-		Status: "creating", CreatedAt: time.Now().UTC(),
+		Status: "creating", CreatedAt: time.Now().UTC(), OwnerTokenHash: ownerTokenHash,
 	}); err != nil {
 		return RoomResponse{}, err
 	}
@@ -193,7 +203,7 @@ func (s *Service) Create(ctx context.Context, idempotencyKey string) (RoomRespon
 	if err := s.store.SetStatus(ctx, roomID, "active", ""); err != nil {
 		return RoomResponse{}, err
 	}
-	response := RoomResponse{RoomID: roomID, RoomCode: code, ManagementURL: s.cfg.ManagementURL, SetupKey: key.Key}
+	response := RoomResponse{RoomID: roomID, RoomCode: code, ManagementURL: s.cfg.ManagementURL, SetupKey: key.Key, RelayEnabled: s.cfg.RelayEnabled, OwnerToken: ownerToken}
 	if idempotencyKey != "" {
 		clear, _ := json.Marshal(response)
 		ciphertext, sealErr := roomcrypto.Seal(s.cfg.EncryptionKey, clear)
@@ -254,6 +264,28 @@ func (s *Service) Reconcile(ctx context.Context) error {
 			return err
 		}
 		audit.Event("room_provision_reconciled", map[string]any{"room_id": room.ID})
+	}
+
+	staleBefore := time.Now().Add(-30 * time.Minute).UnixNano()
+	staleRooms, err := s.store.ListStaleActiveRooms(ctx, staleBefore)
+	if err != nil {
+		return err
+	}
+	for _, room := range staleRooms {
+		if room.PolicyID != "" {
+			_ = s.nb.DeletePolicy(ctx, room.PolicyID)
+		}
+		if room.SetupKeyID != "" {
+			_ = s.nb.RevokeSetupKey(ctx, room.SetupKeyID, []string{room.GroupID})
+			_ = s.nb.DeleteSetupKey(ctx, room.SetupKeyID)
+		}
+		if room.GroupID != "" {
+			_ = s.nb.DeleteGroup(ctx, room.GroupID)
+		}
+		if err := s.store.Disable(ctx, room.ID); err != nil {
+			return err
+		}
+		audit.Event("room_stale_reaped", map[string]any{"room_id": room.ID})
 	}
 	return nil
 }
@@ -328,6 +360,55 @@ func (s *Service) Disable(ctx context.Context, code string) error {
 		return err
 	}
 	audit.Event("room_disabled", map[string]any{"room_id": room.ID})
+	return nil
+}
+
+func (s *Service) Close(ctx context.Context, code, ownerToken string) error {
+	room, err := s.store.GetRoomByCodeHash(ctx, roomcrypto.Hash(strings.TrimSpace(code)))
+	if errors.Is(err, store.ErrNotFound) || err != nil {
+		return ErrInvalidRoom
+	}
+	if len(room.OwnerTokenHash) == 0 || len(ownerToken) == 0 {
+		return ErrInvalidRoom
+	}
+	if subtle.ConstantTimeCompare(room.OwnerTokenHash, roomcrypto.Hash(ownerToken)) != 1 {
+		return ErrInvalidRoom
+	}
+	if room.Status == "disabled" {
+		return nil
+	}
+	if err := s.nb.RevokeSetupKey(ctx, room.SetupKeyID, []string{room.GroupID}); err != nil {
+		return err
+	}
+	if room.PolicyID != "" {
+		if err := s.nb.DeletePolicy(ctx, room.PolicyID); err != nil {
+			return err
+		}
+	}
+	if err := s.store.Disable(ctx, room.ID); err != nil {
+		return err
+	}
+	audit.Event("room_closed", map[string]any{"room_id": room.ID})
+	return nil
+}
+
+func (s *Service) Heartbeat(ctx context.Context, code, ownerToken string) error {
+	room, err := s.store.GetRoomByCodeHash(ctx, roomcrypto.Hash(strings.TrimSpace(code)))
+	if errors.Is(err, store.ErrNotFound) || err != nil {
+		return ErrInvalidRoom
+	}
+	if room.Status == "disabled" {
+		return ErrRoomGone
+	}
+	if len(room.OwnerTokenHash) == 0 || len(ownerToken) == 0 {
+		return ErrInvalidRoom
+	}
+	if subtle.ConstantTimeCompare(room.OwnerTokenHash, roomcrypto.Hash(ownerToken)) != 1 {
+		return ErrInvalidRoom
+	}
+	if err := s.store.UpdateHeartbeat(ctx, room.ID); err != nil {
+		return err
+	}
 	return nil
 }
 

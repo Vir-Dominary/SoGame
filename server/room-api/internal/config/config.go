@@ -39,6 +39,7 @@ type Config struct {
 	PeerRatePerMinute    int
 	MaxBodyBytes         int64
 	ProvisionConcurrency int
+	RelayEnabled         bool
 }
 
 func Load() (Config, error) {
@@ -53,6 +54,7 @@ func Load() (Config, error) {
 		PeerRatePerMinute:    intEnv("ROOM_API_PEER_RATE_PER_MINUTE", 60),
 		MaxBodyBytes:         int64Env("ROOM_API_MAX_BODY_BYTES", 4096),
 		ProvisionConcurrency: intEnv("ROOM_API_PROVISION_CONCURRENCY", 2),
+		RelayEnabled:         boolEnv("ROOM_API_RELAY_ENABLED", false),
 	}
 	if c.PAT == "" {
 		return Config{}, fmt.Errorf("NETBIRD_PAT is required")
@@ -89,6 +91,15 @@ func int64Env(name string, fallback int64) int64 {
 		return fallback
 	}
 	return value
+}
+
+func boolEnv(name string, fallback bool) bool {
+	value := env(name, strconv.FormatBool(fallback))
+	b, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return b
 }
 
 func encryptionKey(value string) ([]byte, error) {

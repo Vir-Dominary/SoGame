@@ -60,7 +60,7 @@ func main() {
 		return
 	}
 	client := netbird.New(cfg.ManagementURL, cfg.PAT)
-	service := rooms.New(database, client, rooms.Config{ManagementURL: cfg.ManagementURL, EncryptionKey: cfg.EncryptionKey})
+	service := rooms.New(database, client, rooms.Config{ManagementURL: cfg.ManagementURL, EncryptionKey: cfg.EncryptionKey, RelayEnabled: cfg.RelayEnabled})
 	if *migrateDefault {
 		if err := service.DisableDefaultPolicy(context.Background()); err != nil {
 			log.Fatal(err)

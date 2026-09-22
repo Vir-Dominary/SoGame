@@ -178,6 +178,56 @@ func (s *Server) roomAction(w *statusWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, response)
+	case r.Method == http.MethodPost && action == "close":
+		if !s.peerLimit.Allow(remoteIP(r)) {
+			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+			return
+		}
+		var request struct {
+			OwnerToken string `json:"owner_token"`
+		}
+		if !decodeJSON(w, r, s.cfg.MaxBodyBytes, &request) || request.OwnerToken == "" {
+			writeError(w, http.StatusBadRequest, "invalid request")
+			return
+		}
+		err := s.rooms.Close(r.Context(), code, request.OwnerToken)
+		if errors.Is(err, rooms.ErrInvalidRoom) {
+			writeError(w, http.StatusNotFound, "room unavailable")
+			return
+		}
+		if err != nil {
+			log.Printf("room close failed: %v", err)
+			writeError(w, http.StatusBadGateway, "room close failed")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	case r.Method == http.MethodPost && action == "heartbeat":
+		if !s.peerLimit.Allow(remoteIP(r)) {
+			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+			return
+		}
+		var request struct {
+			OwnerToken string `json:"owner_token"`
+		}
+		if !decodeJSON(w, r, s.cfg.MaxBodyBytes, &request) || request.OwnerToken == "" {
+			writeError(w, http.StatusBadRequest, "invalid request")
+			return
+		}
+		err := s.rooms.Heartbeat(r.Context(), code, request.OwnerToken)
+		if errors.Is(err, rooms.ErrRoomGone) {
+			writeError(w, http.StatusGone, "room closed")
+			return
+		}
+		if errors.Is(err, rooms.ErrInvalidRoom) {
+			writeError(w, http.StatusNotFound, "room unavailable")
+			return
+		}
+		if err != nil {
+			log.Printf("room heartbeat failed: %v", err)
+			writeError(w, http.StatusBadGateway, "room heartbeat failed")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && action == "disable":
 		if !s.authorizedAdmin(r) {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -257,10 +307,12 @@ func (w *statusWriter) WriteHeader(status int) {
 }
 
 type limiter struct {
-	mu      sync.Mutex
-	limit   int
-	window  time.Duration
-	clients map[string]counter
+	mu          sync.Mutex
+	limit       int
+	window      time.Duration
+	clients     map[string]counter
+	lastSweep   time.Time
+	sweepInterval time.Duration
 }
 
 type counter struct {
@@ -272,13 +324,17 @@ func newLimiter(limit int) *limiter {
 	if limit < 1 {
 		limit = 1
 	}
-	return &limiter{limit: limit, window: time.Minute, clients: make(map[string]counter)}
+	return &limiter{limit: limit, window: time.Minute, clients: make(map[string]counter), sweepInterval: 5 * time.Minute}
 }
 
 func (l *limiter) Allow(client string) bool {
 	now := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if now.Sub(l.lastSweep) >= l.sweepInterval {
+		l.sweep(now)
+		l.lastSweep = now
+	}
 	entry := l.clients[client]
 	if entry.started.IsZero() || now.Sub(entry.started) >= l.window {
 		l.clients[client] = counter{started: now, count: 1}
@@ -290,4 +346,12 @@ func (l *limiter) Allow(client string) bool {
 	entry.count++
 	l.clients[client] = entry
 	return true
+}
+
+func (l *limiter) sweep(now time.Time) {
+	for key, entry := range l.clients {
+		if now.Sub(entry.started) >= l.window {
+			delete(l.clients, key)
+		}
+	}
 }

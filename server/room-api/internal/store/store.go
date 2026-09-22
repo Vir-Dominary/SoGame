@@ -23,6 +23,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -42,6 +43,8 @@ type Room struct {
 	CreatedAt          time.Time
 	DisabledAt         *time.Time
 	LastError          string
+	OwnerTokenHash     []byte
+	LastHeartbeat      time.Time
 }
 
 type Operation struct {
@@ -86,7 +89,9 @@ CREATE TABLE IF NOT EXISTS rooms (
   status TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   disabled_at INTEGER,
-  last_error TEXT NOT NULL DEFAULT ''
+  last_error TEXT NOT NULL DEFAULT '',
+  owner_token_hash BLOB NOT NULL DEFAULT '',
+  last_heartbeat INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_rooms_status ON rooms(status);
 CREATE TABLE IF NOT EXISTS operations (
@@ -97,7 +102,20 @@ CREATE TABLE IF NOT EXISTS operations (
   created_at INTEGER NOT NULL
 );
 `)
-	return err
+	if err != nil {
+		return err
+	}
+	for _, stmt := range []string{
+		"ALTER TABLE rooms ADD COLUMN owner_token_hash BLOB NOT NULL DEFAULT ''",
+		"ALTER TABLE rooms ADD COLUMN last_heartbeat INTEGER NOT NULL DEFAULT 0",
+	} {
+		if _, err := s.DB.ExecContext(ctx, stmt); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column") {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Store) BeginOperation(ctx context.Context, key, roomID string) (bool, error) {
@@ -132,7 +150,7 @@ func (s *Store) ResetOperation(ctx context.Context, key, roomID string) error {
 }
 
 func (s *Store) CreateRoom(ctx context.Context, room Room) error {
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO rooms(id, code_hash, code_ciphertext, status, created_at) VALUES(?, ?, ?, ?, ?)`, room.ID, room.CodeHash, room.CodeCiphertext, room.Status, room.CreatedAt.UnixNano())
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO rooms(id, code_hash, code_ciphertext, status, created_at, owner_token_hash) VALUES(?, ?, ?, ?, ?, ?)`, room.ID, room.CodeHash, room.CodeCiphertext, room.Status, room.CreatedAt.UnixNano(), room.OwnerTokenHash)
 	return err
 }
 
@@ -152,15 +170,15 @@ func (s *Store) Disable(ctx context.Context, roomID string) error {
 }
 
 func (s *Store) GetRoomByCodeHash(ctx context.Context, hash []byte) (Room, error) {
-	return s.scanRoom(s.DB.QueryRowContext(ctx, `SELECT id, code_hash, code_ciphertext, group_id, setup_key_id, setup_key_ciphertext, policy_id, status, created_at, disabled_at, last_error FROM rooms WHERE code_hash=?`, hash))
+	return s.scanRoom(s.DB.QueryRowContext(ctx, `SELECT id, code_hash, code_ciphertext, group_id, setup_key_id, setup_key_ciphertext, policy_id, status, created_at, disabled_at, last_error, owner_token_hash, last_heartbeat FROM rooms WHERE code_hash=?`, hash))
 }
 
 func (s *Store) GetRoom(ctx context.Context, id string) (Room, error) {
-	return s.scanRoom(s.DB.QueryRowContext(ctx, `SELECT id, code_hash, code_ciphertext, group_id, setup_key_id, setup_key_ciphertext, policy_id, status, created_at, disabled_at, last_error FROM rooms WHERE id=?`, id))
+	return s.scanRoom(s.DB.QueryRowContext(ctx, `SELECT id, code_hash, code_ciphertext, group_id, setup_key_id, setup_key_ciphertext, policy_id, status, created_at, disabled_at, last_error, owner_token_hash, last_heartbeat FROM rooms WHERE id=?`, id))
 }
 
 func (s *Store) ListRoomsByStatus(ctx context.Context, status string) ([]Room, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT id, code_hash, code_ciphertext, group_id, setup_key_id, setup_key_ciphertext, policy_id, status, created_at, disabled_at, last_error FROM rooms WHERE status=?`, status)
+	rows, err := s.DB.QueryContext(ctx, `SELECT id, code_hash, code_ciphertext, group_id, setup_key_id, setup_key_ciphertext, policy_id, status, created_at, disabled_at, last_error, owner_token_hash, last_heartbeat FROM rooms WHERE status=?`, status)
 	if err != nil {
 		return nil, err
 	}
@@ -174,6 +192,11 @@ func (s *Store) ListRoomsByStatus(ctx context.Context, status string) ([]Room, e
 		rooms = append(rooms, room)
 	}
 	return rooms, rows.Err()
+}
+
+func (s *Store) UpdateHeartbeat(ctx context.Context, roomID string) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE rooms SET last_heartbeat=? WHERE id=?`, time.Now().UnixNano(), roomID)
+	return err
 }
 
 func (s *Store) ListOperationsByStatus(ctx context.Context, status string) ([]RoomOperation, error) {
@@ -199,7 +222,8 @@ func (s *Store) scanRoom(row rowScanner) (Room, error) {
 	var room Room
 	var created int64
 	var disabled sql.NullInt64
-	err := row.Scan(&room.ID, &room.CodeHash, &room.CodeCiphertext, &room.GroupID, &room.SetupKeyID, &room.SetupKeyCiphertext, &room.PolicyID, &room.Status, &created, &disabled, &room.LastError)
+	var heartbeat sql.NullInt64
+	err := row.Scan(&room.ID, &room.CodeHash, &room.CodeCiphertext, &room.GroupID, &room.SetupKeyID, &room.SetupKeyCiphertext, &room.PolicyID, &room.Status, &created, &disabled, &room.LastError, &room.OwnerTokenHash, &heartbeat)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Room{}, ErrNotFound
 	}
@@ -211,6 +235,9 @@ func (s *Store) scanRoom(row rowScanner) (Room, error) {
 		t := time.Unix(0, disabled.Int64).UTC()
 		room.DisabledAt = &t
 	}
+	if heartbeat.Valid && heartbeat.Int64 > 0 {
+		room.LastHeartbeat = time.Unix(0, heartbeat.Int64).UTC()
+	}
 	return room, nil
 }
 
@@ -220,4 +247,21 @@ func (s *Store) MustHealthy(ctx context.Context) error {
 		return nil
 	}
 	return fmt.Errorf("store health check failed")
+}
+
+func (s *Store) ListStaleActiveRooms(ctx context.Context, before int64) ([]Room, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT id, code_hash, code_ciphertext, group_id, setup_key_id, setup_key_ciphertext, policy_id, status, created_at, disabled_at, last_error, owner_token_hash, last_heartbeat FROM rooms WHERE status='active' AND (last_heartbeat < ? OR (last_heartbeat = 0 AND created_at < ?))`, before, before)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var rooms []Room
+	for rows.Next() {
+		room, err := s.scanRoom(rows)
+		if err != nil {
+			return nil, err
+		}
+		rooms = append(rooms, room)
+	}
+	return rooms, rows.Err()
 }

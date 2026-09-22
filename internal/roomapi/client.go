@@ -455,7 +455,14 @@ func (c *Client) doAttempt(ctx context.Context, method, path string, body []byte
 		c.logFailure(method, endpoint.Path, fmt.Sprintf("返回状态 %d", response.StatusCode))
 		return newHTTPError(response.StatusCode, response.Header.Get("Retry-After"))
 	}
-	if len(bytes.TrimSpace(payload)) == 0 || json.Unmarshal(payload, target) != nil {
+	if len(bytes.TrimSpace(payload)) == 0 {
+		if target == nil {
+			c.logSuccess(method, endpoint.Path, response.StatusCode)
+			return nil
+		}
+		return &ProtocolError{Reason: "response is empty"}
+	}
+	if json.Unmarshal(payload, target) != nil {
 		return &ProtocolError{Reason: "response is not valid JSON"}
 	}
 	c.logSuccess(method, endpoint.Path, response.StatusCode)

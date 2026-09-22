@@ -85,7 +85,7 @@ func DefaultMetadataPath() (string, error) {
 			return "", fmt.Errorf("resolve user application data directory: %w", err)
 		}
 	}
-	return filepath.Join(root, "Sogame", "NetBird", "room.json"), nil
+	return filepath.Join(root, "SoGame", "NetBird", "room.json"), nil
 }
 
 func (s *MetadataStore) Path() string { return s.path }
