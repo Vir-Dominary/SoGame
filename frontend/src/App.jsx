@@ -44,13 +44,14 @@ import {
 import { BrowserOpenURL, ClipboardSetText, EventsOn } from '../wailsjs/runtime/runtime'
 
 const STATES = {
-  disconnected: { label: '未连接', color: '#666', ring: '#333' },
-  connecting:   { label: '连接中', color: '#f0a030', ring: '#f0a030' },
-  connected:    { label: '已连接', color: '#3ddc84', ring: '#3ddc84' },
-  failed:       { label: '连接失败', color: '#ff5252', ring: '#ff5252' },
+  disconnected: { label: '未连接', color: 'var(--text-weak)', ring: 'var(--border)' },
+  connecting:   { label: '连接中', color: 'var(--text)', ring: 'var(--border-hover)' },
+  connected:    { label: '已连接', color: 'var(--accent)', ring: 'var(--accent)' },
+  failed:       { label: '连接失败', color: 'var(--danger)', ring: 'var(--danger)' },
 }
 
 function App() {
+  const [theme, setTheme] = useState(() => localStorage.getItem('sogame-theme') || 'dark')
   const [status, setStatus] = useState('disconnected')
   const [errorMsg, setErrorMsg] = useState('')
   const [showSettings, setShowSettings] = useState(false)
@@ -470,6 +471,12 @@ function App() {
     }
   }
 
+  const toggleTheme = () => {
+    const next = theme === 'dark' ? 'light' : 'dark'
+    setTheme(next)
+    localStorage.setItem('sogame-theme', next)
+  }
+
   const st = STATES[status] || STATES.disconnected
   const isConnected = status === 'connected'
   const isConnecting = status === 'connecting'
@@ -514,7 +521,7 @@ function App() {
   }
 
   return (
-    <div className="app">
+    <div className="app" data-theme={theme}>
       <div className="app-inner">
         <div className="header">
           <div className="logo">
@@ -580,7 +587,7 @@ function App() {
                 </div>
               )}
               <button className={`power-btn ${status}`} onClick={handleConnect} disabled={powerDisabled}>
-                <div className="btn-ring" style={{ borderColor: st.ring }}><div className="btn-inner"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#3ddc84" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg></div></div>
+                <div className="btn-ring" style={{ borderColor: st.ring }}><div className="btn-inner"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg></div></div>
               </button>
             </>
           )}
@@ -601,7 +608,7 @@ function App() {
           {/* ========== 极速模式：已加入房间 ========== */}
           {expressInRoom && expressState && (
             <div className="invite-section">
-              <div className="status-indicator"><span className="status-dot" style={{ background: expressState.connectedPath==='p2p'?'#3ddc84':expressState.connectedPath==='relay'?'#f0a030':'#666', boxShadow:expressState.connectedPath==='p2p'?'0 0 10px #3ddc84':'none' }}/><span style={{color:'#ccc'}}>{expressStateLabel(expressState.state, expressBusy)}</span></div>
+              <div className="status-indicator"><span className="status-dot" style={{ background: expressState.connectedPath==='p2p'?'var(--accent)':expressState.connectedPath==='relay'?'var(--text-secondary)':'var(--text-weak)' }}/><span>{expressStateLabel(expressState.state, expressBusy)}</span></div>
               {expressState.error && (<div className="error-bar">{expressState.error.message}</div>)}
               {expressState.relayEnabled === false && (<div className="express-hint">该服务器已关闭中继，仅支持 P2P 直连</div>)}
               {expressState.relayBlocked && (<div className="express-hint warn">检测到无法建立 P2P 直连，请检查双方网络环境</div>)}
@@ -630,7 +637,7 @@ function App() {
           {appMode === 'classic' && (isConnected || isConnecting) && (
             <>
               <button className={`power-btn ${status}`} onClick={handleConnect} disabled={isDisabled} onMouseEnter={()=>setHoverDisconnect(true)} onMouseLeave={()=>setHoverDisconnect(false)}>
-                <div className="btn-ring" style={{borderColor:st.ring}}><div className="btn-inner">{isConnecting?(<div className="spinner"/>):hoverDisconnect?(<svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#ff5252" strokeWidth="2.2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>):(<svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#3ddc84" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>)}</div></div>
+                <div className="btn-ring" style={{borderColor:st.ring}}><div className="btn-inner">{isConnecting?(<div className="spinner"/>):hoverDisconnect?(<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>):(<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>)}</div></div>
               </button>
               <div className="status-block"><div className="status-indicator"><span className="status-dot" style={{background:st.color, boxShadow:`0 0 10px ${st.color}`}}/><span className="status-label" style={{color:st.color}}>{st.label}</span></div>{isConnected && elapsed && (<div className="elapsed">{elapsed}</div>)}</div>
               {isConnected && connDetails && (<div className="conn-info"><div className="conn-ip-row"><span className="conn-ip-label">本机 IP</span><div className="conn-ip-value-group"><span className="conn-ip-value">{connDetails.virtualIP}</span><button className="conn-copy-btn" onClick={handleCopyIP}>{ipCopied?'已复制':'复制'}</button></div></div><p className="conn-desc">您已成功接入局域网，可以开始游戏了</p></div>)}
@@ -643,6 +650,14 @@ function App() {
         </div>
 
         <div className="footer">
+          <button className="theme-toggle" onClick={toggleTheme}>
+            {theme === 'dark' ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            )}
+            <span>{theme === 'dark' ? '浅色' : '深色'}</span>
+          </button>
           <button className="settings-toggle" onClick={() => setShowSettings(!showSettings)}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
