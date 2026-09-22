@@ -229,7 +229,39 @@ export namespace app {
 	    }
 }
 
-export namespace updater {
+export namespace natdetect {
+	
+	export class NATResult {
+	    type: string;
+	    localIp: string;
+	    localPort: number;
+	    publicIp: string;
+	    publicPort: number;
+	    stunServerA: string;
+	    stunServerB: string;
+	    suggestion: string;
+	    error: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new NATResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.type = source["type"];
+	        this.localIp = source["localIp"];
+	        this.localPort = source["localPort"];
+	        this.publicIp = source["publicIp"];
+	        this.publicPort = source["publicPort"];
+	        this.stunServerA = source["stunServerA"];
+	        this.stunServerB = source["stunServerB"];
+	        this.suggestion = source["suggestion"];
+	        this.error = source["error"];
+	    }
+	}
+
+}
+
 	
 	export class UpdateInfo {
 	    hasUpdate: boolean;

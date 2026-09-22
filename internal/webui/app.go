@@ -38,6 +38,7 @@ import (
 	"sogame/internal/config"
 	"sogame/internal/logger"
 	"sogame/internal/n2n"
+	"sogame/internal/natdetect"
 	"sogame/internal/platform"
 	"sogame/internal/updater"
 )
@@ -60,13 +61,14 @@ const (
 )
 
 type App struct {
-	mu      sync.Mutex
-	ctx     context.Context
-	edge    *n2n.Edge
-	cfg     *config.Config
-	state   AppState
-	errMsg  string
-	express *ExpressController
+	mu       sync.Mutex
+	ctx      context.Context
+	edge     *n2n.Edge
+	cfg      *config.Config
+	state    AppState
+	errMsg   string
+	express  *ExpressController
+	natResult *natdetect.NATResult
 }
 
 func NewApp() *App {
@@ -617,6 +619,23 @@ func (a *App) PerformUpdate(downloadURL, sha256sum string) error {
 	}
 	os.Exit(0)
 	return nil
+}
+
+func (a *App) DetectNATType() natdetect.NATResult {
+	result := natdetect.DetectWithTimeout(config.STUNServerA, config.STUNServerB, 10*time.Second)
+	a.mu.Lock()
+	a.natResult = &result
+	a.mu.Unlock()
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "natDetectionComplete", result)
+	}
+	return result
+}
+
+func (a *App) GetNATResult() *natdetect.NATResult {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.natResult
 }
 
 func (a *App) GetLogContent() string {

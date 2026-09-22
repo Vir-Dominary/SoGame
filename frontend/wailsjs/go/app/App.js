@@ -14,6 +14,10 @@ export function ConnectWithInvite(arg1) {
   return window['go']['app']['App']['ConnectWithInvite'](arg1);
 }
 
+export function DetectNATType() {
+  return window['go']['app']['App']['DetectNATType']();
+}
+
 export function Disconnect() {
   return window['go']['app']['App']['Disconnect']();
 }
@@ -64,6 +68,10 @@ export function GetConfig() {
 
 export function GetConnectionDetails() {
   return window['go']['app']['App']['GetConnectionDetails']();
+}
+
+export function GetNATResult() {
+  return window['go']['app']['App']['GetNATResult']();
 }
 
 export function GetErrorMessage() {

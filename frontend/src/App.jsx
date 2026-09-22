@@ -42,6 +42,8 @@ import {
   ExpressRepairService,
   CheckUpdate,
   PerformUpdate,
+  DetectNATType,
+  GetNATResult,
 } from '../wailsjs/go/app/App'
 import { BrowserOpenURL, ClipboardSetText, EventsOn } from '../wailsjs/runtime/runtime'
 
@@ -100,6 +102,8 @@ function App() {
   const [updateProgress, setUpdateProgress] = useState(0)
   const [updating, setUpdating] = useState(false)
   const [updateModalOpen, setUpdateModalOpen] = useState(false)
+  const [natResult, setNatResult] = useState(null)
+  const [natDetecting, setNatDetecting] = useState(false)
   const pollRef = useRef(null)
   const timerRef = useRef(null)
   const latencyRef = useRef(null)
@@ -154,6 +158,13 @@ function App() {
 
     EventsOn('updateProgress', (percent) => {
       setUpdateProgress(percent)
+    })
+
+    EventsOn('natDetectionComplete', (result) => {
+      if (result) {
+        setNatResult(result)
+        setNatDetecting(false)
+      }
     })
 
     return () => {
@@ -483,6 +494,18 @@ function App() {
     } catch (e) { console.error('CheckUpdate failed:', e) }
   }
 
+  const handleDetectNAT = async () => {
+    setNatDetecting(true)
+    try {
+      const result = await DetectNATType()
+      setNatResult(result)
+      setNatDetecting(false)
+    } catch (e) {
+      setNatDetecting(false)
+      console.error('NAT detection failed:', e)
+    }
+  }
+
   const handlePerformUpdate = async () => {
     if (!updateInfo || !updateInfo.downloadUrl) return
     setUpdating(true)
@@ -520,6 +543,18 @@ function App() {
 
   // 极速模式：是否处于已加入房间的视图（错误态不算房间内，回到表单可重试）
   const isExpressInRoom = (state) => !!state && state !== 'NoRoom' && state !== 'RecoverableError'
+
+  const natTypeLabel = (type) => {
+    switch (type) {
+      case 'Open': return '开放网络'
+      case 'FullCone': return 'Full Cone (NAT 1)'
+      case 'RestrictedCone': return 'Restricted Cone (NAT 2)'
+      case 'PortRestricted': return 'Port Restricted (NAT 3)'
+      case 'Symmetric': return 'Symmetric (NAT 4)'
+      case 'UDPBlocked': return 'UDP 被阻止'
+      default: return '未知'
+    }
+  }
 
   // 极速模式状态的中文显示
   const expressStateLabel = (state, busy) => {
@@ -588,6 +623,42 @@ function App() {
               极速模式
             </button>
           </div>
+
+          {/* ========== NAT 类型检测卡片 ========== */}
+          {!expressInRoom && !isConnected && !isConnecting && (
+            <div className="nat-card">
+              {natDetecting ? (
+                <div className="nat-detecting">
+                  <div className="spinner-sm"></div>
+                  <span>正在检测 NAT 类型…</span>
+                </div>
+              ) : natResult ? (
+                <div className="nat-result">
+                  <div className="nat-header">
+                    <span className={`nat-type ${natResult.type}`}>{natTypeLabel(natResult.type)}</span>
+                    <button className="nat-redetect-btn" onClick={handleDetectNAT}>重新检测</button>
+                  </div>
+                  {natResult.publicIp && (
+                    <div className="nat-ip-row">
+                      <span className="nat-label">公网地址</span>
+                      <span className="nat-value">{natResult.publicIp}:{natResult.publicPort}</span>
+                    </div>
+                  )}
+                  {natResult.suggestion && (
+                    <div className="nat-suggestion">{natResult.suggestion}</div>
+                  )}
+                  {natResult.error && (
+                    <div className="nat-error">{natResult.error}</div>
+                  )}
+                </div>
+              ) : (
+                <div className="nat-idle">
+                  <span className="nat-label">网络环境检测</span>
+                  <button className="nat-detect-btn" onClick={handleDetectNAT}>检测</button>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* ========== 公共 UI：模式选项卡（经典/极速共用） ========== */}
           {!expressInRoom && !isConnected && !isConnecting && (

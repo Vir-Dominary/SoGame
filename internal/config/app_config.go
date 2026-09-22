@@ -28,6 +28,8 @@ const (
 	AppDesc        = "SoGame - 远程组网工具"
 	AppSponsorURL  = "https://www.ifdian.net/a/vir_dominary?utm_source=copylink&utm_medium=link"
 	UpdateURL      = "https://virdy.cn/sogame/update.json"
+	STUNServerA    = "stun.virdy.cn:3478"
+	STUNServerB    = "stun.l.google.com:19302"
 
 	// DefaultRoomAPIURL 是极速模式（netbird）的默认 Room API 服务地址。
 	// 指向 sogame-netbird 实际运行的控制平面（123.56.254.224）；
