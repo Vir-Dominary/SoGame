@@ -538,7 +538,7 @@ function App() {
             <button
               className={`app-mode-tab ${appMode === 'classic' ? 'active' : ''}`}
               onClick={() => handleSwitchMode('classic')}
-              disabled={modeSwitching || isConnected || isConnecting}
+              disabled={modeSwitching || isConnected || isConnecting || expressInRoom}
               title="n2n + TAP 网卡"
             >
               经典模式
@@ -546,7 +546,7 @@ function App() {
             <button
               className={`app-mode-tab ${appMode === 'express' ? 'active' : ''}`}
               onClick={() => handleSwitchMode('express')}
-              disabled={modeSwitching || isConnected || isConnecting}
+              disabled={modeSwitching || isConnected || isConnecting || expressInRoom}
               title="极速模式"
             >
               极速模式
