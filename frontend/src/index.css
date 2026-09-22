@@ -147,11 +147,11 @@ body {
 
 .app-mode-tab.active {
   background: var(--surface-hover);
-  color: var(--text);
+  color: var(--accent);
 }
 
 .app-mode-tab:hover:not(.active):not(:disabled) {
-  color: var(--text);
+  color: var(--text-secondary);
 }
 
 .app-mode-tab:disabled {
@@ -179,7 +179,7 @@ body {
 }
 
 .mode-tab.active {
-  color: var(--text);
+  color: var(--accent);
 }
 
 .mode-tab.active::after {
@@ -189,7 +189,7 @@ body {
   left: 0;
   right: 0;
   height: 1px;
-  background: var(--text);
+  background: var(--accent);
 }
 
 .mode-tab:hover:not(.active) {
@@ -260,7 +260,8 @@ body {
 }
 
 .generate-btn:hover:not(:disabled) {
-  border-color: var(--border-hover);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .generate-btn:disabled {
@@ -281,7 +282,7 @@ body {
 }
 
 .copy-btn:hover {
-  color: var(--text);
+  color: var(--accent);
 }
 
 .refresh-latency-btn {
@@ -295,7 +296,7 @@ body {
 }
 
 .refresh-latency-btn:hover:not(:disabled) {
-  color: var(--text);
+  color: var(--accent);
 }
 
 .refresh-latency-btn:disabled {
@@ -553,7 +554,7 @@ body {
 }
 
 .node-chip.active {
-  border-color: var(--border-hover);
+  border-color: var(--accent);
   color: var(--text);
 }
 
