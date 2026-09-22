@@ -247,11 +247,11 @@ body {
 /* ========== 按钮 ========== */
 
 .generate-btn {
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
   border-radius: 8px;
   padding: 10px 16px;
-  color: var(--text);
+  color: var(--accent);
   font-size: 13px;
   cursor: pointer;
   transition: all 0.15s;
@@ -260,8 +260,11 @@ body {
 }
 
 .generate-btn:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
+  background: rgba(74,222,128,0.15);
+}
+
+[data-theme="light"] .generate-btn:hover:not(:disabled) {
+  background: rgba(22,163,74,0.12);
 }
 
 .generate-btn:disabled {
@@ -270,18 +273,21 @@ body {
 }
 
 .copy-btn {
-  background: none;
-  border: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
   outline: none;
   color: var(--text-secondary);
   font-size: 11px;
   cursor: pointer;
-  transition: color 0.15s;
+  transition: all 0.15s;
   white-space: nowrap;
   flex-shrink: 0;
+  padding: 4px 10px;
 }
 
 .copy-btn:hover {
+  border-color: var(--accent);
   color: var(--accent);
 }
 
@@ -317,8 +323,8 @@ body {
 }
 
 .log-btn:hover {
-  border-color: var(--border-hover);
-  color: var(--text);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* ========== power-btn ========== */
@@ -503,17 +509,20 @@ body {
 }
 
 .conn-copy-btn {
-  background: none;
-  border: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
   outline: none;
   color: var(--text-secondary);
   font-size: 11px;
   cursor: pointer;
-  transition: color 0.15s;
+  transition: all 0.15s;
+  padding: 2px 8px;
 }
 
 .conn-copy-btn:hover {
-  color: var(--text);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .conn-desc {
@@ -638,11 +647,11 @@ body {
 }
 
 .repair-btn {
-  background: none;
-  border: 1px solid var(--border);
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
   border-radius: 4px;
   padding: 4px 12px;
-  color: var(--text);
+  color: var(--accent);
   font-size: 11px;
   cursor: pointer;
   transition: all 0.15s;
@@ -650,7 +659,11 @@ body {
 }
 
 .repair-btn:hover:not(:disabled) {
-  border-color: var(--border-hover);
+  background: rgba(74,222,128,0.15);
+}
+
+[data-theme="light"] .repair-btn:hover:not(:disabled) {
+  background: rgba(22,163,74,0.12);
 }
 
 .repair-btn:disabled {
@@ -761,8 +774,8 @@ body {
 
 .express-leave-btn {
   flex: 1;
-  background: none;
-  border: 1px solid var(--border);
+  background: var(--danger-dim);
+  border: 1px solid var(--danger-border);
   border-radius: 8px;
   padding: 10px;
   color: var(--danger);
@@ -773,8 +786,12 @@ body {
 }
 
 .express-leave-btn:hover:not(:disabled) {
-  background: var(--danger-dim);
-  border-color: var(--danger-border);
+  background: rgba(248,113,113,0.12);
+  border-color: var(--danger);
+}
+
+[data-theme="light"] .express-leave-btn:hover:not(:disabled) {
+  background: rgba(220,38,38,0.08);
 }
 
 .express-leave-btn:disabled {
@@ -783,13 +800,14 @@ body {
 }
 
 .express-leave-btn.secondary {
-  color: var(--text-secondary);
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
 }
 
 .express-leave-btn.secondary:hover:not(:disabled) {
-  background: var(--surface-hover);
-  border-color: var(--border-hover);
-  color: var(--text);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* ========== 底栏 ========== */
