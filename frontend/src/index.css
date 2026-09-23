@@ -346,6 +346,47 @@ body {
   cursor: wait;
 }
 
+/* ========== 按钮加载动画 ========== */
+
+.icon-spin {
+  animation: spin 1s linear infinite;
+}
+
+.generate-btn.loading-bar {
+  position: relative;
+  overflow: hidden;
+  color: var(--text-secondary);
+}
+
+.generate-btn.loading-bar::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: var(--accent);
+  animation: loading-bar 1.5s ease-in-out infinite;
+}
+
+@keyframes loading-bar {
+  0% { left: -30%; width: 30%; }
+  100% { left: 100%; width: 30%; }
+}
+
+.express-leave-btn.busy,
+.repair-btn.busy,
+.refresh-latency-btn.busy {
+  color: var(--text-secondary);
+}
+
+.express-leave-btn.busy:hover:not(:disabled),
+.repair-btn.busy:hover:not(:disabled),
+.refresh-latency-btn.busy:hover:not(:disabled) {
+  background: none;
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+
 .btn-ring {
   width: 80px;
   height: 80px;

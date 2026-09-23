@@ -80,8 +80,6 @@ function App() {
   const [expressCopied, setExpressCopied] = useState(false)
   const [expressInRoom, setExpressInRoom] = useState(false)
   const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false)
-  // 守护进程安装进行中 / 完成提示
-  const [repairInProgress, setRepairInProgress] = useState(false)
   const [expressNotice, setExpressNotice] = useState('')
   const expressNoticeTimerRef = useRef(null)
   const prevBusyCommandRef = useRef('')
@@ -101,6 +99,7 @@ function App() {
   const [updateModalOpen, setUpdateModalOpen] = useState(false)
   const [natResult, setNatResult] = useState(null)
   const [natDetecting, setNatDetecting] = useState(false)
+  const [loadingAction, setLoadingAction] = useState(null)
   const pollRef = useRef(null)
   const timerRef = useRef(null)
   const latencyRef = useRef(null)
@@ -227,12 +226,12 @@ function App() {
   }, [])
 
   const loadNodesWithLatency = async () => {
+    setLoadingAction('latency')
     setLatencyLoading(true)
     try {
       const n = await GetNodesWithLatency()
       setNodes(n || [])
       if (n && n.length > 0 && !selectedNode) {
-        // 初始选择第一个节点（延迟数据稍后通过事件更新）
         setSelectedNode(n[0].name)
       }
     } catch (e) { console.error('loadNodesWithLatency failed:', e) }
@@ -273,6 +272,7 @@ function App() {
 
   // ========== 极速模式：NetBird 房间操作 ==========
   const handleExpressCreate = async () => {
+    setLoadingAction('express-create')
     setErrorMsg('')
     try {
       const state = await ExpressCreateRoom(expressNickname)
@@ -281,12 +281,15 @@ function App() {
       setExpressInRoom(isExpressInRoom(state && state.state))
     } catch (e) {
       setErrorMsg(String(e))
+    } finally {
+      setLoadingAction(null)
     }
   }
 
   const handleExpressJoin = async () => {
     if (!expressRoomCode.trim()) { setErrorMsg('请输入房间码'); return }
     if (!expressNickname.trim()) { setErrorMsg('请输入昵称'); return }
+    setLoadingAction('express-join')
     setErrorMsg('')
     try {
       const state = await ExpressJoinRoom(expressRoomCode.trim(), expressNickname)
@@ -295,6 +298,8 @@ function App() {
       setExpressInRoom(isExpressInRoom(state && state.state))
     } catch (e) {
       setErrorMsg(String(e))
+    } finally {
+      setLoadingAction(null)
     }
   }
 
@@ -318,6 +323,7 @@ function App() {
   }, [expressInRoom, expressState, expressRoomCodeRevealed, expressBusy])
 
   const handleExpressResume = async () => {
+    setLoadingAction('express-reconnect')
     setErrorMsg('')
     try {
       const state = await ExpressReconnect()
@@ -326,24 +332,30 @@ function App() {
       setExpressInRoom(isExpressInRoom(state && state.state))
     } catch (e) {
       setErrorMsg(String(e))
+    } finally {
+      setLoadingAction(null)
     }
   }
 
   const handleExpressDisconnect = async () => {
+    setLoadingAction('express-disconnect')
     try {
       const state = await ExpressDisconnect()
       setExpressState(state)
     } catch (e) { setErrorMsg(String(e)) }
+    finally { setLoadingAction(null) }
   }
 
   const doExpressLeave = async () => {
     setLeaveConfirmOpen(false)
+    setLoadingAction('express-leave')
     try {
       const state = await ExpressLeaveRoom()
       setExpressState(state)
       setExpressInRoom(false)
       setExpressRoomCodeRevealed('')
     } catch (e) { setErrorMsg(String(e)) }
+    finally { setLoadingAction(null) }
   }
 
   const handleExpressLeave = async () => {
@@ -363,18 +375,17 @@ function App() {
   }, [])
 
   const handleExpressRepair = async () => {
-    setRepairInProgress(true)
+    setLoadingAction('express-repair')
     setExpressBusy(true)
     try {
       const state = await ExpressRepairService()
       setExpressState(state)
       setErrorMsg('')
-      // 安装/修复完成后端已同步复查服务状态，返回快照即可判断结果
       if (state && state.service && state.service.installed) {
         showExpressNotice('守护进程安装完毕')
       }
     } catch (e) { setErrorMsg(String(e)) }
-    finally { setRepairInProgress(false); setExpressBusy(false) }
+    finally { setLoadingAction(null); setExpressBusy(false) }
   }
 
   // 兜底：轮询观察到 busyCommand 由 repair 变为空且服务已就绪时，提示安装完毕
@@ -467,6 +478,7 @@ function App() {
   }
 
   const handleCheckUpdate = async () => {
+    setLoadingAction('update')
     try {
       const info = await CheckUpdate()
       setUpdateInfo(info)
@@ -474,10 +486,13 @@ function App() {
     } catch (e) {
       setUpdateInfo({ error: '无法检查更新，请访问官网 virdy.cn 获取最新版本' })
       setUpdateModalOpen(true)
+    } finally {
+      setLoadingAction(null)
     }
   }
 
   const handleDetectNAT = async () => {
+    setLoadingAction('nat-detect')
     setNatDetecting(true)
     try {
       const result = await DetectNATType()
@@ -486,6 +501,8 @@ function App() {
     } catch (e) {
       setNatDetecting(false)
       console.error('NAT detection failed:', e)
+    } finally {
+      setLoadingAction(null)
     }
   }
 
@@ -626,7 +643,7 @@ function App() {
               {tabMode === 'create' && (
                 <div className="invite-section">
                   <div className="field">
-                    <div className="field-header"><label>中心节点</label><button className="refresh-latency-btn" onClick={loadNodesWithLatency} disabled={latencyLoading}>{latencyLoading ? '测速中...' : '测速'}</button></div>
+                    <div className="field-header"><label>中心节点</label><button className="refresh-latency-btn" onClick={loadNodesWithLatency} disabled={latencyLoading || loadingAction === 'latency'}>{loadingAction === 'latency' ? '测速中...' : '测速'}</button></div>
                     <div className="node-chips">
                       {nodes.map(n => (
                         <button key={n.name} className={`node-chip ${selectedNode===n.name?'active':''} ${n.latency<0 && n.latency!==-2?'unavailable':''}`} onClick={()=>setSelectedNode(n.name)} disabled={n.latency<0 && n.latency!==-2}>
@@ -651,9 +668,9 @@ function App() {
             <div className="invite-section">
               <div className="field"><label>昵称</label><input type="text" value={expressNickname} onChange={e => { setExpressNickname(e.target.value); setErrorMsg('') }} placeholder="您的昵称" maxLength={32} /></div>
               {tabMode === 'join' && (<div className="field"><label>房间码</label><input type="text" value={expressRoomCode} onChange={e => { setExpressRoomCode(e.target.value); setErrorMsg('') }} placeholder="粘贴房间码" /></div>)}
-              <button className="generate-btn" onClick={tabMode === 'create' ? handleExpressCreate : handleExpressJoin} disabled={expressBusy}>{tabMode === 'create' ? '创建房间' : '加入房间'}</button>
-              {expressState && expressState.service && (!expressState.service.installed || expressState.service.repairRequired) && (<div className="express-hint">守护进程{expressState.service.installed ? '异常' : '未安装'} <button className="repair-btn" onClick={handleExpressRepair} disabled={expressBusy}>{expressState.service.installed ? '修复' : '安装'}</button></div>)}
-              {repairInProgress && (<div className="express-installing">正在安装守护进程，请稍后…</div>)}
+              <button className={`generate-btn ${(loadingAction === 'express-create' || loadingAction === 'express-join') ? 'loading-bar' : ''}`} onClick={tabMode === 'create' ? handleExpressCreate : handleExpressJoin} disabled={expressBusy || loadingAction === 'express-create' || loadingAction === 'express-join'}>{loadingAction === 'express-create' || loadingAction === 'express-join' ? (tabMode === 'create' ? '创建中...' : '加入中...') : (tabMode === 'create' ? '创建房间' : '加入房间')}</button>
+              {expressState && expressState.service && (!expressState.service.installed || expressState.service.repairRequired) && (<div className="express-hint">守护进程{expressState.service.installed ? '异常' : '未安装'} <button className="repair-btn" onClick={handleExpressRepair} disabled={expressBusy || loadingAction === 'express-repair'}>{loadingAction === 'express-repair' ? '处理中...' : (expressState.service.installed ? '修复' : '安装')}</button></div>)}
+              {loadingAction === 'express-repair' && (<div className="express-installing">正在安装守护进程，请稍后…</div>)}
               {expressNotice && (<div className="express-notice">{expressNotice}</div>)}
               {expressState && expressState.error && (<div className="error-bar">{expressState.error.message}</div>)}
             </div>
@@ -677,11 +694,11 @@ function App() {
               {((expressState && expressState.roomCode) || expressRoomCodeRevealed) && (<div className="code-result"><div className="code-label">房间码</div><div className="code-box"><span className="code-text">{(expressState && expressState.roomCode) || expressRoomCodeRevealed}</span><button className="copy-btn" onClick={handleExpressCopyCode}>{expressCopied?'已复制':'复制'}</button></div></div>)}
               <div className="express-actions">
                 {(expressState && expressState.disconnected) ? (
-                  <button className="express-leave-btn secondary" onClick={handleExpressResume} disabled={expressBusy}>重新连接</button>
+                  <button className="express-leave-btn secondary" onClick={handleExpressResume} disabled={expressBusy || loadingAction === 'express-reconnect'}>{loadingAction === 'express-reconnect' ? '处理中...' : '重新连接'}</button>
                 ) : (
-                  <button className="express-leave-btn secondary" onClick={handleExpressDisconnect} disabled={expressBusy}>断开</button>
+                  <button className="express-leave-btn secondary" onClick={handleExpressDisconnect} disabled={expressBusy || loadingAction === 'express-disconnect'}>{loadingAction === 'express-disconnect' ? '处理中...' : '断开'}</button>
                 )}
-                <button className="express-leave-btn danger" onClick={handleExpressLeave} disabled={expressBusy}>{expressState && expressState.isOwner ? '解散房间' : '离开房间'}</button>
+                <button className="express-leave-btn danger" onClick={handleExpressLeave} disabled={expressBusy || loadingAction === 'express-leave'}>{loadingAction === 'express-leave' ? '处理中...' : (expressState && expressState.isOwner ? '解散房间' : '离开房间')}</button>
               </div>
             </div>
           )}
@@ -708,7 +725,7 @@ function App() {
                 <div className="nat-result">
                   <div className="nat-header">
                     <span className={`nat-type ${natResult.type}`}>{natTypeLabel(natResult.type)}</span>
-                    <button className="nat-redetect-btn" onClick={handleDetectNAT}>重新检测</button>
+                    <button className="nat-redetect-btn" onClick={handleDetectNAT} disabled={loadingAction === 'nat-detect'}>重新检测</button>
                   </div>
                   {natResult.publicIp && (
                     <div className="nat-ip-row">
@@ -726,7 +743,7 @@ function App() {
               ) : (
                 <div className="nat-idle">
                   <span className="nat-label">网络环境检测</span>
-                  <button className="nat-detect-btn" onClick={handleDetectNAT}>检测</button>
+                  <button className="nat-detect-btn" onClick={handleDetectNAT} disabled={loadingAction === 'nat-detect'}>检测</button>
                 </div>
               )}
             </div>
@@ -738,10 +755,19 @@ function App() {
         </div>
 
         <div className="footer">
-          <button className="settings-toggle" onClick={handleCheckUpdate}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-            <span>更新</span>
-            {updateInfo && updateInfo.hasUpdate && <span className="update-badge"></span>}
+          <button className="settings-toggle" onClick={handleCheckUpdate} disabled={loadingAction === 'update'}>
+            {loadingAction === 'update' ? (
+              <>
+                <svg className="icon-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                <span>检查中...</span>
+              </>
+            ) : (
+              <>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                <span>更新</span>
+                {updateInfo && updateInfo.hasUpdate && <span className="update-badge"></span>}
+              </>
+            )}
           </button>
           <button className="theme-toggle" onClick={toggleTheme}>
             {theme === 'dark' ? (
@@ -816,15 +842,16 @@ function App() {
                 <button
                   className="modal-btn"
                   onClick={() => setLeaveConfirmOpen(false)}
+                  disabled={loadingAction === 'express-leave'}
                 >
                   取消
                 </button>
                 <button
                   className="modal-btn danger"
                   onClick={doExpressLeave}
-                  disabled={expressBusy}
+                  disabled={expressBusy || loadingAction === 'express-leave'}
                 >
-                  解散
+                  {loadingAction === 'express-leave' ? '处理中...' : '解散'}
                 </button>
               </div>
             </div>
