@@ -490,8 +490,11 @@ function App() {
     try {
       const info = await CheckUpdate()
       setUpdateInfo(info)
-      if (info.hasUpdate) setUpdateModalOpen(true)
-    } catch (e) { console.error('CheckUpdate failed:', e) }
+      setUpdateModalOpen(true)
+    } catch (e) {
+      setUpdateInfo({ error: '无法检查更新，请访问官网 virdy.cn 获取最新版本' })
+      setUpdateModalOpen(true)
+    }
   }
 
   const handleDetectNAT = async () => {
@@ -681,8 +684,7 @@ function App() {
             <div className="invite-section">
               <div className="status-indicator"><span className="status-dot" style={{ background: expressState.connectedPath==='p2p'?'var(--accent)':expressState.connectedPath==='relay'?'var(--text-secondary)':'var(--text-weak)' }}/><span>{expressStateLabel(expressState.state, expressBusy)}</span></div>
               {expressState.error && (<div className="error-bar">{expressState.error.message}</div>)}
-              {expressState.relayEnabled === false && (<div className="express-hint">该服务器已关闭中继，仅支持 P2P 直连</div>)}
-              {expressState.relayBlocked && (<div className="express-hint warn">检测到无法建立 P2P 直连，请检查双方网络环境</div>)}
+              {expressState.relayBlocked && (<div className="express-hint warn">当前网络状态不佳，无法支持 P2P 直连，延迟可能较高</div>)}
               {expressState.localIp && (<div className="conn-ip-row"><span className="conn-ip-label">本机 IP</span><span className="conn-ip-value">{expressState.localIp}</span></div>)}
               <div className="express-peers">
                 <div className="express-peers-header"><span>房间成员</span><span className="express-peers-count">{(expressState.peers || []).length + 1} 人</span></div>
@@ -786,19 +788,40 @@ function App() {
         {updateModalOpen && updateInfo && (
           <div className="modal-overlay">
             <div className="modal-dialog">
-              <div className="modal-title">发现新版本</div>
-              <div className="modal-text">{'当前版本 ' + (updateInfo.currentVersion || '') + ' → 最新版本 ' + (updateInfo.latestVersion || '')}</div>
-              {updateInfo.releaseNotes && <div className="update-notes">{updateInfo.releaseNotes}</div>}
-              {updating ? (
-                <div className="update-progress-section">
-                  <div className="update-progress-bar"><div className="update-progress-fill" style={{width: updateProgress + '%'}}></div></div>
-                  <div className="update-progress-text">{updateProgress}%</div>
-                </div>
+              {updateInfo.error ? (
+                <>
+                  <div className="modal-title">检查更新失败</div>
+                  <div className="modal-text">{updateInfo.error}</div>
+                  <div className="modal-actions">
+                    <button className="modal-btn" onClick={() => setUpdateModalOpen(false)}>关闭</button>
+                    <button className="modal-btn primary" onClick={() => { BrowserOpenURL('https://virdy.cn') }}>访问官网</button>
+                  </div>
+                </>
+              ) : updateInfo.hasUpdate ? (
+                <>
+                  <div className="modal-title">发现新版本</div>
+                  <div className="modal-text">{'当前版本 ' + (updateInfo.currentVersion || '') + ' → 最新版本 ' + (updateInfo.latestVersion || '')}</div>
+                  {updateInfo.releaseNotes && <div className="update-notes">{updateInfo.releaseNotes}</div>}
+                  {updating ? (
+                    <div className="update-progress-section">
+                      <div className="update-progress-bar"><div className="update-progress-fill" style={{width: updateProgress + '%'}}></div></div>
+                      <div className="update-progress-text">{updateProgress}%</div>
+                    </div>
+                  ) : (
+                    <div className="modal-actions">
+                      <button className="modal-btn" onClick={() => setUpdateModalOpen(false)}>稍后</button>
+                      <button className="modal-btn primary" onClick={handlePerformUpdate}>立即更新</button>
+                    </div>
+                  )}
+                </>
               ) : (
-                <div className="modal-actions">
-                  <button className="modal-btn" onClick={() => setUpdateModalOpen(false)}>稍后</button>
-                  <button className="modal-btn primary" onClick={handlePerformUpdate}>立即更新</button>
-                </div>
+                <>
+                  <div className="modal-title">已是最新版本</div>
+                  <div className="modal-text">{'当前版本 ' + (updateInfo.currentVersion || '') + ' 已是最新'}</div>
+                  <div className="modal-actions">
+                    <button className="modal-btn primary" onClick={() => setUpdateModalOpen(false)}>确定</button>
+                  </div>
+                </>
               )}
             </div>
           </div>
