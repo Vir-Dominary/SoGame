@@ -85,9 +85,6 @@ function App() {
   const [expressNotice, setExpressNotice] = useState('')
   const expressNoticeTimerRef = useRef(null)
   const prevBusyCommandRef = useRef('')
-  // 启动恢复提示：检测到本地保存的上次房间时询问用户是否恢复
-  const [resumePromptOpen, setResumePromptOpen] = useState(false)
-  const resumePromptHandled = useRef(false)
 
   const [hoverDisconnect, setHoverDisconnect] = useState(false)
   const [connectionTime, setConnectionTime] = useState(null)
@@ -276,7 +273,6 @@ function App() {
 
   // ========== 极速模式：NetBird 房间操作 ==========
   const handleExpressCreate = async () => {
-    resumePromptHandled.current = true
     setErrorMsg('')
     try {
       const state = await ExpressCreateRoom(expressNickname)
@@ -291,7 +287,6 @@ function App() {
   const handleExpressJoin = async () => {
     if (!expressRoomCode.trim()) { setErrorMsg('请输入房间码'); return }
     if (!expressNickname.trim()) { setErrorMsg('请输入昵称'); return }
-    resumePromptHandled.current = true
     setErrorMsg('')
     try {
       const state = await ExpressJoinRoom(expressRoomCode.trim(), expressNickname)
@@ -322,19 +317,7 @@ function App() {
     }
   }, [expressInRoom, expressState, expressRoomCodeRevealed, expressBusy])
 
-  // 启动时若保存了上次的房间（后端标记 hasSavedRoom），询问用户是否恢复。
-  // 在用户确认前，程序不会自动进入房间、退出或重连。
-  const hasSavedRoom = !!(expressState && expressState.hasSavedRoom)
-  useEffect(() => {
-    if (hasSavedRoom && !resumePromptHandled.current) {
-      resumePromptHandled.current = true
-      setResumePromptOpen(true)
-    }
-  }, [hasSavedRoom])
-
   const handleExpressResume = async () => {
-    resumePromptHandled.current = true
-    setResumePromptOpen(false)
     setErrorMsg('')
     try {
       const state = await ExpressReconnect()
@@ -347,7 +330,6 @@ function App() {
   }
 
   const handleExpressDisconnect = async () => {
-    resumePromptHandled.current = true
     try {
       const state = await ExpressDisconnect()
       setExpressState(state)
@@ -356,7 +338,6 @@ function App() {
 
   const doExpressLeave = async () => {
     setLeaveConfirmOpen(false)
-    resumePromptHandled.current = true
     try {
       const state = await ExpressLeaveRoom()
       setExpressState(state)
@@ -468,7 +449,6 @@ function App() {
 
   const handleSwitchMode = async (newMode) => {
     if (newMode === appMode || modeSwitching) return
-    resumePromptHandled.current = true
     setModeSwitching(true)
     try {
       await SetMode(newMode)
@@ -845,31 +825,6 @@ function App() {
                   disabled={expressBusy}
                 >
                   解散
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {resumePromptOpen && (
-          <div className="modal-overlay">
-            <div className="modal-dialog">
-              <div className="modal-title">检测到上次的房间</div>
-              <div className="modal-text">检测到本机保存了上次的极速模式房间，是否恢复？恢复后可直接继续联机。</div>
-              <div className="modal-actions">
-                <button
-                  className="modal-btn primary"
-                  onClick={handleExpressResume}
-                  disabled={expressBusy}
-                >
-                  恢复
-                </button>
-                <button
-                  className="modal-btn danger"
-                  onClick={async () => { setResumePromptOpen(false); await handleExpressLeave() }}
-                  disabled={expressBusy}
-                >
-                  离开房间
                 </button>
               </div>
             </div>
