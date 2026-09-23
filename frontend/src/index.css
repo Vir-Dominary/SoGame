@@ -1056,6 +1056,38 @@ body {
   margin-bottom: 8px;
 }
 
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text-weak);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-close:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .modal-text {
   font-size: 13px;
   color: var(--text-secondary);

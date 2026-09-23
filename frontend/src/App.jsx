@@ -787,7 +787,7 @@ function App() {
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/>
             </svg>
-            <span>{showSponsor ? '收起' : '赞助'}</span>
+            <span>赞助</span>
           </button>
         </div>
 
@@ -903,12 +903,15 @@ function App() {
         )}
 
         {showSponsor && aboutInfo && (
-          <div className="info-panel">
-            <div className="info-inner">
-              <div className="info-header">
-                <span className="info-title">支持开发</span>
+          <div className="modal-overlay" onClick={() => setShowSponsor(false)}>
+            <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <span className="modal-title">支持开发</span>
+                <button className="modal-close" onClick={() => setShowSponsor(false)}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
               </div>
-              <div className="info-body">
+              <div className="modal-body">
                 <p className="sponsor-text">如果这个项目帮助你和朋友顺利联机，欢迎支持该项目</p>
                 <div className="sponsor-usage">
                   <span className="sponsor-usage-label">赞助费用将用于：</span>
@@ -919,9 +922,10 @@ function App() {
                     <li>后续开发</li>
                   </ul>
                 </div>
-                <a className="sponsor-link-btn" href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(aboutInfo.sponsorURL) }}>
-                  赞助支持
-                </a>
+                <div className="modal-actions">
+                  <button className="modal-btn" onClick={() => setShowSponsor(false)}>关闭</button>
+                  <button className="modal-btn primary" onClick={() => { BrowserOpenURL(aboutInfo.sponsorURL) }}>赞助支持</button>
+                </div>
               </div>
             </div>
           </div>
