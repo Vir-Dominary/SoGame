@@ -318,9 +318,19 @@ func (c *ExpressController) RepairService() ExpressState {
 	}
 	c.state.Error = nil
 	c.mu.Unlock()
-	// 安装/修复完成：同步复查守护进程状态，让返回的状态快照直接反映
-	// 安装结果（前端据此提示"守护进程安装完毕"或安装失败）。
-	c.refreshService(ctx)
+	// MSI 安装完成后服务注册到 Windows 服务管理器需要数秒，
+	// 最多重试 5 次（约 10 秒）等待 refreshService 检测到安装。
+	for i := 0; i < 5; i++ {
+		c.refreshService(ctx)
+		c.mu.Lock()
+		if c.state.Service.Installed {
+			break
+		}
+		c.mu.Unlock()
+		if i < 4 {
+			time.Sleep(2 * time.Second)
+		}
+	}
 	c.mu.Lock()
 	if !c.state.Service.Installed {
 		// msiexec 成功但服务仍不存在（安装被回滚/服务未创建）：

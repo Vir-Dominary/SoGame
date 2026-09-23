@@ -119,6 +119,11 @@ func assembleWindowsExpress(controller *ExpressController, roomAPIBaseURL string
 	// 4. 组装 session.Service
 	sessionService := session.NewService(rooms, adapter, metadata, codes)
 
+	// 若本地保存了上次房间,标记为待确认恢复(不自动进入房间)
+	if _, loadErr := metadata.Load(); loadErr == nil {
+		sessionService.SetResumePending(true)
+	}
+
 	// 房主令牌存储(房主才能解散房间/维持心跳);失败仅降级为无房主能力,不影响使用
 	ownerTokenPath, tokenErr := securestore.DefaultOwnerTokenPath()
 	if tokenErr == nil {
