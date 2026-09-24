@@ -70,10 +70,6 @@ export function GetConnectionDetails() {
   return window['go']['app']['App']['GetConnectionDetails']();
 }
 
-export function GetNATResult() {
-  return window['go']['app']['App']['GetNATResult']();
-}
-
 export function GetErrorMessage() {
   return window['go']['app']['App']['GetErrorMessage']();
 }
@@ -84,6 +80,10 @@ export function GetLogContent() {
 
 export function GetMode() {
   return window['go']['app']['App']['GetMode']();
+}
+
+export function GetNATResult() {
+  return window['go']['app']['App']['GetNATResult']();
 }
 
 export function GetNodes() {
