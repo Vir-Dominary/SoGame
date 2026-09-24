@@ -8,8 +8,10 @@
 #   - healthcheck 用 room-api 内置的 -healthcheck（校验配置+SQLite 完整性），
 #     不要用 wget/curl（运行镜像 debian:bookworm-slim 不含它们，会导致容器永久 unhealthy）
 #   - 凭证经 env_file 注入（./room-api.env，由 server/room-api/deploy/prep-room-api.sh 生成）
-#   - 经 traefik 反代暴露：Host(123.56.254.224) && PathPrefix(/rooms)，
-#     因此须设 ROOM_API_TRUST_PROXY=true 才能按真实客户端 IP 限流
+#   - Room API 的对外暴露不在此处配置 traefik labels：入口统一由
+#     deploy/traefik-dynamic.yml 的 legengen-rooms 路由(HTTPS)提供。
+#     明文 IP 入口(Host=123.56.254.224 && PathPrefix(/rooms))已于 2026-09-24 下线。
+#   - 生产经 traefik 反代，因此须设 ROOM_API_TRUST_PROXY=true 才能按真实客户端 IP 限流
 # ============================================================
 
 # 加入到 docker-compose.yml 的 services: 段中
@@ -27,13 +29,6 @@
       - -healthcheck
       timeout: 5s
     image: sogame-room-api:latest
-    labels:
-    - traefik.enable=true
-    - traefik.http.routers.sogame-rooms.rule=Host(`123.56.254.224`) && PathPrefix(`/rooms`)
-    - traefik.http.routers.sogame-rooms.entrypoints=web
-    - traefik.http.routers.sogame-rooms.service=sogame-rooms
-    - traefik.http.routers.sogame-rooms.priority=110
-    - traefik.http.services.sogame-rooms.loadbalancer.server.port=8080
     networks:
     - netbird
     restart: unless-stopped

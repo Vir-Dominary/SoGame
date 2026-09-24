@@ -1,0 +1,53 @@
+http:
+  middlewares:
+    legengen-https-redirect:
+      redirectScheme:
+        permanent: true
+        scheme: https
+  routers:
+    legengen-backend:
+      entryPoints:
+      - websecure
+      priority: 100
+      rule: Host(`legengen.top`) && (PathPrefix(`/relay`) || PathPrefix(`/ws-proxy/`)
+        || PathPrefix(`/api`) || PathPrefix(`/oauth2`))
+      service: netbird-server@docker
+      tls: {}
+    legengen-dashboard:
+      entryPoints:
+      - websecure
+      priority: 1
+      rule: Host(`legengen.top`)
+      service: dashboard@docker
+      tls:
+        certResolver: le
+        domains:
+        - main: legengen.top
+    legengen-grpc:
+      entryPoints:
+      - websecure
+      priority: 100
+      rule: Host(`legengen.top`) && (PathPrefix(`/signalexchange.SignalExchange/`)
+        || PathPrefix(`/management.ManagementService/`) || PathPrefix(`/management.ProxyService/`))
+      service: netbird-server-h2c@docker
+      tls: {}
+    legengen-http:
+      entryPoints:
+      - web
+      middlewares:
+      - legengen-https-redirect
+      priority: 10
+      rule: Host(`legengen.top`)
+      service: noop@internal
+    legengen-rooms:
+      entryPoints:
+      - websecure
+      priority: 110
+      rule: Host(`legengen.top`) && PathPrefix(`/rooms`)
+      service: sogame-rooms@file
+      tls: {}
+  services:
+    sogame-rooms:
+      loadBalancer:
+        servers:
+        - url: http://sogame-room-api:8080
