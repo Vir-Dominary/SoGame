@@ -1,6 +1,7 @@
 # SoGame
 
-轻量级 P2P 虚拟组网工具，基于 n2n 实现。无需公网 IP，两步加入同一房间即可互联。
+轻量级 P2P 虚拟组网工具。无需公网 IP，两步加入同一房间即可互联。
+支持两种模式：经典模式（n2n）与极速模式（NetBird/WireGuard）。
 
 ## 功能
 
@@ -15,21 +16,21 @@
 
 ### 极速模式（测试进度）
 
-极速模式客户端集成已完成，当前处于**单机全链路验证**阶段：
+极速模式客户端与服务端（`server/room-api/`）集成已完成，当前处于**双机联机验证**阶段：
 
 | 项目 | 状态 |
 |------|------|
 | 客户端集成（netbird 守护进程编排、Room API 客户端、状态机、DPAPI 安全存储） | ✅ 完成 |
+| Room API 服务端（房间 ↔ Group/SetupKey 映射，本仓库 `server/room-api/`） | ✅ 完成 |
 | 单机创建房间 → 入网 → 房间管理界面（成员/房间码/断开/离开） | ✅ 通过 |
 | 失败事务回滚与孤儿 profile 自愈 | ✅ 通过 |
 | 房间码明文展示与一键复制 | ✅ 通过 |
-| 双机真实联机测试（两台 Windows + legengen.top） | ⏳ 待办 |
-| Room API 服务端移植进 SoGame | ⏳ 后续 |
+| 双机真实联机测试（两台 Windows） | ⏳ 待办 |
 
 本地开发验证方式：
 
 ```powershell
-# 默认：Room API 指向真实服务器 https://legengen.top
+# 默认：Room API 指向生产服务 http://123.56.254.224
 .\build\bin\SoGame.exe
 
 # 可选：本地 Mock 模拟（Room API 用 tools/room-api-mock）
@@ -37,7 +38,7 @@
 go run ./tools/room-api-mock/main.go
 ```
 
-> 详细架构与测试进度见 [`wireguard/README.md`](wireguard/README.md) 与 `docs/`。
+> 架构、配置与开发约定见 [`AGENTS.md`](AGENTS.md)；极速模式详细叙述见 [`wireguard/README.md`](wireguard/README.md)。
 
 ## 安装
 

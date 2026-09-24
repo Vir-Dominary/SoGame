@@ -1,5 +1,7 @@
 # SoGame 极速模式（基于 NetBird）
 
+> 本文是极速模式的叙述性介绍；项目级的架构、配置与开发约定以根目录 [`AGENTS.md`](../AGENTS.md) 为准。
+
 SoGame 的"极速模式"基于 [NetBird](https://netbird.io/) 实现，使用 WireGuard 加密 + NAT 穿透，
 与现有 n2n 经典模式并行。极速模式的目标是提供更稳定的 P2P 连接和更简单的用户体验。
 
@@ -153,8 +155,8 @@ cmd/
 |------|------|----------|
 | NetBird 守护进程 | 官方 v0.74.7 MSI | 首次使用极速模式时 sogame-helper UAC 安装 |
 | WireGuard Wintun 驱动 | NetBird MSI 内含 | 随 MSI 安装 |
-| Room API 服务 | sogame-netbird 部署 | 已在 legengen.top 运行 |
-| NetBird Management/Signal | sogame-netbird 部署 | 已在 legengen.top 运行 |
+| Room API 服务 | 本仓库 `server/room-api/` 部署 | 生产默认 `http://123.56.254.224` |
+| NetBird Management/Signal | combined 镜像部署 | 生产默认 `https://legengen.top` |
 
 ## 与经典模式的关系
 
@@ -178,14 +180,15 @@ cmd/
   - 房间码明文展示 + 一键复制；房间成员列表 / 空状态提示；
   - 断开 / 离开房间按钮（样式与整体 UI 统一）；
   - 失败事务回滚（codes/metadata 清理）与孤儿 `sogame-room` profile 自动自愈。
-- **默认指向真实控制平面**：客户端 `DefaultRoomAPIURL` 为 `https://legengen.top`（与产品语义一致），
-  本地 Mock（`tools/room-api-mock`）仅作为开发期可选替身，需在 UI 设置/配置中显式切到
-  `http://127.0.0.1:9099` 才会使用。
+- **默认指向真实控制平面**：客户端 `DefaultRoomAPIURL` 为 `http://123.56.254.224`（Room API，
+  Management 为 `https://legengen.top`），本地 Mock（`tools/room-api-mock`）仅作为开发期可选替身，
+  需在 UI 设置/配置中显式切到 `http://127.0.0.1:9099` 才会使用。
+- **Room API 服务端**：已随本仓库提供（`server/room-api/`，独立 Go module，SQLite 存储），
+  房主心跳/解散、relay 开关下发均已实现。
 
 ### ⏳ 待办
 
 - **双机真实联机**：两台 Windows 各自创建/加入房间，验证成员互相可见、
   状态走到 `ConnectedP2P`（或 `ConnectedRelay`）、`ping` 通虚拟 IP、
   Disconnect/Reconnect/Leave 全流程。
-- **Room API 服务端移植进 SoGame**（自包含控制平面，替换部署在 legengen.top 的服务端）。
-- 诊断打包（diagnostics）、系统托盘、自动更新、多房间管理。
+- 诊断打包（diagnostics）、系统托盘、多房间管理。
