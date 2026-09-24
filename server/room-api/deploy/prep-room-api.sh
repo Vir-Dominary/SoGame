@@ -51,6 +51,9 @@ NETBIRD_PAT=$PAT
 ROOM_API_ENCRYPTION_KEY=$ENC_KEY
 ROOM_API_ADMIN_TOKEN=$ADMIN_TOKEN
 ROOM_API_DB_PATH=/data/room-api.db
+# UI 层中继开关:须与数据面对齐(见 README"两级 relay 开关")。
+# 数据面 = traefik 的 /relay 路由 label;两者不一致会产生误导性提示。
+# 本脚本默认 false(生产默认关闭);若该部署的数据面保留了 /relay 路由,请改为 true。
 ROOM_API_RELAY_ENABLED=false
 ROOM_API_TRUST_PROXY=true
 EOF

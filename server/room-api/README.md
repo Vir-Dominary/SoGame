@@ -53,7 +53,7 @@ docker run --rm -p 8080:8080 \
 | `ROOM_API_PEER_RATE_PER_MINUTE` | | `60` | 每 IP 每分钟成员/心跳限流 |
 | `ROOM_API_MAX_BODY_BYTES` | | `4096` | 请求体上限 |
 | `ROOM_API_PROVISION_CONCURRENCY` | | `2` | 建房并发（NetBird 资源创建并发） |
-| `ROOM_API_RELAY_ENABLED` | | `false` | 是否允许房间使用 Relay 中继（随 enrollment 下发客户端） |
+| `ROOM_API_RELAY_ENABLED` | | `false` | UI 层中继开关：是否承认中继连接为"已连接"（随 enrollment 下发客户端，见下文"两级 relay 开关"） |
 | `ROOM_API_TRUST_PROXY` | | `false` | 是否信任反向代理的 `X-Forwarded-For`（见下文） |
 | `ROOM_API_OWNER_OFFLINE_AFTER` | | `5m` | 房主多久没心跳即由看门狗解散房间（`<=0` 关闭） |
 | `ROOM_API_OWNER_SWEEP_INTERVAL` | | `1m` | 看门狗扫描间隔 |
@@ -69,6 +69,28 @@ docker run --rm -p 8080:8080 \
 - `sogame-server`（123.56.254.224）：traefik + 域名 `virdy.cn` + Let's Encrypt，经代
   理转发，应设 `ROOM_API_TRUST_PROXY=true`。
 - 若将其作为容器直连 80 端口暴露，则保持默认 `false`。
+
+## 两级 relay 开关（重要）
+
+中继（relay）涉及**两个独立层面**，部署时必须保持对齐：
+
+| 层 | 开关载体 | 控制什么 | 如何打开 | 如何关闭（默认） |
+|----|---------|---------|---------|----------------|
+| **数据面** | traefik 的 `/relay` 路由 label | NetBird 内置 relay service 是否可达；关 = P2P 打洞失败时**真的连不上**（无中继候选） | compose 的 netbird-server 段保留 `traefik...PathPrefix(\`/relay\`)` label | 部署模板移除该 label → relay 不可达 |
+| **UI 层** | `ROOM_API_RELAY_ENABLED` | 客户端是否把中继连接显示为"已连接"；关 = 显示红色"无法 P2P 直连"提示 | env 设 `true` | 默认 `false` |
+
+**对齐规则**（不一致会产生误导）：
+
+| 数据面 | UI 层 | 效果 |
+|--------|-------|------|
+| 开 | `true` | 中继可用且如实显示"已连接 · 中继"（测试期推荐） |
+| 关 | `false` | 真无中继，P2P 失败即连不上，UI 如实提示（生产默认） |
+| 开 | `false` | ⚠️ 中继实际可用但 UI 报"无法直连"（误导，勿用） |
+| 关 | `true` | ⚠️ UI 显示可中继但实际连不上（误导，勿用） |
+
+部署建议：**生产服务器默认关闭**（两层全关，节省中继带宽）；低配/测试服务器或 NAT
+恶劣环境占比高的区域可**选择性打开**（两层全开）。切换数据面开关需同时调整
+traefik label 与 env，并重启容器。
 
 ## 密钥与数据备份
 
