@@ -60,7 +60,13 @@ func main() {
 		return
 	}
 	client := netbird.New(cfg.ManagementURL, cfg.PAT)
-	service := rooms.New(database, client, rooms.Config{ManagementURL: cfg.ManagementURL, EncryptionKey: cfg.EncryptionKey, RelayEnabled: cfg.RelayEnabled})
+	service := rooms.New(database, client, rooms.Config{
+		ManagementURL:     cfg.ManagementURL,
+		EncryptionKey:     cfg.EncryptionKey,
+		RelayEnabled:      cfg.RelayEnabled,
+		OwnerOfflineAfter: cfg.OwnerOfflineAfter,
+		SweepInterval:     cfg.OwnerSweepInterval,
+	})
 	if *migrateDefault {
 		if err := service.DisableDefaultPolicy(context.Background()); err != nil {
 			log.Fatal(err)
@@ -72,6 +78,11 @@ func main() {
 		log.Printf("room reconciliation failed: %v", err)
 	}
 
+	// 房主离线自动解散房间的看门狗
+	watchdogCtx, stopWatchdog := context.WithCancel(context.Background())
+	service.StartOwnerWatchdog(watchdogCtx)
+	defer stopWatchdog()
+
 	handler := httpapi.New(service, httpapi.Config{
 		AdminToken:           cfg.AdminToken,
 		MaxBodyBytes:         cfg.MaxBodyBytes,
@@ -79,6 +90,7 @@ func main() {
 		JoinRatePerMinute:    cfg.JoinRatePerMinute,
 		PeerRatePerMinute:    cfg.PeerRatePerMinute,
 		ProvisionConcurrency: cfg.ProvisionConcurrency,
+		TrustProxy:           cfg.TrustProxy,
 	})
 	server := &http.Server{
 		Addr:              cfg.Addr,

@@ -1,0 +1,9 @@
+*.exe
+*.db
+*.db-wal
+*.db-shm
+.git
+.gitignore
+Dockerfile
+.dockerignore
+README.md
