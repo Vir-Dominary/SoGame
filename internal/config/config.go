@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"sogame/internal/logger"
 	"sogame/internal/security"
@@ -58,26 +59,34 @@ type Config struct {
 	ExpressNickname string `yaml:"express_nickname"`      // 极速模式下的展示昵称
 }
 
-// encryptor 全局加密器
-var encryptor *security.Encryptor
+// encryptor 全局加密器（惰性初始化，见 getEncryptor）。
+var (
+	encryptor     *security.Encryptor
+	encryptorOnce sync.Once
+)
 
-func init() {
-	key, err := security.GetOrCreateEncryptionKey()
-	if err != nil {
-		logger.Errorf("failed to get encryption key: %v, generating a new one", err)
-		key, err = security.GenerateAndSaveEncryptionKey()
+// getEncryptor 返回全局加密器，首次实际加解密时才初始化。
+// 原为包级 init()：任何 import 本包的二进制（含 go test 测试进程）启动时
+// 都会在真实用户配置目录读写密钥文件；惰性化后测试进程不再触碰真实环境。
+func getEncryptor() *security.Encryptor {
+	encryptorOnce.Do(func() {
+		key, err := security.GetOrCreateEncryptionKey()
 		if err != nil {
-			logger.Errorf("failed to generate new encryption key: %v, config encryption will be disabled", err)
+			logger.Errorf("failed to get encryption key: %v, generating a new one", err)
+			key, err = security.GenerateAndSaveEncryptionKey()
+			if err != nil {
+				logger.Errorf("failed to generate new encryption key: %v, config encryption will be disabled", err)
+			}
 		}
-	}
-	if key != "" {
-		var encErr error
-		encryptor, encErr = security.NewEncryptor(key)
-		if encErr != nil {
-			logger.Errorf("failed to create encryptor: %v, config encryption will be disabled", encErr)
+		if key != "" {
+			var encErr error
+			encryptor, encErr = security.NewEncryptor(key)
+			if encErr != nil {
+				logger.Errorf("failed to create encryptor: %v, config encryption will be disabled", encErr)
+			}
 		}
-
-	}
+	})
+	return encryptor
 }
 
 func DefaultConfig() *Config {
@@ -156,12 +165,14 @@ func LoadOrCreate() (*Config, error) {
 		return defaultCfg, fmt.Errorf("config file corrupted, restored to default config: %w", err)
 	}
 
-	if cfg.Key != "" && encryptor != nil {
-		decryptedKey, err := encryptor.Decrypt(cfg.Key)
-		if err != nil {
-			logger.Warnf("failed to decrypt key, using raw key: %v", err)
-		} else {
-			cfg.Key = decryptedKey
+	if cfg.Key != "" {
+		if enc := getEncryptor(); enc != nil {
+			decryptedKey, err := enc.Decrypt(cfg.Key)
+			if err != nil {
+				logger.Warnf("failed to decrypt key, using raw key: %v", err)
+			} else {
+				cfg.Key = decryptedKey
+			}
 		}
 	}
 
@@ -238,8 +249,8 @@ func Save(cfg *Config) error {
 	}
 
 	encryptedKey := cfg.Key
-	if encryptor != nil {
-		encrypted, err := encryptor.Encrypt(cfg.Key)
+	if enc := getEncryptor(); enc != nil {
+		encrypted, err := enc.Encrypt(cfg.Key)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt key: %w", err)
 		}
@@ -404,12 +415,14 @@ func RestoreFromBackup() (*Config, error) {
 		return nil, fmt.Errorf("failed to parse backup file: %w", err)
 	}
 
-	if cfg.Key != "" && encryptor != nil {
-		decryptedKey, err := encryptor.Decrypt(cfg.Key)
-		if err != nil {
-			logger.Warnf("failed to decrypt key from backup, using raw key: %v", err)
-		} else {
-			cfg.Key = decryptedKey
+	if cfg.Key != "" {
+		if enc := getEncryptor(); enc != nil {
+			decryptedKey, err := enc.Decrypt(cfg.Key)
+			if err != nil {
+				logger.Warnf("failed to decrypt key from backup, using raw key: %v", err)
+			} else {
+				cfg.Key = decryptedKey
+			}
 		}
 	}
 
@@ -454,21 +467,22 @@ func NormalizeSupernode(address string) string {
 }
 
 // MigrateDeprecatedEndpoints 将配置中已废弃的 Room API 地址 / 中心节点
-// 迁移为当前内置默认值，返回是否有字段被修改。幂等：值已等于当前默认值
-// 时不视为修改（即便该值仍在废弃名单中——例如名单先于默认值切换发版）。
+// 迁移为"跟随内置默认"（置空），返回是否有字段被修改。
+// 置空而非写入默认值常量：空值经 omitempty 不落盘，未来入口再切换时
+// 被迁移用户可继续自动穿透，无需再次依赖废弃名单兜底。
 func MigrateDeprecatedEndpoints(cfg *Config) bool {
 	if cfg == nil {
 		return false
 	}
 	changed := false
-	if key := strings.ToLower(strings.TrimRight(strings.TrimSpace(cfg.RoomAPIURL), "/")); deprecatedRoomAPIURLs[key] && cfg.RoomAPIURL != DefaultRoomAPIURL {
-		logger.Infof("migrating deprecated room_api_url to current default")
-		cfg.RoomAPIURL = DefaultRoomAPIURL
+	if key := strings.ToLower(strings.TrimRight(strings.TrimSpace(cfg.RoomAPIURL), "/")); deprecatedRoomAPIURLs[key] {
+		logger.Infof("migrating deprecated room_api_url to follow built-in default")
+		cfg.RoomAPIURL = ""
 		changed = true
 	}
-	if key := strings.ToLower(strings.TrimSpace(cfg.Supernode)); deprecatedSupernodes[key] && cfg.Supernode != DefaultSupernode {
-		logger.Infof("migrating deprecated supernode to current default")
-		cfg.Supernode = DefaultSupernode
+	if key := strings.ToLower(strings.TrimSpace(cfg.Supernode)); deprecatedSupernodes[key] {
+		logger.Infof("migrating deprecated supernode to follow built-in default")
+		cfg.Supernode = ""
 		changed = true
 	}
 	return changed

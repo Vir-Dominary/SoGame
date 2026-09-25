@@ -25,8 +25,8 @@ import (
 	"testing"
 )
 
-// TestMigrateRoomAPIURLDeprecated 验证废弃 Room API 入口被迁移为当前默认值，
-// 含大小写、尾随斜杠、首尾空白等归一化变体。
+// TestMigrateRoomAPIURLDeprecated 验证废弃 Room API 入口被迁移为"跟随内置默认"
+// （置空，经 omitempty 不落盘），含大小写、尾随斜杠、首尾空白等归一化变体。
 func TestMigrateRoomAPIURLDeprecated(t *testing.T) {
 	deprecated := []string{
 		"http://123.56.254.224",
@@ -38,32 +38,28 @@ func TestMigrateRoomAPIURLDeprecated(t *testing.T) {
 		"https://virdy.cn/",
 	}
 	for _, value := range deprecated {
-		// 名单成员恰好等于当前默认值时（名单先于默认值切换发版的过渡期）
-		// 走幂等路径，由 TestMigrateRoomAPIURLIdempotent 覆盖
-		normalized := strings.ToLower(strings.TrimRight(strings.TrimSpace(value), "/"))
-		if normalized == strings.ToLower(strings.TrimRight(DefaultRoomAPIURL, "/")) {
-			continue
-		}
 		cfg := &Config{RoomAPIURL: value}
 		if !MigrateDeprecatedEndpoints(cfg) {
 			t.Errorf("MigrateDeprecatedEndpoints(%q): expected changed=true", value)
 			continue
 		}
-		if cfg.RoomAPIURL != DefaultRoomAPIURL {
-			t.Errorf("MigrateDeprecatedEndpoints(%q): got %q, want %q", value, cfg.RoomAPIURL, DefaultRoomAPIURL)
+		if cfg.RoomAPIURL != "" {
+			t.Errorf("MigrateDeprecatedEndpoints(%q): got %q, want empty (follow built-in default)", value, cfg.RoomAPIURL)
 		}
 	}
 }
 
-// TestMigrateRoomAPIURLIdempotent 验证当前默认值不被改写（即便它在废弃名单中，
-// 例如名单先于默认值切换发版的过渡期），保证迁移幂等。
+// TestMigrateRoomAPIURLIdempotent 验证空值与当前默认值不被改写：
+// 空 = 跟随默认，当前默认值不在废弃名单中，两者都应原样保留。
 func TestMigrateRoomAPIURLIdempotent(t *testing.T) {
-	cfg := &Config{RoomAPIURL: DefaultRoomAPIURL}
-	if MigrateDeprecatedEndpoints(cfg) {
-		t.Errorf("current default %q must not be rewritten", DefaultRoomAPIURL)
-	}
-	if cfg.RoomAPIURL != DefaultRoomAPIURL {
-		t.Errorf("default value changed to %q", cfg.RoomAPIURL)
+	for _, value := range []string{"", DefaultRoomAPIURL} {
+		cfg := &Config{RoomAPIURL: value}
+		if MigrateDeprecatedEndpoints(cfg) {
+			t.Errorf("value %q must not be rewritten", value)
+		}
+		if cfg.RoomAPIURL != value {
+			t.Errorf("value %q changed to %q", value, cfg.RoomAPIURL)
+		}
 	}
 }
 
@@ -95,8 +91,8 @@ func TestMigrateSupernode(t *testing.T) {
 	if !MigrateDeprecatedEndpoints(cfg) {
 		t.Fatalf("deprecated supernode should be migrated")
 	}
-	if cfg.Supernode != DefaultSupernode {
-		t.Errorf("supernode = %q, want %q", cfg.Supernode, DefaultSupernode)
+	if cfg.Supernode != "" {
+		t.Errorf("supernode = %q, want empty (follow built-in default)", cfg.Supernode)
 	}
 
 	// 当前默认节点与普通自定义节点不受影响
@@ -131,7 +127,11 @@ func TestNormalizeSupernodeEmptyList(t *testing.T) {
 // TestLoadOrCreateMigratesDeprecated 端到端：磁盘上的旧配置加载后被迁移并落盘。
 func TestLoadOrCreateMigratesDeprecated(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("APPDATA", dir) // Windows 上 os.UserConfigDir 指向 %AppData%
+	// 隔离用户配置目录：Windows 读 APPDATA，类 Unix 读 XDG_CONFIG_HOME/HOME，
+	// 防止测试触达真实配置目录（包内加密器已惰性化，本测试进程不做任何真实 IO）。
+	t.Setenv("APPDATA", dir)
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("HOME", dir)
 
 	configDir := filepath.Join(dir, "SoGame")
 	if err := os.MkdirAll(configDir, 0700); err != nil {
@@ -141,7 +141,8 @@ func TestLoadOrCreateMigratesDeprecated(t *testing.T) {
 		"node_name: test-node\ncommunity: community-abcd1234\nkey: \"\"\n" +
 		"supernode: 8.148.244.159:10090\nip: 10.10.10.10\nmode: express\n" +
 		"room_api_url: http://123.56.254.224\nexpress_nickname: tester\n"
-	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(yaml), 0600); err != nil {
+	configFile := filepath.Join(configDir, "config.yaml")
+	if err := os.WriteFile(configFile, []byte(yaml), 0600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -149,17 +150,25 @@ func TestLoadOrCreateMigratesDeprecated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadOrCreate: %v", err)
 	}
-	if cfg.RoomAPIURL != DefaultRoomAPIURL {
-		t.Fatalf("room_api_url = %q, want migrated default %q", cfg.RoomAPIURL, DefaultRoomAPIURL)
+	if cfg.RoomAPIURL != "" {
+		t.Fatalf("room_api_url = %q, want empty (migrated to follow built-in default)", cfg.RoomAPIURL)
 	}
 
-	// 迁移结果必须已落盘（再次加载直接读到新值，且 .bak 留存旧值）
+	// 迁移结果必须已落盘且经 omitempty 不再携带 room_api_url 字段（穿透语义），
+	// 再次加载直接读到空值；.bak 留存旧值可回滚。
+	persisted, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatalf("read persisted config: %v", err)
+	}
+	if strings.Contains(string(persisted), "room_api_url") {
+		t.Errorf("persisted config should omit room_api_url after migration, got:\n%s", persisted)
+	}
 	reloaded, err := LoadOrCreate()
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if reloaded.RoomAPIURL != DefaultRoomAPIURL {
-		t.Errorf("persisted room_api_url = %q, want %q", reloaded.RoomAPIURL, DefaultRoomAPIURL)
+	if reloaded.RoomAPIURL != "" {
+		t.Errorf("reloaded room_api_url = %q, want empty", reloaded.RoomAPIURL)
 	}
 	backup, err := os.ReadFile(filepath.Join(configDir, "config.yaml.bak"))
 	if err != nil {
