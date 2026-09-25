@@ -227,6 +227,8 @@ export namespace app {
 	        this.address = source["address"];
 	        this.latency = source["latency"];
 	    }
+	}
+
 }
 
 export namespace natdetect {
@@ -240,7 +242,7 @@ export namespace natdetect {
 	    stunServerA: string;
 	    stunServerB: string;
 	    suggestion: string;
-	    error: string;
+	    error?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new NATResult(source);
@@ -262,17 +264,18 @@ export namespace natdetect {
 
 }
 
+export namespace updater {
 	
 	export class UpdateInfo {
 	    hasUpdate: boolean;
 	    currentVersion: string;
 	    latestVersion: string;
-	    downloadUrl: string;
-	    sha256: string;
-	    size: number;
-	    releaseNotes: string;
-	    minVersion: string;
-	    error: string;
+	    downloadUrl?: string;
+	    sha256?: string;
+	    size?: number;
+	    releaseNotes?: string;
+	    minVersion?: string;
+	    error?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new UpdateInfo(source);
@@ -291,8 +294,6 @@ export namespace natdetect {
 	        this.error = source["error"];
 	    }
 	}
-
-}
 
 }
 

@@ -1,0 +1,37 @@
+# ============================================================
+# Room API 的 docker-compose 服务参考片段
+#
+# 来源：生产服务器 123.56.254.224 的 /root/docker-compose.yml 实际部署配置。
+# 完整部署说明见 deploy/DEPLOY.md 与 server/room-api/README.md。
+#
+# 要点：
+#   - healthcheck 用 room-api 内置的 -healthcheck（校验配置+SQLite 完整性），
+#     不要用 wget/curl（运行镜像 debian:bookworm-slim 不含它们，会导致容器永久 unhealthy）
+#   - 凭证经 env_file 注入（./room-api.env，由 server/room-api/deploy/prep-room-api.sh 生成）
+#   - Room API 的对外暴露不在此处配置 traefik labels：入口统一由
+#     deploy/traefik-dynamic.yml 的 legengen-rooms 路由(HTTPS)提供。
+#     明文 IP 入口(Host=123.56.254.224 && PathPrefix(/rooms))已于 2026-09-24 下线。
+#   - 生产经 traefik 反代，因此须设 ROOM_API_TRUST_PROXY=true 才能按真实客户端 IP 限流
+# ============================================================
+
+# 加入到 docker-compose.yml 的 services: 段中
+  room-api:
+    build: /root/room-api
+    container_name: sogame-room-api
+    env_file:
+    - ./room-api.env
+    healthcheck:
+      interval: 30s
+      retries: 3
+      test:
+      - CMD
+      - /usr/local/bin/room-api
+      - -healthcheck
+      timeout: 5s
+    image: sogame-room-api:latest
+    networks:
+    - netbird
+    restart: unless-stopped
+    volumes:
+    - /root/room-api-data:/data
+    - /etc/pki/tls/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro

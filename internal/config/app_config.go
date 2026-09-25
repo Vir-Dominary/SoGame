@@ -32,11 +32,12 @@ const (
 	STUNServerB    = "stun.l.google.com:19302"
 
 	// DefaultRoomAPIURL 是极速模式（netbird）的默认 Room API 服务地址。
-	// 指向 virdy.cn（traefik 反代至 room-api，HTTPS 加密传输）；
+	// 指向 legengen.top（traefik 的 legengen-rooms 路由，HTTPS 加密传输；
+	// virdy.cn 是主站/更新服务域名，没有 /rooms 路由——勿用）。
 	// 本地开发可在 UI 设置或配置文件中临时指向本地 Mock（tools/room-api-mock）。
 	// 注意：此处必须是所有客户端都能访问到的同一服务端，
 	// 否则不同机器创建/加入的房间互不可见。
-	DefaultRoomAPIURL = "https://virdy.cn"
+	DefaultRoomAPIURL = "https://legengen.top"
 
 	// DefaultSupernode 是经典模式（n2n）的默认中心节点地址。
 	// 配置文件中 supernode 为空时表示跟随此内置默认值，
