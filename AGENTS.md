@@ -168,7 +168,7 @@ go run ./tools/room-api-mock/main.go   # 监听 127.0.0.1:9099，MOCK_RELAY_ENAB
 
 | 常量 | 当前值 | 说明 |
 |---|---|---|
-| `DefaultRoomAPIURL` | `http://123.56.254.224` | 生产 Room API（**目前为明文 HTTP，TLS 化为已知待办**） |
+| `DefaultRoomAPIURL` | `https://legengen.top` | 生产 Room API（traefik `legengen-rooms` 路由，HTTPS；明文 IP 入口已于 2026-09-24 下线） |
 | `DefaultSupernode` | `8.148.244.159:10090` | 经典模式默认中心节点（节点表见 `internal/n2n/edge.go` knownNodes） |
 | `UpdateURL` | `https://virdy.cn/sogame/update.json` | 热更新 manifest |
 | `STUNServerA` / `STUNServerB` | `stun.virdy.cn:3478` / `stun.l.google.com:19302` | NAT 探测 |
