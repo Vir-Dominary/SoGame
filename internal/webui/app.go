@@ -161,12 +161,16 @@ func maskKey(key string) string {
 func (a *App) GetConfig() ConfigInfo {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	supernode := a.cfg.Supernode
+	if supernode == "" {
+		supernode = config.DefaultSupernode // 空 = 跟随内置默认，展示生效值
+	}
 	return ConfigInfo{
 		Community: a.cfg.Community,
 		IP:        a.cfg.IP,
 		KeyMasked: maskKey(a.cfg.Key),
 		KeySet:    a.cfg.Key != "",
-		Supernode: a.cfg.Supernode,
+		Supernode: supernode,
 	}
 }
 
@@ -347,6 +351,10 @@ func (a *App) GenerateInvite(supernode string) (string, error) {
 		Key:       a.cfg.Key,
 		Supernode: supernode,
 	}
+	if data.Supernode == "" {
+		// 防御：前端未传节点时以当前默认节点编码，保证邀请码自足可用
+		data.Supernode = config.DefaultSupernode
+	}
 
 	return encodeInvite(data)
 }
@@ -364,6 +372,13 @@ func (a *App) ConnectWithInvite(code string) error {
 		return fmt.Errorf("邀请码中缺少中心节点")
 	}
 
+	// 旧邀请码可能内嵌已下线的中心节点地址；命中废弃名单时替换为当前默认，
+	// 使节点下线后已传播的邀请码仍可使用。
+	if normalized := config.NormalizeSupernode(data.Supernode); normalized != data.Supernode {
+		logger.Infof("邀请码中的中心节点已下线，替换为当前默认节点: %s", n2n.MaskSupernode(data.Supernode))
+		data.Supernode = normalized
+	}
+
 	deviceID := getStableDeviceID()
 	ip := generateStableIP(deviceID, data.Community)
 
@@ -379,6 +394,12 @@ func (a *App) ConnectWithInvite(code string) error {
 }
 
 func (a *App) Connect(community, ip, key, supernode string) error {
+	// 归一化中心节点：废弃节点替换为当前默认；空值跟随默认。
+	supernode = config.NormalizeSupernode(supernode)
+	if supernode == "" {
+		supernode = config.DefaultSupernode
+	}
+
 	a.mu.Lock()
 	a.state = StateConnecting
 	a.errMsg = ""
@@ -387,7 +408,12 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 	if key != "" {
 		a.cfg.Key = key
 	}
-	a.cfg.Supernode = supernode
+	// 生效值等于内置默认时存空，避免默认值固化导致未来节点迁移无法穿透
+	if supernode == config.DefaultSupernode {
+		a.cfg.Supernode = ""
+	} else {
+		a.cfg.Supernode = supernode
+	}
 	a.mu.Unlock()
 
 	if err := config.SaveCached(a.cfg); err != nil {
@@ -450,7 +476,11 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 	a.state = StateConnecting
 	a.mu.Unlock()
 
-	err = a.edge.Start(a.cfg)
+	// edge 需要生效值（supernode 已回落默认）；a.cfg 中默认节点存空以便
+	// 未来默认节点迁移时穿透，因此传副本给 edge，不影响已持久化的配置。
+	edgeCfg := *a.cfg
+	edgeCfg.Supernode = supernode
+	err = a.edge.Start(&edgeCfg)
 	if err != nil {
 		a.mu.Lock()
 		a.state = StateFailed
@@ -548,15 +578,20 @@ func (a *App) GetConnectionDetails() ConnectionDetails {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	supernode := a.cfg.Supernode
+	if supernode == "" {
+		supernode = config.DefaultSupernode // 空 = 跟随内置默认
+	}
+
 	details := ConnectionDetails{
 		Connected:  a.state == StateConnected,
 		VirtualIP:  a.cfg.IP,
-		NodeName:   n2n.LookupNodeName(a.cfg.Supernode),
+		NodeName:   n2n.LookupNodeName(supernode),
 		SponsorURL: config.AppSponsorURL,
 	}
 
 	if details.NodeName == "" {
-		details.NodeName = n2n.MaskSupernode(a.cfg.Supernode)
+		details.NodeName = n2n.MaskSupernode(supernode)
 	}
 
 	switch a.state {
@@ -724,8 +759,11 @@ func (a *App) SaveExpressSettings(roomAPIURL, nickname string) error {
 	if nickname == "" {
 		return fmt.Errorf("昵称不能为空")
 	}
-	if roomAPIURL == "" {
-		roomAPIURL = config.DefaultRoomAPIURL
+	// 归一化（含废弃入口迁移）；等于当前默认或为空时存空，
+	// 避免默认值固化——未来入口切换时老配置可自动跟随内置默认。
+	roomAPIURL = config.NormalizeRoomAPIURL(roomAPIURL)
+	if roomAPIURL == config.DefaultRoomAPIURL {
+		roomAPIURL = ""
 	}
 
 	a.mu.Lock()

@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"sogame/internal/logger"
 	"sogame/internal/security"
@@ -44,7 +45,7 @@ type Config struct {
 	NodeName  string `yaml:"node_name"`
 	Community string `yaml:"community"`
 	Key       string `yaml:"key"`
-	Supernode string `yaml:"supernode"`
+	Supernode string `yaml:"supernode,omitempty"` // 空 = 跟随内置默认 DefaultSupernode
 	IP        string `yaml:"ip"`
 	MgmtPort  int    `yaml:"-"` // n2n edge 管理端口（运行时生成，不持久化）
 
@@ -53,8 +54,8 @@ type Config struct {
 	Mode string `yaml:"mode"`
 
 	// 极速模式（express）配置：基于 netbird 实现
-	RoomAPIURL     string `yaml:"room_api_url"`     // Room API 服务地址（netbird 控制平面入口）
-	ExpressNickname string `yaml:"express_nickname"` // 极速模式下的展示昵称
+	RoomAPIURL     string `yaml:"room_api_url,omitempty"` // Room API 服务地址；空 = 跟随内置默认 DefaultRoomAPIURL
+	ExpressNickname string `yaml:"express_nickname"`      // 极速模式下的展示昵称
 }
 
 // encryptor 全局加密器
@@ -89,12 +90,12 @@ func DefaultConfig() *Config {
 		NodeName:  "my-node",
 		Community: generateRandomCommunity(),
 		Key:       "",
-		Supernode: "8.148.244.159:10090",
+		Supernode: "", // 空 = 跟随 DefaultSupernode；不落盘以便默认节点迁移时自动穿透
 		IP:        "10.10.10.10",
 		Mode:      "classic",
 
-		// 极速模式默认值：Room API 指向 sogame-netbird 部署的服务
-		RoomAPIURL: DefaultRoomAPIURL,
+		// 极速模式默认值：空 = 跟随 DefaultRoomAPIURL，不落盘
+		RoomAPIURL: "",
 	}
 }
 
@@ -143,6 +144,7 @@ func LoadOrCreate() (*Config, error) {
 		backupCfg, backupErr := RestoreFromBackup()
 		if backupErr == nil {
 			logger.Infof("successfully restored config from backup")
+			migrateAndPersist(backupCfg)
 			return backupCfg, nil
 		}
 		// 备份也失败，创建默认配置
@@ -179,6 +181,7 @@ func LoadOrCreate() (*Config, error) {
 		backupCfg, backupErr := RestoreFromBackup()
 		if backupErr == nil {
 			logger.Infof("successfully restored config from backup")
+			migrateAndPersist(backupCfg)
 			return backupCfg, nil
 		}
 		// 备份也失败，创建默认配置
@@ -190,6 +193,7 @@ func LoadOrCreate() (*Config, error) {
 		return defaultCfg, fmt.Errorf("config invalid, restored to default config: %w", err)
 	}
 
+	migrateAndPersist(&cfg)
 	return &cfg, nil
 }
 
@@ -270,8 +274,11 @@ func (c *Config) Validate() error {
 	if err := ValidateKey(c.Key); err != nil {
 		return fmt.Errorf("invalid key: %w", err)
 	}
-	if err := ValidateSupernode(c.Supernode); err != nil {
-		return fmt.Errorf("invalid supernode: %w", err)
+	// Supernode 允许为空（空 = 跟随内置默认 DefaultSupernode）
+	if c.Supernode != "" {
+		if err := ValidateSupernode(c.Supernode); err != nil {
+			return fmt.Errorf("invalid supernode: %w", err)
+		}
 	}
 	if err := ValidateIP(c.IP); err != nil {
 		return fmt.Errorf("invalid ip: %w", err)
@@ -407,4 +414,72 @@ func RestoreFromBackup() (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// ============================================================================
+// 废弃入口迁移
+// ============================================================================
+//
+// 背景：旧版本会把当时的默认 Room API 地址 / 默认中心节点固化进 config.yaml。
+// 入口下线后，这些残留的显式值优先于新的内置默认值，导致全量存量客户端
+// 请求落到无效路由。加载配置时按名单迁移为当前默认值即可无感修复。
+
+// NormalizeRoomAPIURL 归一化 Room API 地址：去除空白与尾随斜杠；
+// 命中废弃名单时返回当前默认值。空值原样返回（空 = 跟随内置默认）。
+func NormalizeRoomAPIURL(rawURL string) string {
+	value := strings.TrimSpace(rawURL)
+	if value == "" {
+		return ""
+	}
+	key := strings.ToLower(strings.TrimRight(value, "/"))
+	if deprecatedRoomAPIURLs[key] {
+		return DefaultRoomAPIURL
+	}
+	return value
+}
+
+// NormalizeSupernode 归一化中心节点地址：去除空白并统一小写；
+// 命中废弃名单时返回当前默认节点。空值原样返回（空 = 跟随内置默认）。
+// 邀请码中的节点地址也经此函数处理，使旧邀请码在节点下线后仍可用。
+func NormalizeSupernode(address string) string {
+	value := strings.TrimSpace(address)
+	if value == "" {
+		return ""
+	}
+	key := strings.ToLower(value)
+	if deprecatedSupernodes[key] {
+		return DefaultSupernode
+	}
+	return value
+}
+
+// MigrateDeprecatedEndpoints 将配置中已废弃的 Room API 地址 / 中心节点
+// 迁移为当前内置默认值，返回是否有字段被修改。幂等：值已等于当前默认值
+// 时不视为修改（即便该值仍在废弃名单中——例如名单先于默认值切换发版）。
+func MigrateDeprecatedEndpoints(cfg *Config) bool {
+	if cfg == nil {
+		return false
+	}
+	changed := false
+	if key := strings.ToLower(strings.TrimRight(strings.TrimSpace(cfg.RoomAPIURL), "/")); deprecatedRoomAPIURLs[key] && cfg.RoomAPIURL != DefaultRoomAPIURL {
+		logger.Infof("migrating deprecated room_api_url to current default")
+		cfg.RoomAPIURL = DefaultRoomAPIURL
+		changed = true
+	}
+	if key := strings.ToLower(strings.TrimSpace(cfg.Supernode)); deprecatedSupernodes[key] && cfg.Supernode != DefaultSupernode {
+		logger.Infof("migrating deprecated supernode to current default")
+		cfg.Supernode = DefaultSupernode
+		changed = true
+	}
+	return changed
+}
+
+// migrateAndPersist 对已加载的配置执行废弃入口迁移；有变更时立即落盘
+// （Save 自带 .bak 备份，迁移可回滚）。落盘失败仅记日志，不阻断启动。
+func migrateAndPersist(cfg *Config) {
+	if MigrateDeprecatedEndpoints(cfg) {
+		if err := Save(cfg); err != nil {
+			logger.Warnf("failed to persist migrated config: %v", err)
+		}
+	}
 }

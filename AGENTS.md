@@ -153,11 +153,23 @@ go run ./tools/room-api-mock/main.go   # 监听 127.0.0.1:9099，MOCK_RELAY_ENAB
 字段：`mode`（classic/express，空=classic）、`room_api_url`、`express_nickname`、
 `node_name`、`community`、`key`（AES 加密落盘）、`supernode`、`ip`。
 
+**入口字段的空值语义与废弃迁移（2026-09-25 起）：**
+`room_api_url` 与 `supernode` 以空值表示"跟随内置默认"（`omitempty`，默认值不落盘），
+消费点统一在使用处回落到 `DefaultRoomAPIURL` / `DefaultSupernode`。
+历史版本会把当时的默认值固化落盘，入口下线后残留值会导致全量报错（2026-09-24
+明文 IP 下线事故的根因）。`config.MigrateDeprecatedEndpoints` 在 `LoadOrCreate`
+所有加载路径（含 `.bak` 恢复）上把废弃名单中的旧值迁移为当前默认值并落盘；
+`config.NormalizeSupernode` 同时应用于邀请码解码，使内嵌已下线节点的旧邀请码仍可用。
+废弃名单在 `internal/config/app_config.go`（`deprecatedRoomAPIURLs` /
+`deprecatedSupernodes`），**下线任何入口/节点时必须：改默认常量 + 把旧值加入名单 +
+发版**，三步缺一不可。
+
 内置常量（`internal/config/app_config.go`）：
 
 | 常量 | 当前值 | 说明 |
 |---|---|---|
 | `DefaultRoomAPIURL` | `http://123.56.254.224` | 生产 Room API（**目前为明文 HTTP，TLS 化为已知待办**） |
+| `DefaultSupernode` | `8.148.244.159:10090` | 经典模式默认中心节点（节点表见 `internal/n2n/edge.go` knownNodes） |
 | `UpdateURL` | `https://virdy.cn/sogame/update.json` | 热更新 manifest |
 | `STUNServerA` / `STUNServerB` | `stun.virdy.cn:3478` / `stun.l.google.com:19302` | NAT 探测 |
 

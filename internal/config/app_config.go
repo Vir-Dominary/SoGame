@@ -37,4 +37,24 @@ const (
 	// 注意：此处必须是所有客户端都能访问到的同一服务端，
 	// 否则不同机器创建/加入的房间互不可见。
 	DefaultRoomAPIURL = "https://virdy.cn"
+
+	// DefaultSupernode 是经典模式（n2n）的默认中心节点地址。
+	// 配置文件中 supernode 为空时表示跟随此内置默认值，
+	// 因此未来默认节点迁移时未显式选择过节点的客户端可自动跟随。
+	DefaultSupernode = "8.148.244.159:10090"
 )
+
+// deprecatedRoomAPIURLs 是已下线的 Room API 入口名单（归一化后的小写地址）。
+// 旧版本会把当时的默认值固化进 config.yaml，入口下线后这些残留值会导致
+// 请求落到无效路由；LoadOrCreate 加载时会将名单中的值迁移为当前默认值
+// （见 MigrateDeprecatedEndpoints）。下线新入口时只需在此追加地址并发版。
+var deprecatedRoomAPIURLs = map[string]bool{
+	"http://123.56.254.224": true, // 明文 IP 入口，2026-09-24 下线
+	"http://virdy.cn":       true,
+	"https://virdy.cn":      true, // virdy.cn 无 /rooms 路由（SPA fallback 返回 HTML）
+}
+
+// deprecatedSupernodes 是已下线的经典模式中心节点名单（host:port，小写）。
+// 当前为空：尚无节点退役。节点下线时在此追加地址，存量配置与旧邀请码
+// 中的该地址会被自动替换为 DefaultSupernode。
+var deprecatedSupernodes = map[string]bool{}
