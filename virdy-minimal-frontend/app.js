@@ -2,13 +2,13 @@
 // 发布配置 —— 每次发布新版本时同步修改本段即可
 // ============================================================
 const RELEASE = {
-  version: "2.0",
+  version: "2.1",
   // 安装包在服务器上的地址（相对于站点根路径；经 traefik /Download 路由）
-  windowsUrl: "/Download/SoGame-Setup-2.0.exe",
-  // 安装包 SHA256（构建完成后用 scripts\build-all.ps1 产物计算：
-  // (Get-FileHash .\installer\output\SoGame-Setup-2.0.exe -Algorithm SHA256).Hash.ToLower()）
-  // 替换服务器上的安装包时必须同步更新此值！
-  sha256: "c855bbb0477c512d89a91d83317e0c70a2875c3c603ee909416168e61299aa29",
+  windowsUrl: "/Download/SoGame-Setup-2.1.exe",
+  // 安装包 SHA256（构建完成后由 installer\build-installer.ps1 自动输出；
+  // 替换服务器上的安装包时必须同步更新此值！）
+  // TODO: 运行 .\installer\build-installer.ps1 后将输出的 sha256 填入此处
+  sha256: "",
 };
 
 const SITE = {
