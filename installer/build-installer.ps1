@@ -29,6 +29,18 @@
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path "$PSScriptRoot/.."
 
+# ---- 自动补编译 sogame-helper.exe（纯 Go 产物，wails build -clean 会清掉它） ----
+if (-not (Test-Path "$root/build/bin/sogame-helper.exe")) {
+    Write-Host "==> sogame-helper.exe 缺失，自动编译..." -ForegroundColor Yellow
+    Push-Location $root
+    try {
+        go build -trimpath -ldflags "-s -w" -o "$root/build/bin/sogame-helper.exe" ./cmd/sogame-helper/
+        if ($LASTEXITCODE -ne 0) { throw "sogame-helper.exe 编译失败" }
+    } finally {
+        Pop-Location
+    }
+}
+
 # ---- 预检：安装包引用的全部源文件必须存在，缺一即失败 ----
 $required = @(
     @{ Path = "$root/build/bin/SoGame.exe";                          Why = "主程序（先运行 scripts\build-all.ps1）" }
