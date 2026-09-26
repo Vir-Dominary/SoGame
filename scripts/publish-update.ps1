@@ -87,6 +87,14 @@ if ($LASTEXITCODE -ne 0) { throw "sogame-helper.exe build failed" }
 
 # --- 4. 打包 zip ---
 Write-Host "[4/5] Packaging zip..." -ForegroundColor Yellow
+
+# 预检：zip 引用的文件必须齐全（edge.exe 由 scripts\build-all.ps1 拷贝到 build\bin）
+foreach ($f in @("SoGame.exe", "sogame-helper.exe", "edge.exe")) {
+    if (-not (Test-Path (Join-Path $buildDir $f))) {
+        throw "缺少 $buildDir\$f —— 请先运行 scripts\build-all.ps1"
+    }
+}
+
 $zipContent = @(
     "$buildDir/SoGame.exe",
     "$buildDir/sogame-helper.exe",
@@ -127,9 +135,9 @@ $updateJson | Out-File -Encoding utf8 -NoNewline $jsonPath
 
 Write-Host "`n=== Publish Complete ===" -ForegroundColor Green
 Write-Host ""
-Write-Host "Files to upload to virdy.cn:"
-Write-Host "  1. $zipName      -> https://virdy.cn/sogame/$zipName"
-Write-Host "  2. update.json   -> https://virdy.cn/sogame/update.json"
-Write-Host "  3. $zipName.sha256 -> https://virdy.cn/sogame/$zipName.sha256 (optional)"
+Write-Host "Files to upload (sogame-downloads 容器, 宿主目录 /opt/sogame/downloads/sogame/):"
+Write-Host "  scp $zipName sogame-server:/opt/sogame/downloads/sogame/   # https://virdy.cn/sogame/$zipName"
+Write-Host "  scp update.json sogame-server:/opt/sogame/downloads/sogame/ # https://virdy.cn/sogame/update.json"
+Write-Host "  (可选) scp $zipName.sha256 sogame-server:/opt/sogame/downloads/sogame/"
 Write-Host ""
 Write-Host "Local files are in: $publishDir"

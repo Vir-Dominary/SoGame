@@ -17,7 +17,11 @@
 ; along with SoGame. If not, see <https://www.gnu.org/licenses/>.
 
 #define MyAppName "SoGame"
-#define MyAppVersion "2.0"
+; 版本号单一事实源是 internal/config/app_config.go 的 AppVersion；
+; build-installer.ps1 会解析该值并通过 ISCC /DMyAppVersion=<ver> 覆盖此默认值。
+#ifndef MyAppVersion
+  #define MyAppVersion "2.1"
+#endif
 #define MyAppPublisher "vir_dominary"
 #define MyAppExeName "SoGame.exe"
 #define NetBirdMSI "netbird_installer_0.74.7_windows_amd64.msi"
