@@ -7,8 +7,7 @@ const RELEASE = {
   windowsUrl: "/Download/SoGame-Setup-2.1.exe",
   // 安装包 SHA256（构建完成后由 installer\build-installer.ps1 自动输出；
   // 替换服务器上的安装包时必须同步更新此值！）
-  // TODO: 运行 .\installer\build-installer.ps1 后将输出的 sha256 填入此处
-  sha256: "",
+  sha256: "53823f4009eda43d1b78baf386efeda47fd772119ab355db30fadcfebb01288e",
 };
 
 const SITE = {
