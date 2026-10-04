@@ -247,6 +247,7 @@ Wintun MIT、Go/npm 依赖各自许可证）。详见 NOTICE、TRADEMARK.md、TH
 | `deploy/DEPLOY.md` | 热更新与 room-api 部署运维 |
 | `wireguard/README.md` | 极速模式叙述性介绍（与本文档互补，以本文档为准） |
 | `docs/TAP_*.md` | 经典模式 TAP 适配器测试用例与回归记录 |
+| `docs/CODE_REVIEW_*.md` | 分支代码评审报告（按评审日期与分支命名） |
 | `internal/netbird/rpc/README.md` | daemon.proto 生成代码说明 |
 | `THIRD_PARTY_LICENSES/` | 第三方组件许可证 |
 
