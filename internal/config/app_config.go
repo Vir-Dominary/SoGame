@@ -18,7 +18,7 @@
 
 package config
 
-var AppVersion = "2.0"
+var AppVersion = "2.1"
 
 const (
 	AppName        = "SoGame"

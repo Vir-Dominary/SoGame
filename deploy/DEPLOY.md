@@ -27,45 +27,50 @@ SoGame 客户端的热更新功能由以下组件构成：
 
 ## 首次部署（服务器端）
 
-### 1. 创建目录
+### 1. 实际部署形态（123.56.254.224 已配置）
 
-```bash
-mkdir -p /var/www/sogame/
+更新服务由 **sogame-downloads 容器**（nginx，挂载宿主 `/opt/sogame/downloads/`）提供，
+traefik 路由 `(Host(\`virdy.cn\`) || Host(\`www.virdy.cn\`)) && PathPrefix(\`/sogame\`)`
+将 `https://virdy.cn/sogame/*` 转发到容器内 `sogame/` 子目录。
+
+对应配置（`/opt/sogame/compose/docker-compose.download.yml` 的 labels）：
+
+```yaml
+- traefik.http.routers.sogame-updates.rule=(Host(`virdy.cn`) || Host(`www.virdy.cn`)) && PathPrefix(`/sogame`)
+- traefik.http.routers.sogame-updates.entrypoints=web
+- traefik.http.routers.sogame-updates.service=sogame-downloads
+- traefik.http.routers.sogame-updates.priority=200
+- traefik.http.routers.sogame-updates-https.rule=(Host(`virdy.cn`) || Host(`www.virdy.cn`)) && PathPrefix(`/sogame`)
+- traefik.http.routers.sogame-updates-https.entrypoints=websecure
+- traefik.http.routers.sogame-updates-https.tls.certresolver=le
+- traefik.http.routers.sogame-updates-https.service=sogame-downloads
+- traefik.http.routers.sogame-updates-https.priority=200
 ```
 
-### 2. 配置 Nginx
+更新文件统一存放于宿主 `/opt/sogame/downloads/sogame/`（容器内 `/usr/share/nginx/html/sogame/`）。
+nginx 侧全局 `Cache-Control: no-store`，保证客户端总拿到最新 update.json。
 
-将 `deploy/nginx-sogame.conf` 中的 `location /sogame/` 块添加到 virdy.cn 的 Nginx server block 中：
+> `deploy/nginx-sogame.conf` 是"独立 nginx 部署"（无容器/traefik 环境）的参考片段，
+> 当前生产不使用；生产以本节容器方案为准。
 
-```bash
-# 复制配置片段到 Nginx 配置
-cat deploy/nginx-sogame.conf >> /etc/nginx/sites-available/virdy.cn
-
-# 测试配置并重载
-nginx -t && nginx -s reload
-```
-
-### 3. 验证
+### 2. 验证
 
 ```bash
 curl https://virdy.cn/sogame/update.json
 ```
 
-如果返回 JSON 内容（而非 404），说明配置生效。
+如果返回 JSON 内容（而非 404 或 HTML 页面），说明配置生效。
 
-### 4. 上传初始版本
+### 3. 上传初始版本
 
-```bash
+```powershell
 # 在本地编译并打包
-cd D:\SoGame\SoGame
 .\scripts\publish-update.ps1 -Version "2.1" -ReleaseNotes "首个热更新版本"
 
-# 上传 publish/ 目录下的文件到服务器
-scp publish/SoGame-windows-amd64.zip root@virdy.cn:/var/www/sogame/
-scp publish/update.json root@virdy.cn:/var/www/sogame/
+# 上传 publish/ 目录下的文件到服务器（注意: sogame 子目录）
+scp publish/SoGame-windows-amd64.zip sogame-server:/opt/sogame/downloads/sogame/
+scp publish/update.json sogame-server:/opt/sogame/downloads/sogame/
 ```
-
-如果 SSH 不可用，也可以通过 FTP 面板或宝塔面板上传文件到 `/var/www/sogame/`。
 
 ## 每次发布新版本
 
@@ -74,9 +79,13 @@ scp publish/update.json root@virdy.cn:/var/www/sogame/
 .\scripts\publish-update.ps1 -Version "2.2" -ReleaseNotes "修复了XXX问题"
 
 # 2. 上传 publish/ 下的文件到服务器（覆盖旧文件）
-scp publish/SoGame-windows-amd64.zip root@virdy.cn:/var/www/sogame/
-scp publish/update.json root@virdy.cn:/var/www/sogame/
+scp publish/SoGame-windows-amd64.zip sogame-server:/opt/sogame/downloads/sogame/
+scp publish/update.json sogame-server:/opt/sogame/downloads/sogame/
 ```
+
+安装包（新用户）发布见 `installer\build-installer.ps1` 的输出提示：
+上传 `installer\output\SoGame-Setup-<ver>.exe` 到 `/opt/sogame/downloads/`，
+并更新下载页（feature/web 分支 `virdy-minimal-frontend/app.js` 的 RELEASE 常量）。
 
 ## 文件说明
 
