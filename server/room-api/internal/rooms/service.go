@@ -275,6 +275,15 @@ func (s *Service) Reconcile(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		if room.Status == "active" {
+			// 建房其实已完整成功（Create 尾部 SaveOperation/Seal 失败留下的
+			// "active 房间 + creating operation" 残留）：只把 operation 标记为
+			// error，绝不能删除仍在服役的 NetBird 资源。
+			if err := s.store.SaveOperation(ctx, operation.IdempotencyKey, nil, "error"); err != nil {
+				return err
+			}
+			continue
+		}
 		if room.PolicyID != "" {
 			_ = s.nb.DeletePolicy(ctx, room.PolicyID)
 		}
@@ -399,6 +408,9 @@ func (s *Service) Close(ctx context.Context, code, ownerToken string) error {
 	if room.Status == "closed" {
 		return nil // 幂等
 	}
+	// status == "closing"（并发 Close 或看门狗正在回收同一房间）：继续走
+	// teardownRoom——其 BeginClosing CAS 会失败并幂等返回成功，天然去重，
+	// 不会重复删除，更不会把已关闭房间复活。
 	if err := verifyOwnerToken(room, ownerToken); err != nil {
 		return err
 	}
@@ -500,23 +512,30 @@ func (s *Service) sweepOwnerOffline(ctx context.Context, offlineAfter time.Durat
 	wg.Wait()
 }
 
-// teardownRoom 执行实际的资源回收。任一步失败会把状态还原回 active（允许重试），
-// 全部成功才进入 closed。NetBird 侧的删除动作天然幂等，重复执行安全。
+// teardownRoom 执行实际的资源回收。先经 BeginClosing 做状态 CAS（仅 active→closing）：
+// CAS 失败说明房间已被并发 Close/看门狗关闭，视为幂等成功直接返回，
+// 杜绝"看门狗快照滞后于房主 Close"把已关闭房间复活为 active 的竞态。
+// 删除类调用把 NetBird 404 视为成功（资源可能已被管理员在 dashboard 手动删除），
+// 重复执行安全；其余任一步失败会把状态还原回 active（允许重试），全部成功才进入 closed。
 func (s *Service) teardownRoom(ctx context.Context, room store.Room, reason string) error {
-	if err := s.store.SetStatus(ctx, room.ID, "closing", ""); err != nil {
+	acquired, err := s.store.BeginClosing(ctx, room.ID)
+	if err != nil {
 		return err
+	}
+	if !acquired {
+		return nil
 	}
 	var failures []string
 	if room.PolicyID != "" {
-		if err := s.nb.DeletePolicy(ctx, room.PolicyID); err != nil {
+		if err := s.nb.DeletePolicy(ctx, room.PolicyID); err != nil && !errors.Is(err, netbird.ErrNotFound) {
 			failures = append(failures, "delete policy: "+err.Error())
 		}
 	}
 	if room.SetupKeyID != "" {
-		if err := s.nb.RevokeSetupKey(ctx, room.SetupKeyID, []string{room.GroupID}); err != nil {
+		if err := s.nb.RevokeSetupKey(ctx, room.SetupKeyID, []string{room.GroupID}); err != nil && !errors.Is(err, netbird.ErrNotFound) {
 			failures = append(failures, "revoke setup key: "+err.Error())
 		}
-		if err := s.nb.DeleteSetupKey(ctx, room.SetupKeyID); err != nil {
+		if err := s.nb.DeleteSetupKey(ctx, room.SetupKeyID); err != nil && !errors.Is(err, netbird.ErrNotFound) {
 			failures = append(failures, "delete setup key: "+err.Error())
 		}
 	}
@@ -551,7 +570,7 @@ func (s *Service) teardownRoom(ctx context.Context, room store.Room, reason stri
 				audit.Event("room_close_peer_kick_warn", map[string]any{"room_id": room.ID, "group_id": room.GroupID, "kicked_count": len(kicked)})
 			}
 		}
-		if err := s.nb.DeleteGroup(ctx, room.GroupID); err != nil {
+		if err := s.nb.DeleteGroup(ctx, room.GroupID); err != nil && !errors.Is(err, netbird.ErrNotFound) {
 			failures = append(failures, "delete group: "+err.Error())
 		}
 	}
@@ -599,11 +618,11 @@ func (s *Service) Disable(ctx context.Context, code string) error {
 	if room.Status == "disabled" {
 		return nil
 	}
-	if err := s.nb.RevokeSetupKey(ctx, room.SetupKeyID, []string{room.GroupID}); err != nil {
+	if err := s.nb.RevokeSetupKey(ctx, room.SetupKeyID, []string{room.GroupID}); err != nil && !errors.Is(err, netbird.ErrNotFound) {
 		return err
 	}
 	if room.PolicyID != "" {
-		if err := s.nb.DeletePolicy(ctx, room.PolicyID); err != nil {
+		if err := s.nb.DeletePolicy(ctx, room.PolicyID); err != nil && !errors.Is(err, netbird.ErrNotFound) {
 			return err
 		}
 	}

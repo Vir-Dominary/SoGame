@@ -645,11 +645,20 @@ func (a *App) PerformUpdate(downloadURL, sha256sum string) error {
 	}
 	exe, err := os.Executable()
 	if err != nil {
+		updater.CleanupTemp(zipPath, extractDir)
 		return err
 	}
-	cmd := exec.Command(exe, "--update-apply", filepath.Dir(exe))
-	cmd.Dir = extractDir
+	// 必须执行解压目录中的新版本 exe：runUpdateApply 以 os.Args[0] 所在目录
+	// 为复制源，只有源是解压目录，新文件才会真正复制进安装目录。
+	// （历史上这里直接执行安装目录中的旧 exe，导致源目录==安装目录，更新静默失效。）
+	newExe := filepath.Join(extractDir, "SoGame.exe")
+	if _, err := os.Stat(newExe); err != nil {
+		updater.CleanupTemp(zipPath, extractDir)
+		return fmt.Errorf("更新包缺少主程序 SoGame.exe: %w", err)
+	}
+	cmd := exec.Command(newExe, "--update-apply", filepath.Dir(exe))
 	if err := cmd.Start(); err != nil {
+		updater.CleanupTemp(zipPath, extractDir)
 		return err
 	}
 	os.Exit(0)

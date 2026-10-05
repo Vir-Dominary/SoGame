@@ -21,6 +21,7 @@ package httpapi
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -57,5 +58,33 @@ func TestClientIPFallsBackToRemoteAddrWhenNoForwarded(t *testing.T) {
 
 	if got := s.clientIP(req); got != "198.51.100.5" {
 		t.Fatalf("must fall back to RemoteAddr when no X-Forwarded-For, got %q", got)
+	}
+}
+
+func TestPathTemplateRedactsRoomCode(t *testing.T) {
+	cases := map[string]string{
+		"/healthz":                        "/healthz",
+		"/rooms/healthz":                  "/rooms/healthz",
+		"/rooms":                          "/rooms",
+		"/rooms/join":                     "/rooms/join",
+		"/rooms/ABCD-1234-WXYZ/peers":     "/rooms/:code/peers",
+		"/rooms/ABCD-1234-WXYZ/close":     "/rooms/:code/close",
+		"/rooms/ABCD-1234-WXYZ/heartbeat": "/rooms/:code/heartbeat",
+		"/rooms/ABCD-1234-WXYZ/disable":   "/rooms/:code/disable",
+		"/rooms/ABCD-1234-WXYZ":           "/rooms/*",
+		"/rooms/":                         "/rooms/*",
+		"/unknown/path":                   "other",
+	}
+	for path, want := range cases {
+		if got := pathTemplate(path); got != want {
+			t.Errorf("pathTemplate(%q) = %q, want %q", path, got, want)
+		}
+	}
+	// 任何含房间码形态的路径都不得原样透出。
+	code := "ABCD-1234-WXYZ"
+	for path := range cases {
+		if got := pathTemplate(path); strings.Contains(got, code) {
+			t.Errorf("pathTemplate(%q) = %q 泄露了房间码", path, got)
+		}
 	}
 }

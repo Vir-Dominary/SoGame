@@ -72,7 +72,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		audit.Event("http_request", map[string]any{
 			"method":      r.Method,
-			"path":        r.URL.Path,
+			"path":        pathTemplate(r.URL.Path),
 			"status":      status.status,
 			"duration_ms": time.Since(started).Milliseconds(),
 			"remote":      s.clientIP(r),
@@ -325,6 +325,24 @@ func (s *Server) clientIP(r *http.Request) string {
 type statusWriter struct {
 	http.ResponseWriter
 	status int
+}
+
+// pathTemplate 把请求路径归一化为路由模板（如 /rooms/:code/peers）。
+// 安全红线：/rooms/{code}/... 路径段是明文房间码（即入会凭证），
+// 绝不允许经审计日志落盘——任何能读日志的人即可 Join 任意活跃房间。
+func pathTemplate(path string) string {
+	switch path {
+	case "/healthz", "/rooms/healthz", "/rooms", "/rooms/join":
+		return path
+	}
+	if strings.HasPrefix(path, "/rooms/") {
+		parts := strings.Split(strings.Trim(path, "/"), "/")
+		if len(parts) == 3 && parts[1] != "" {
+			return "/rooms/:code/" + parts[2]
+		}
+		return "/rooms/*"
+	}
+	return "other"
 }
 
 func (w *statusWriter) WriteHeader(status int) {

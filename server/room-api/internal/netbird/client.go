@@ -22,12 +22,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 )
+
+// ErrNotFound 表示 NetBird 管理 API 返回 404：目标资源已不存在
+//（可能已被管理员在 dashboard 手动删除）。删除类调用的调用方可用
+// errors.Is 判定并把它视为幂等成功。
+var ErrNotFound = errors.New("netbird resource not found")
 
 type Client struct {
 	baseURL string
@@ -157,6 +163,10 @@ func (c *Client) do(ctx context.Context, method, path string, input, output any)
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("netbird API %s %s: %w", method, path, ErrNotFound)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, 2048))
 		return fmt.Errorf("netbird API %s %s returned HTTP %d", method, path, resp.StatusCode)

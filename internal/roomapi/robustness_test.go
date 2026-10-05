@@ -23,6 +23,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -132,5 +134,27 @@ func TestTransportErrorUnwrapsCause(t *testing.T) {
 	transport := &TransportError{cause: cause}
 	if !errors.Is(transport, cause) {
 		t.Fatal("TransportError must unwrap its cause")
+	}
+}
+
+// 安全红线回归：TransportError.Error() 不得内嵌 cause 文本——
+// cause 多为 *url.Error，含完整 URL（路径携带明文房间码），
+// 会经 session 心跳失败 WARN 等路径落盘。
+func TestTransportErrorTextDoesNotLeakURL(t *testing.T) {
+	cause := &url.Error{
+		Op:  "Post",
+		URL: "https://legengen.top/rooms/ABCD-1234-WXYZ/heartbeat",
+		Err: errors.New("dial tcp timeout"),
+	}
+	transport := &TransportError{cause: cause}
+	got := transport.Error()
+	for _, leaked := range []string{"ABCD-1234-WXYZ", "heartbeat", "legengen.top"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("TransportError.Error() 泄露了 %q: %s", leaked, got)
+		}
+	}
+	// Unwrap 仍是获取根因的正规通道。
+	if !errors.Is(transport, cause) {
+		t.Fatal("固定文案后 Unwrap 必须仍可用")
 	}
 }

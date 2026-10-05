@@ -62,3 +62,34 @@ func TestAnonymizeRemovesNetworkAndPeerIdentifiers(t *testing.T) {
 		}
 	}
 }
+
+func TestRedactRemovesOwnerTokenAndPAT(t *testing.T) {
+	cases := []string{
+		"owner_token=owt-8f3k2j9d0s1a",
+		"owner-token: owt-8f3k2j9d0s1a",
+		"Owner Token owt-8f3k2j9d0s1a",
+		"pat=nbp_secretvalue123",
+		"PAT: nbp_secretvalue123",
+		"admin_token=adm-9x8y7z",
+	}
+	for _, c := range cases {
+		got := Redact(c)
+		for _, secret := range []string{"owt-8f3k2j9d0s1a", "nbp_secretvalue123", "adm-9x8y7z"} {
+			if strings.Contains(got, secret) {
+				t.Errorf("Redact(%q) = %q, 仍含敏感值 %q", c, got, secret)
+			}
+		}
+		if !strings.Contains(got, "[REDACTED]") {
+			t.Errorf("Redact(%q) = %q, 缺少脱敏标记", c, got)
+		}
+	}
+}
+
+func TestRedactRemovesRoomCodeInURLText(t *testing.T) {
+	// *url.Error 文本形态：日志/错误拼接中最常见的房间码泄漏通道。
+	value := `Post "https://legengen.top/rooms/ABCD-1234-WXYZ/heartbeat": dial tcp 1.2.3.4:443: i/o timeout`
+	got := Redact(value)
+	if strings.Contains(got, "ABCD-1234-WXYZ") {
+		t.Fatalf("URL 文本中的房间码未脱敏: %s", got)
+	}
+}

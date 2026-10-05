@@ -483,8 +483,10 @@ func (c *Client) logSuccess(method, path string, statusCode int) {
 // 创建/加入房间的失败是用户可直接感知的错误，记 WARN；
 // peers 轮询每 5 秒可能重试一次，记 DEBUG 避免日志刷屏。
 func (c *Client) logFailure(method, path, detail string) {
+	// path 与 detail 都过 Redact：detail 可能内嵌 *url.Error 文本
+	//（如 `Post "https://host/rooms/{code}/heartbeat": dial ...`），含明文房间码。
 	message := fmt.Sprintf("roomapi: %s %s://%s%s: %s",
-		method, c.baseURL.Scheme, c.baseURL.Host, observability.Redact(path), detail)
+		method, c.baseURL.Scheme, c.baseURL.Host, observability.Redact(path), observability.Redact(detail))
 	if strings.Contains(path, "/peers") {
 		logger.Debugf("%s", message)
 		return
@@ -497,10 +499,10 @@ type TransportError struct {
 }
 
 func (e *TransportError) Error() string {
-	if e.cause == nil {
-		return "Room API is unavailable"
-	}
-	return "Room API is unavailable: " + e.cause.Error()
+	// 固定文案：cause 多为 *url.Error，其 Error() 含完整 URL（路径可能携带
+	// 明文房间码，如 /rooms/{code}/heartbeat），不得经 Error() 文本向上游传播
+	// （最终会落到 session 心跳失败 WARN 等日志）。根因经 Unwrap 暴露。
+	return "Room API is unavailable"
 }
 
 func (e *TransportError) Unwrap() error { return e.cause }

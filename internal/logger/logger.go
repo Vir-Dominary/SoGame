@@ -28,6 +28,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"sogame/internal/observability"
 )
 
 type LogLevel int
@@ -134,6 +136,10 @@ func (l *Logger) log(level LogLevel, msg string) {
 	if level < l.minLevel {
 		return
 	}
+
+	// 安全红线:房间码/令牌/密钥不得落盘。在最终写盘点统一脱敏,
+	// 把"调用点自觉"变为机制保证。
+	msg = observability.Redact(msg)
 
 	l.mu.Lock()
 	defer l.mu.Unlock()

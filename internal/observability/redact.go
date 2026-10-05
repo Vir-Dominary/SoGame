@@ -28,7 +28,7 @@ import (
 )
 
 var (
-	credentialAssignment = regexp.MustCompile(`(?i)(authorization|setup[-_ ]?key|room[-_ ]?code|admin[-_ ]?token|private[-_ ]?key|bearer)(\s*[:=]\s*|\s+)[^\s,;]+`)
+	credentialAssignment = regexp.MustCompile(`(?i)(authorization|setup[-_ ]?key|room[-_ ]?code|owner[-_ ]?token|admin[-_ ]?token|private[-_ ]?key|bearer|pat)(\s*[:=]\s*|\s+)[^\s,;]+`)
 	urlCredentialPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@`)
 	roomCodePattern      = regexp.MustCompile(`(?i)\b[A-Z0-9]{4}(?:-[A-Z0-9]{4}){2}\b`)
 	setupKeyPattern      = regexp.MustCompile(`(?i)\b[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}\b`)
@@ -46,6 +46,7 @@ var sensitiveKeys = map[string]struct{}{
 	"setup_key":     {},
 	"roomcode":      {},
 	"room_code":     {},
+	"owner_token":   {},
 	"token":         {},
 	"privatekey":    {},
 	"private_key":   {},

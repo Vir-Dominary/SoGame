@@ -48,6 +48,9 @@ type fakeNetBird struct {
 	failDeletePeer bool
 	// failListPeers 为真时 ListPeers 一律失败,用于验证"无法确定成员在线必须硬失败"。
 	failListPeers bool
+	// notFoundOnDelete 为真时,删除/吊销类调用一律返回 netbird.ErrNotFound,
+	// 模拟"资源已被管理员在 NetBird dashboard 手动删除"。
+	notFoundOnDelete bool
 }
 
 func newFakeNetBird() *fakeNetBird {
@@ -79,6 +82,9 @@ func (f *fakeNetBird) CreateGroup(_ context.Context, name string) (netbird.Group
 }
 
 func (f *fakeNetBird) DeleteGroup(_ context.Context, id string) error {
+	if f.notFoundOnDelete {
+		return netbird.ErrNotFound
+	}
 	delete(f.groups, id)
 	f.deletedGroups = append(f.deletedGroups, id)
 	return nil
@@ -102,11 +108,17 @@ func (f *fakeNetBird) CreateSetupKey(_ context.Context, name, groupID string) (n
 }
 
 func (f *fakeNetBird) RevokeSetupKey(_ context.Context, id string, _ []string) error {
+	if f.notFoundOnDelete {
+		return netbird.ErrNotFound
+	}
 	f.revokedKeys = append(f.revokedKeys, id)
 	return nil
 }
 
 func (f *fakeNetBird) DeleteSetupKey(_ context.Context, id string) error {
+	if f.notFoundOnDelete {
+		return netbird.ErrNotFound
+	}
 	delete(f.keys, id)
 	f.deletedKeys = append(f.deletedKeys, id)
 	return nil
@@ -127,6 +139,9 @@ func (f *fakeNetBird) CreateRoomPolicy(_ context.Context, name, groupID string) 
 }
 
 func (f *fakeNetBird) DeletePolicy(_ context.Context, id string) error {
+	if f.notFoundOnDelete {
+		return netbird.ErrNotFound
+	}
 	delete(f.policies, id)
 	f.deletedPolicies = append(f.deletedPolicies, id)
 	return nil
@@ -375,5 +390,138 @@ func TestCloseFailsWhenPeerListingFails(t *testing.T) {
 	}
 	if room.Status != "active" {
 		t.Fatalf("room must stay active when peer listing fails, got %s", room.Status)
+	}
+}
+
+// B2 回归：看门狗持过期快照（房间状态还是 active 时的拷贝）执行回收时，
+// 房间已被并发 Close 关闭——BeginClosing CAS 必须幂等返回，
+// 绝不能把 closed 覆盖复活为 active（历史上的永久僵尸竞态）。
+func TestTeardownDoesNotResurrectClosedRoom(t *testing.T) {
+	service, database, _ := newTestService(t)
+	response, err := service.Create(context.Background(), "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// 看门狗快照：关闭前拍摄，状态为 active。
+	staleSnapshot, err := database.GetRoom(context.Background(), response.RoomID)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	// 房主并发 Close 成功，资源已删、状态已 closed。
+	if err := service.Close(context.Background(), response.RoomCode, response.OwnerToken); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	// 看门狗持过期快照执行回收：所有 NetBird 删除在真实环境会返回 404，
+	// CAS 必须在走到那一步之前就幂等退出。
+	if err := service.teardownRoom(context.Background(), staleSnapshot, "owner_offline"); err != nil {
+		t.Fatalf("stale teardown must be a no-op success: %v", err)
+	}
+	room, err := database.GetRoom(context.Background(), response.RoomID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if room.Status != "closed" {
+		t.Fatalf("closed room must NOT be resurrected, got %s", room.Status)
+	}
+}
+
+// B2 回归：NetBird 资源已被管理员在 dashboard 手动删除（404）时，
+// Close 仍应成功闭环为 closed，而不是被 404 卡住永远无法关闭。
+func TestCloseToleratesNetBirdNotFound(t *testing.T) {
+	service, database, fake := newTestService(t)
+	response, err := service.Create(context.Background(), "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	fake.notFoundOnDelete = true
+
+	if err := service.Close(context.Background(), response.RoomCode, response.OwnerToken); err != nil {
+		t.Fatalf("NetBird 404 must be treated as idempotent success: %v", err)
+	}
+	room, err := database.GetRoom(context.Background(), response.RoomID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if room.Status != "closed" {
+		t.Fatalf("room must reach closed despite 404s, got %s", room.Status)
+	}
+}
+
+// B3 回归：ListStaleActiveRooms 与看门狗保持同一兼容语义——
+// 从不心跳的房间（旧版客户端无心跳能力）不在启动回收之列，
+// 避免每次重启/发版批量误杀混部期间的正常房间。
+func TestListStaleActiveRoomsSkipsNeverHeartbeated(t *testing.T) {
+	_, database, _ := newTestService(t)
+	ctx := context.Background()
+	// 从未心跳的 legacy 房间（创建已超 30 分钟）。
+	if err := database.CreateRoom(ctx, store.Room{
+		ID: "legacy-never-heartbeat", CodeHash: []byte("hash-legacy"), CodeCiphertext: []byte("x"),
+		Status: "active", CreatedAt: time.Now().UTC().Add(-24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed legacy: %v", err)
+	}
+	// 心跳过但已超时的房间（应在回收之列）。
+	if err := database.CreateRoom(ctx, store.Room{
+		ID: "stale-heartbeat", CodeHash: []byte("hash-stale"), CodeCiphertext: []byte("y"),
+		Status: "active", CreatedAt: time.Now().UTC().Add(-24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed stale: %v", err)
+	}
+	if err := database.TouchOwnerHeartbeat(ctx, "stale-heartbeat", time.Now().UTC().Add(-time.Hour)); err != nil {
+		t.Fatalf("backdate heartbeat: %v", err)
+	}
+
+	before := time.Now().Add(-30 * time.Minute).UnixNano()
+	staleRooms, err := database.ListStaleActiveRooms(ctx, before)
+	if err != nil {
+		t.Fatalf("list stale: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, room := range staleRooms {
+		ids[room.ID] = true
+	}
+	if ids["legacy-never-heartbeat"] {
+		t.Fatal("从未心跳的 legacy 房间不得被启动回收选中")
+	}
+	if !ids["stale-heartbeat"] {
+		t.Fatal("心跳超时的房间应被启动回收选中")
+	}
+}
+
+// H10 回归：Create 尾部 SaveOperation/Seal 失败会留下"active 房间 + creating
+// operation"残留。Reconcile 遇到这种组合时只能把 operation 标记为 error，
+// 绝不能删除仍在服役的 NetBird 资源。
+func TestReconcileKeepsActiveRoomResources(t *testing.T) {
+	service, database, fake := newTestService(t)
+	ctx := context.Background()
+	response, err := service.Create(ctx, "ik-h10")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// 模拟 Create 尾部失败残留：房间已 active，operation 停留 creating。
+	if err := database.SaveOperation(ctx, "ik-h10", nil, "creating"); err != nil {
+		t.Fatalf("rewind operation: %v", err)
+	}
+
+	if err := service.Reconcile(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	room, err := database.GetRoom(ctx, response.RoomID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if room.Status != "active" {
+		t.Fatalf("active room must stay active, got %s", room.Status)
+	}
+	if len(fake.deletedGroups) != 0 || len(fake.deletedKeys) != 0 || len(fake.revokedKeys) != 0 || len(fake.deletedPolicies) != 0 {
+		t.Fatalf("Reconcile must NOT touch resources of an active room: %+v", fake)
+	}
+	operation, err := database.GetOperation(ctx, "ik-h10")
+	if err != nil {
+		t.Fatalf("load operation: %v", err)
+	}
+	if operation.Status != "error" {
+		t.Fatalf("stale creating operation must be marked error, got %s", operation.Status)
 	}
 }
