@@ -93,7 +93,11 @@ NoRoom → Enrolling → ControlPlaneConnected → WaitingForPeer → Connecting
 
 - Create 响应额外返回 `owner_token`（仅此一次下发，DPAPI 落盘）。
 - 房主每 60s 发送心跳（`ownerHeartbeatInterval`，`internal/session/service.go`）；
-  服务端对 30 分钟无心跳的房间执行回收（删除 Group/SetupKey/Policy 并禁用房间）。
+  服务端看门狗回收超过 `ROOM_API_OWNER_OFFLINE_AFTER`（默认 5m）无心跳的房间
+  （删除 Group/SetupKey/Policy 并禁用房间）。回收入口经 `store.BeginClosing` 状态 CAS
+  （仅 active→closing）防并发复活；NetBird 删除类调用容忍 404（`netbird.ErrNotFound`，
+  资源可能已被管理员在 dashboard 手动删除）。从不心跳的 legacy 房间（旧客户端无心跳
+  能力）不在回收之列，由客户端本地 24h 过期（`roomMaxAge`）兜底。
 - 房主可解散房间（Close，owner token 鉴权）；成员收到 `room_closed` 后自动清理本地状态。
 - 房主离线由服务端看门狗兜底；客户端另有身份自愈：进房必重置 daemon 身份，
   归属漂移/控制面死亡时自动以同一房间码重新 Join（`internal/session/repair.go`，
@@ -110,13 +114,13 @@ NoRoom → Enrolling → ControlPlaneConnected → WaitingForPeer → Connecting
 | `nbdaemon/` | NetBird MSI 安装/修复/移除：签名校验、UAC 提权、服务生命周期 |
 | `securestore/` | DPAPI 加密存储：房间码、owner token、房间元数据（room.json），原子替换 |
 | `natdetect/` | STUN NAT 类型探测（RFC 3489 简化版），给用户提供组网建议 |
-| `updater/` | 热更新：版本比较、zip 下载（SHA256 校验）、解压（ZipSlip 防护） |
+| `updater/` | 热更新：版本比较、zip 下载（强制 SHA256、大小上限）、解压（ZipSlip 防护、目标目录先清理且拒绝符号链接） |
 | `releasebuild/` | 嵌入 `netbird-release.json`（MSI URL/SHA256/ProductCode） |
 | `n2n/` | 经典模式 edge.exe 进程编排 |
 | `tap/` `nic/` | TAP 适配器安装/命名/等待；网卡查询 |
 | `config/` | 客户端配置（config.yaml）与内置常量（`app_config.go`） |
 | `observability/` | 日志脱敏（房间码/setup key/令牌/IP 模式） |
-| `logger/` `diagnostics/` `security/` `platform/` `poll/` | 日志、诊断打包、经典模式配置加密、平台依赖、轮询工具 |
+| `logger/` `diagnostics/` `security/` `platform/` `poll/` | 日志（写盘点统一强制 `observability.Redact`）、诊断打包、经典模式配置加密、平台依赖、轮询工具 |
 
 ## 5. 构建与测试
 
@@ -128,7 +132,8 @@ NoRoom → Enrolling → ControlPlaneConnected → WaitingForPeer → Connecting
 # 客户端测试（主 module）
 go test ./internal/...
 
-# Room API 测试（独立 module；当前尚无测试文件，改动服务端时应补充）
+# Room API 测试（独立 module。注意：rooms/store 等经 go-sqlite3 依赖 CGO，
+# 需 CGO_ENABLED=1 且系统装有 gcc（如 MinGW）；CGO_ENABLED=0 环境只能跑 httpapi 等纯 Go 包）
 cd server\room-api; go test ./...
 
 # 安装包（需 Inno Setup 6）
@@ -189,6 +194,8 @@ go run ./tools/room-api-mock/main.go   # 监听 127.0.0.1:9099，MOCK_RELAY_ENAB
 | `ROOM_API_PEER_RATE_PER_MINUTE` | 60 | per-IP 限流 |
 | `ROOM_API_MAX_BODY_BYTES` | 4096 | 请求体上限 |
 | `ROOM_API_PROVISION_CONCURRENCY` | 2 | 建房并发信号量 |
+| `ROOM_API_OWNER_OFFLINE_AFTER` | 5m | 房主无心跳多久后由看门狗回收房间（`<=0` 关闭看门狗） |
+| `ROOM_API_OWNER_SWEEP_INTERVAL` | 1m | 看门狗扫描间隔 |
 
 改配置方式：**改环境变量 → 重启 room-api → 新创建/加入的房间生效**（无热加载）。
 
@@ -207,7 +214,10 @@ go run ./tools/room-api-mock/main.go   # 监听 127.0.0.1:9099，MOCK_RELAY_ENAB
 
 **安全红线：**
 
-- 房间码、setup key、owner token、PAT 不得进入日志；日志输出统一过 `observability.Redact`。
+- 房间码、setup key、owner token、PAT 不得进入日志。`internal/logger` 在最终写盘点统一
+  强制 `observability.Redact`（机制保证，不依赖调用点自觉）；携带敏感值的 error 不得把
+  含 URL/参数的底层错误文本（如 `*url.Error`，路径可能含明文房间码）内嵌进 `Error()`，
+  根因一律走 `Unwrap`。服务端审计日志只记录路由模板（`/rooms/:code/peers`），不记录原始路径。
   `roomapi.SetupKey` 的 `String/Format/LogValue/MarshalJSON` 均返回 `[REDACTED]`，不要绕过。
 - 服务端 SQL 必须参数化；owner/admin token 比较必须用 `subtle.ConstantTimeCompare`。
 - MSI/更新包等外部产物必须先校验哈希与签名再执行；调用 `msiexec` 等系统程序用 System32 绝对路径。

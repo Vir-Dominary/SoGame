@@ -271,3 +271,26 @@
 
 - room-api 测试在本机跑不起来（go-sqlite3 经 goproxy 下载超时，CGO 依赖）。考虑到该模块含 CGO 依赖，建议在有网环境（或 CI）至少跑通一次 `cd server/room-api && go test ./...` 再合并。
 - 评审基线之后若分支有新提交，本文档结论不自动覆盖新增改动。
+
+---
+
+## 9. 修复状态跟踪（2026-10-05）
+
+以下评审项已在工作区修复并随本次提交入库（与修复提交同批验证）：
+
+| 评审项 | 修复内容 | 验证 |
+|---|---|---|
+| **B1** 热更新失效 | `PerformUpdate` 改为执行解压目录中的 `SoGame.exe`（启动前校验主程序存在）；`runUpdateApply` 增加源≠目标防御、轮询等待旧进程释放文件锁（60s 超时，替代盲等 5s）、关键文件（SoGame.exe/sogame-helper.exe/edge.exe）失败即中止不启动、结果落 `%TEMP%\sogame-update-apply.log` | `main_test.go` 4 用例，`go test ./...` 通过；**真实端到端更新流程仍建议发版前手工验证一次** |
+| **B2** teardown 复活已关闭房间 | `store.BeginClosing` 状态 CAS（`UPDATE ... WHERE status='active'`），CAS 失败幂等返回；`netbird.ErrNotFound` 类型化，删除类调用全部容忍 404；`Close` 对 `closing` 状态继续走 teardown 由 CAS 去重 | `close_test.go` 新增 2 回归用例（过期快照不复活、404 容忍） |
+| **B3** Reconcile 误杀 legacy 房间 | `ListStaleActiveRooms` 去掉"从未心跳"分支，与看门狗同一兼容语义；例外由客户端 24h 本地过期兜底 | `close_test.go` 新增 1 回归用例 |
+| **B4** 房间码进日志（双侧） | 服务端审计 `pathTemplate`（`/rooms/:code/peers`）；客户端 `logFailure` 的 detail 过 `Redact`、`TransportError.Error()` 固定文案（根因走 `Unwrap`）；`internal/logger` 写盘点统一强制 `Redact`；正则补 `owner[-_ ]?token|pat`、`sensitiveKeys` 补 `owner_token` | `logger_test.go`/`redact_test.go`/`robustness_test.go`/`server_test.go` 新增红线回归用例，客户端测试全通过 |
+| **H6** updater 空哈希放行 | manifest 缺 `sha256` 视为无效；`Download` 空哈希直接拒绝 | `updater_test.go` 2 用例 |
+| **H10** Reconcile 误删 active 房间 | `Reconcile` 处理 creating operation 时 `room.Status=='active'` 只标 operation 为 error，不动 NetBird 资源 | `close_test.go` 新增 1 回归用例 |
+| **C7** 解压目录清理/注入 | `Extract` 前 `RemoveAll` 且拒绝符号链接/junction 目标；下载 512MB、解压 1GB 硬上限；`ContentLength` 完整性校验 | `updater_test.go` ZipSlip/残留清理/符号链接 3 用例 |
+| **C8** 更新应用健壮性 | 见 B1 行（同一提交） | 同 B1 |
+
+**验证环境限制**：room-api 的 `rooms` 包测试（含本次 4 个新回归用例）依赖 go-sqlite3（CGO），本机 `CGO_ENABLED=0` 且无 gcc，**未能在本机执行**；`httpapi` 包（含 `pathTemplate` 测试）通过，`go build ./...` 与 `go vet` 干净。合并前请在装有 gcc（MinGW）的环境或 CI 以 `CGO_ENABLED=1` 跑通 `server/room-api` 全部测试。
+
+**同步更新的文档**：AGENTS.md（§3 房主机制修正"30 分钟"为 5m 默认值并补充 CAS/404/legacy 语义、§4 updater 与 logger 职责、§5 room-api 测试 CGO 说明、§6.2 补两个看门狗环境变量、§7 日志红线改为机制保证表述并补审计路由模板约定）、`server/room-api/README.md`（审计日志只记路由模板的安全说明）。
+
+**仍待处理**（评审后续批次，本次未动）：H1（NAT 探测误判）、H2（SetMode 互斥）、H3-H5（提权链：PowerShell PATH 解析/result 文件符号链接/helperSha256 空转——注意 `a2a34e2` 已改 helper 补编译逻辑，修复 H5 前先读该提交）、H7（XFF 首值）、H8/H9（Create 补偿与幂等 CAS）、H11（数据卷属主）、H12（对端超时判定）、其余中低级项。
