@@ -44,3 +44,6 @@ func NewWindowsExpressController(roomAPIBaseURL string) *ExpressController {
 
 // errExpressUnsupported 在非 Windows 平台上调用极速模式命令时返回。
 var errExpressUnsupported = errors.New("极速模式仅在 Windows 上可用")
+
+// reassembleExpress 非 Windows 平台无操作（极速模式不可用）。
+func reassembleExpress(*ExpressController, string) {}

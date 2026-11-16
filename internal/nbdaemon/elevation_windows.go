@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -143,26 +144,14 @@ func RequestInstallerElevation(helperPath string, action MSIAction, artifactPath
 	return launchElevation(helperPath, arguments, resultPath)
 }
 
-func RequestDaemonRemovalElevation(helperPath string, confirmed bool, logPath, resultPath string) error {
-	if !confirmed {
-		return ErrRemovalNotConfirmed
-	}
-	if !filepath.IsAbs(logPath) || !filepath.IsAbs(resultPath) {
-		return fmt.Errorf("elevated helper requires absolute paths")
-	}
-	if err := prepareElevation(helperPath); err != nil {
-		return err
-	}
-	arguments := []string{
-		"--action", string(MSIRemove),
-		"--log", logPath,
-		"--result", resultPath,
-	}
-	return launchElevation(helperPath, arguments, resultPath)
-}
-
 // awaitElevationResult 轮询提权辅助进程写入的结果文件,直到其出现、
 // 上下文取消或超时。返回 helper 报告的错误(如果有)。
+//
+// 防护要点（结果文件位于同用户可写目录）：
+//   - 拒绝跟随 reparse point（junction/symlink）读取,防止同用户进程预置
+//     链接把提权写入重定向到系统文件后借读取路径做二次利用；
+//   - 读取大小设上限,防止被预写的超大文件放大内存；
+//   - JSON 解析失败视为"helper 写入尚未完成",继续轮询而非立即失败。
 func awaitElevationResult(ctx context.Context, resultPath string) error {
 	timer := time.NewTimer(elevationResultTimeout)
 	defer timer.Stop()
@@ -175,16 +164,64 @@ func awaitElevationResult(ctx context.Context, resultPath string) error {
 		case <-timer.C:
 			return ErrElevationTimedOut
 		case <-ticker.C:
-			payload, err := os.ReadFile(resultPath)
-			if errors.Is(err, os.ErrNotExist) {
+			payload, err := readElevationResultFile(resultPath)
+			if errors.Is(err, os.ErrNotExist) || errors.Is(err, errElevationResultIncomplete) {
 				continue
 			}
 			if err != nil {
-				return fmt.Errorf("read elevation result: %w", err)
+				return err
 			}
-			return parseElevationResult(payload)
+			if err := parseElevationResult(payload); err != nil {
+				if errors.Is(err, errElevationResultIncomplete) {
+					continue
+				}
+				return err
+			}
+			return nil
 		}
 	}
+}
+
+var errElevationResultIncomplete = errors.New("elevation result not fully written")
+
+const elevationResultMaxBytes = 64 << 10
+
+// readElevationResultFile 读取结果文件：拒绝 reparse point,限制大小。
+func readElevationResultFile(resultPath string) ([]byte, error) {
+	info, err := os.Lstat(resultPath)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("elevation result must be a regular file")
+	}
+	pathUTF16, err := windows.UTF16PtrFromString(resultPath)
+	if err != nil {
+		return nil, fmt.Errorf("encode elevation result path: %w", err)
+	}
+	attributes, err := windows.GetFileAttributes(pathUTF16)
+	if err != nil {
+		return nil, fmt.Errorf("read elevation result attributes: %w", err)
+	}
+	if attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return nil, fmt.Errorf("elevation result must not be a reparse point")
+	}
+	if info.Size() > elevationResultMaxBytes {
+		return nil, fmt.Errorf("elevation result exceeds %d bytes", elevationResultMaxBytes)
+	}
+	file, err := os.Open(resultPath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	payload, err := io.ReadAll(io.LimitReader(file, elevationResultMaxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read elevation result: %w", err)
+	}
+	if len(payload) > elevationResultMaxBytes {
+		return nil, fmt.Errorf("elevation result exceeds %d bytes", elevationResultMaxBytes)
+	}
+	return payload, nil
 }
 
 func parseElevationResult(payload []byte) error {
@@ -193,7 +230,10 @@ func parseElevationResult(payload []byte) error {
 		Error   string `json:"error"`
 	}
 	if err := json.Unmarshal(payload, &result); err != nil {
-		return fmt.Errorf("elevated helper returned an unreadable result: %w", err)
+		// helper 采用"临时文件 + rename"原子发布后理论上不会读到半包；
+		// 旧版本 helper 直写目标文件时仍可能撞上写一半的内容,按"未完成"
+		// 处理让调用方继续轮询,而不是把一次成功安装误报为失败。
+		return fmt.Errorf("%w: %v", errElevationResultIncomplete, err)
 	}
 	if !result.Success {
 		if result.Error == "" {

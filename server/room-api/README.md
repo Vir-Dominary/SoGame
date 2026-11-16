@@ -42,9 +42,10 @@ docker run --rm -p 8080:8080 \
 
 | 变量 | 必填 | 默认 | 说明 |
 |------|:---:|------|------|
-| `NETBIRD_PAT` | ✅ | — | NetBird Management API 的个人访问令牌 |
-| `ROOM_API_ENCRYPTION_KEY` | ✅ | — | 房间码/Setup Key 落库加密密钥（32 字节，可给 base64 或任意口令） |
-| `ROOM_API_ADMIN_TOKEN` | ✅ | — | 管理令牌（`/rooms/{code}/disable` 用 `X-Room-Admin-Token` 校验） |
+| `NETBIRD_PAT` | ✅ | — | NetBird Management API 的个人访问令牌（全账号权限，爆炸半径=整个 NetBird 账号） |
+| `ROOM_API_ENCRYPTION_KEY` | ✅ | — | Setup Key 落库加密密钥：`base64(32B)`（推荐，`openssl rand -base64 32`）或 32 字符原文，其他取值按 SHA256 派生（base64 合法但非 32B 将直接报错） |
+| `ROOM_API_ADMIN_TOKEN` | | 空（禁用管理端点） | 管理令牌（`/rooms/{code}/disable` 用 `X-Room-Admin-Token` 校验；空值时该端点恒 401） |
+| `ROOM_API_CODE_PEPPER` | | 空（自动派生） | 房间码 HMAC 查询键的 pepper；空时从加密密钥域分离派生，显式配置可独立轮换 |
 | `ROOM_API_ADDR` | | `:8080` | HTTP 监听地址 |
 | `NETBIRD_MANAGEMENT_URL` | | `https://legengen.top` | 下发给客户端的 NetBird Management 地址（NetBird 控制平面，非网站域名 virdy.cn） |
 | `ROOM_API_DB_PATH` | | `room-api.db` | SQLite 文件路径 |
@@ -63,11 +64,16 @@ docker run --rm -p 8080:8080 \
 限流与审计按客户端 IP 计数。默认**不信任** `X-Forwarded-For`，直接取 TCP 对端地址，
 避免服务器直连公网时被伪造头绕过限流。
 
+设为 `true` 时取 XFF **最右值**（部署模型是"恰好一跳可信代理"：traefik 把真实
+对端 IP 追加到 XFF 末尾并保留客户端自带的首值——取首值等于取攻击者可伪造的值，
+全部 per-IP 限流会被绕过）。**绝不要在多跳代理或代理不追加真实 IP 的拓扑下设
+`true`**。
+
 审计日志的 `path` 字段只记录路由模板（如 `/rooms/:code/peers`），绝不记录原始路径——
 路径中的房间码即入会凭证，明文落盘会让任何能读日志的人加入任意活跃房间。
+404 类请求（扫描/垃圾路径）按 1/64 采样记录，防日志洪泛。
 
-**仅当** Room API 前置了可信反向代理（traefik / nginx）才应设为 `true`，并确保代理
-会覆盖（而非追加）`X-Forwarded-For` 头。参考部署：
+参考部署：
 
 - `sogame-server`（123.56.254.224）：traefik + 域名 `virdy.cn` + Let's Encrypt，经代
   理转发，应设 `ROOM_API_TRUST_PROXY=true`。
@@ -97,13 +103,15 @@ traefik label 与 env，并重启容器。
 
 ## 密钥与数据备份
 
-`ROOM_API_ENCRYPTION_KEY` 是唯一的 AES-256-GCM 主密钥，用于加密 SQLite 中的两类字段：
+`ROOM_API_ENCRYPTION_KEY` 是唯一的 AES-256-GCM 主密钥，用于加密 SQLite 中的：
 
-- `code_ciphertext` — 房间码明文（幂等重放时还原下发）
 - `setup_key_ciphertext` — Setup Key 明文（成员加入时解密下发）
 
-Room 匹配靠 `code_hash = SHA256(房间码)` 独立完成，与主密钥无关；**房主令牌**
-（`owner_token`）也只存 SHA256、常数时间比对，同样不依赖主密钥。
+Room 匹配靠 `code_hash` 独立完成。自 2026-11 起 `code_hash = HMAC-SHA256(pepper,
+房间码)`（pepper 默认从主密钥域分离派生，`ROOM_API_CODE_PEPPER` 可独立指定）——
+旧版的无盐 SHA256 在 DB 泄露后可对 60bit 房间码空间离线枚举；旧数据在首次被查询
+时自动在线迁移为 HMAC，无需停服。**房主令牌**（`owner_token`）只存 SHA256、常数时间
+比对，同样不依赖主密钥。
 
 密钥一旦更换，受影响的是：
 
@@ -140,5 +148,21 @@ openssl rand -base64 32
 
 | 开关 | 说明 |
 |------|------|
-| `-healthcheck` | 校验配置与 SQLite 完整性后退出（供容器 healthcheck / 探活） |
+| `-healthcheck` | 校验配置与 SQLite 连通性（轻量 `SELECT 1`）后退出（供容器 healthcheck / 探活） |
 | `-disable-default-policy` | 禁用 NetBird 账号级 Default All-to-All 策略后退出（一次性迁移） |
+
+## 强制部署步骤：禁用账号级 Default All-to-All 策略
+
+NetBird 账号默认存在名为 `Default` 的全账号互通放行策略。本服务全靠每房间一个
+Group+Policy 实现隔离——**只要 Default 策略仍 enabled，所有房间的 peer 在数据面
+全账号静默互通（房间隔离形同虚设，且无任何用户侧可见症状）**。
+
+新部署 / 重建 NetBird 账号后必须执行一次：
+
+```bash
+room-api -disable-default-policy
+```
+
+启动时服务会自检：若 Default 策略仍 enabled，会在日志中写入
+`default_policy_still_enabled` 审计告警（不自动禁用——该策略可能被账号其他用途
+依赖）。

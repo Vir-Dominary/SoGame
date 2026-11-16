@@ -163,6 +163,8 @@ func TestClientStopsRetryWhenOperationContextExpires(t *testing.T) {
 }
 
 func TestClientCapsServerRetryAfter(t *testing.T) {
+	// 429 的 Retry-After 按 rateLimitRetryCap（60s）钳制：服务端限流窗口
+	// 为 1 分钟，压到 5s 会让重试持续撞窗口边界形成自维持 429。
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		requests++
@@ -182,7 +184,33 @@ func TestClientCapsServerRetryAfter(t *testing.T) {
 	}
 
 	_, _ = client.Join(context.Background(), "AAAA-BBBB-CCCC")
+	if requests != 2 || waited != rateLimitRetryCap {
+		t.Fatalf("requests=%d waited=%s, want %s", requests, waited, rateLimitRetryCap)
+	}
+}
+
+func TestClientCapsNonRateLimitRetryAfter(t *testing.T) {
+	// 非 429 错误（如 503）仍按短钳制，防恶意服务端挂起客户端。
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		requests++
+		response.Header().Set("Retry-After", "3600")
+		response.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	client, err := NewClient(server.URL, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.retryDelays = []time.Duration{time.Millisecond}
+	var waited time.Duration
+	client.wait = func(_ context.Context, delay time.Duration) error {
+		waited = delay
+		return nil
+	}
+
+	_, _ = client.Join(context.Background(), "AAAA-BBBB-CCCC")
 	if requests != 2 || waited != maximumRetryDelay {
-		t.Fatalf("requests=%d waited=%s", requests, waited)
+		t.Fatalf("requests=%d waited=%s, want %s", requests, waited, maximumRetryDelay)
 	}
 }

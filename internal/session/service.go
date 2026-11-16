@@ -127,9 +127,9 @@ type Service struct {
 	// 仅在应用启动时置位;在此状态下 View 保持"未加入"的 NoRoom 视图,
 	// 不自动进入房间界面、不触发重连,等待用户显式"恢复"或"离开"。
 	resumePending bool
-	// lastLocalIP 记录最近一次观察到(或注�?的本机虚�?IP
-	// daemon 断开�?LocalNetBirdIP 为空,用它仍能把房间成员中�?
-	// 自己排除,避免断开后自己被打成"其他成员"导致人数 +1�?
+	// lastLocalIP 记录最近一次观察到(或注册时)的本机虚拟 IP;
+	// daemon 断开后 LocalNetBirdIP 为空,用它仍能把房间成员中的
+	// 自己排除,避免断开后自己被打成"其他成员"导致人数 +1。
 	lastLocalIP string
 	// tokens 保存房主令牌;nil 表示该构建未启用房主能力(向后兼容)。
 	tokens OwnerTokenStorage
@@ -141,6 +141,9 @@ type Service struct {
 	repairPolls       int
 	repairRunning     bool
 	lastRepairAttempt time.Time
+	// closed 标记实例已关闭(Close 已调用):不再启动新的心跳/修复,
+	// 进行中的 goroutine 自行结束后实例可被 GC。
+	closed bool
 }
 
 func NewService(rooms RoomAPI, netbird clientnetbird.Adapter, metadata MetadataStorage, codes RoomCodeStorage) *Service {
@@ -286,16 +289,34 @@ func (s *Service) View(ctx context.Context) (RoomViewSnapshot, error) {
 		if peerErr != nil {
 			var httpErr *roomapi.HTTPError
 			if errors.As(peerErr, &httpErr) && httpErr.Code == roomapi.ErrorRoomClosed {
-				// 房间已被房主解散(或被看门狗回收):本地强制清档,
-				// 之后视图回到无房态,上层弹出"房间已解散"提示。
-				s.stopOwnerHeartbeat()
-				_, _ = s.forceClear(context.WithoutCancel(ctx))
+				// 房间已被房主解散(或被看门狗回收)。本地强制清档必须在
+				// 命令互斥下执行——View 是高频只读路径,此前直接清理会与
+				// 并发命令构成写-写竞态,可能把刚 enroll 成功的凭证误清。
+				// busy 时本轮跳过:命令结束后下一次 View 仍会收到 410
+				// 并完成清理。清理前二次校验 RoomID:慢网络调用窗口内
+				// 若已完成房间切换(Create/Join/Reconnect),410 属于旧房间,
+				// 不得误清新房间。
+				if err := s.beginCommand(); err != nil {
+					return RoomViewSnapshot{}, ErrRoomClosed
+				}
+				defer s.endCommand()
+				if current, err := s.loadSavedRoom(); err == nil && current.RoomID == metadata.RoomID {
+					s.stopOwnerHeartbeat()
+					_, _ = s.forceClear(context.WithoutCancel(ctx))
+				}
 				return RoomViewSnapshot{}, ErrRoomClosed
 			}
 		}
 		// 自愈:控制面死亡(enroll 后卡死)或房间归属漂移(房主复旧身份)
-		// 都靠"同一房间码重新 Join"修复,观测防抖见 repair.go
-		s.maybeRepairIdentity(ctx, status, peerSnapshot.Peers)
+		// 都靠"同一房间码重新 Join"修复,观测防抖见 repair.go。
+		// stale 快照(Refresh 失败的陈旧数据)不参与漂移判定——否则把
+		// 历史成员列表误判为"本机已不在房间"而触发不必要的身份重建;
+		// 传 nil 即仅保留控制面死亡判定。
+		var membersForRepair []roomapi.Peer
+		if !peerSnapshot.Stale {
+			membersForRepair = peerSnapshot.Peers
+		}
+		s.maybeRepairIdentity(ctx, status, membersForRepair)
 		localIP := status.LocalNetBirdIP
 		if ipHost(localIP) == "" {
 			s.mu.Lock()
@@ -399,34 +420,6 @@ func (s *Service) updatePeerWait(daemonPeers []clientnetbird.Peer, roomMembers [
 		return false
 	}
 	return now.Sub(s.peerWaitStart) > peerWaitTimeout
-}
-
-// countDistinctPeers 合并守护进程对端与房间成员(以虚拟 IP 去重),
-// 用于派生"是否正在等待对等体"的状态。本机虚拟 IP 会被排除,
-// 否则单人房间会把"自己"误判为等待连接的其他成员。
-// IP 比较前会去掉 CIDR 前缀,因为 daemon 报告的 IP 形如 100.66.172.6/16。
-func countDistinctPeers(daemon []clientnetbird.Peer, members []roomapi.Peer, localIP string) int {
-	normalizedLocal := ipHost(localIP)
-	seen := make(map[string]struct{})
-	for _, peer := range daemon {
-		key := ipHost(peer.NetBirdIP)
-		if key == "" {
-			key = "d:" + peer.FQDN
-		}
-		if key != "" && key != "d:" && key != normalizedLocal {
-			seen[key] = struct{}{}
-		}
-	}
-	for _, peer := range members {
-		key := ipHost(peer.NetBirdIP)
-		if key == "" {
-			key = "m:" + peer.ID
-		}
-		if key != "" && key != "m:" && key != normalizedLocal {
-			seen[key] = struct{}{}
-		}
-	}
-	return len(seen)
 }
 
 func (s *Service) RevealRoomCode(context.Context) (string, error) {
@@ -610,8 +603,8 @@ func (s *Service) enroll(ctx context.Context, hostname string, obtain func(conte
 func (s *Service) enrollUnlocked(ctx context.Context, hostname string, obtain func(context.Context) (roomapi.Enrollment, error)) (Snapshot, error) {
 	if err := s.requireEmptyStorage(); err != nil {
 		// 用户在待恢复状态下显式创建/加入新房:视为放弃上次的房,
-		// 先强制清理旧记录与远�?profile,再继续新房间流程�?
-		// 过期房间同样�?requireEmptyStorage 中已清除并放行�?
+		// 先强制清理旧记录与远端 profile,再继续新房间流程。
+		// 过期房间同样在 requireEmptyStorage 中已清除并放行。
 		s.mu.Lock()
 		pending := s.resumePending
 		s.mu.Unlock()
@@ -903,20 +896,25 @@ func (s *Service) closeRoomIfOwner(ctx context.Context) {
 
 // startOwnerHeartbeat 房主心跳：周期性向服务端证明房主在线,
 // 防止被"房主离线自动解散"的看门狗误回收。调用会重启已在跑的心跳。
+// WithCancel 与 heartbeatCancel 赋值必须在同一把锁内完成,否则并发调用
+// 会让先注册的 cancel 被覆盖、旧 goroutine 失去取消句柄而泄漏。
 func (s *Service) startOwnerHeartbeat() {
 	s.mu.Lock()
 	tokens := s.tokens
 	ownerAPI := s.ownerAPI
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
 	if s.heartbeatCancel != nil {
 		s.heartbeatCancel()
 		s.heartbeatCancel = nil
 	}
-	s.mu.Unlock()
 	if tokens == nil || ownerAPI == nil {
+		s.mu.Unlock()
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s.mu.Lock()
 	s.heartbeatCancel = cancel
 	s.mu.Unlock()
 	go func() {
@@ -954,7 +952,8 @@ func (s *Service) startOwnerHeartbeat() {
 							return
 						}
 					}
-					// 失败指数退避(60s→120s→240s,封顶 2 分钟),成功复位。
+					// 失败指数退避(60s→120s→120s…,封顶 2 分钟),成功复位;
+				// 封顶值必须恒小于服务端房主离线回收阈值(默认 5m)。
 					if delay <= 0 {
 						delay = ownerHeartbeatInterval
 					} else if delay < ownerHeartbeatMaxBackoff {
@@ -983,6 +982,20 @@ func (s *Service) stopOwnerHeartbeat() {
 	}
 }
 
+// Close 停止该实例的全部后台 goroutine（房主心跳）并阻止新的心跳/修复
+// 启动，使实例可被 GC。ExpressController 在 MSI 修复后重组装、整体替换
+// Service 实例前必须调用旧实例的 Close——否则旧心跳 goroutine 在令牌
+// 未清除时没有任何停止通道，会造成新旧实例对同一房间双心跳并发、
+// 旧实例整棵对象图（含已关闭的 RPC adapter）常驻内存。
+// 进行中的身份自愈 goroutine 有独立的超时预算（2×commandTimeout），
+// 会自行退出，Close 不阻塞等待。
+func (s *Service) Close() {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+	s.stopOwnerHeartbeat()
+}
+
 // profileAlreadyGone 判断错误是否表示"远端/守护进程中的 profile 已不存在"。
 // 残留房间记录对应的 profile 被删除后,Leave 应视为已清理并继续本地清理,
 // 避免用户永远无法离开一个"远端已不存在"的房间。
@@ -1003,16 +1016,18 @@ func (s *Service) failValidation(err error) (Snapshot, error) {
 }
 
 type enrollmentTransaction struct {
-	service                *Service
-	profileID              string
-	enrollmentAttempted    bool
-	codeWriteAttempted     bool
-	metadataWriteAttempted bool
+	service                  *Service
+	profileID                string
+	enrollmentAttempted      bool
+	codeWriteAttempted       bool
+	metadataWriteAttempted   bool
 	ownerTokenWriteAttempted bool
-	compensated            bool
-	cleanupFailures        int
+	compensated              bool
+	cleanupFailures          int
 }
 
+// compensate 按写入的严格逆序清理（tokens → metadata → codes，
+// 远端 profile 最先回滚），与"codes → metadata → tokens"的写入序对应。
 func (t *enrollmentTransaction) compensate(parent context.Context) {
 	if t.compensated {
 		return
@@ -1028,13 +1043,13 @@ func (t *enrollmentTransaction) compensate(parent context.Context) {
 	if err := t.service.netbird.RemoveProfile(ctx, t.profileID); err != nil {
 		t.cleanupFailures++
 	}
-	if t.metadataWriteAttempted {
-		if err := t.service.metadata.Clear(); err != nil {
+	if t.ownerTokenWriteAttempted && t.service.tokens != nil {
+		if err := t.service.tokens.Clear(); err != nil {
 			t.cleanupFailures++
 		}
 	}
-	if t.ownerTokenWriteAttempted && t.service.tokens != nil {
-		if err := t.service.tokens.Clear(); err != nil {
+	if t.metadataWriteAttempted {
+		if err := t.service.metadata.Clear(); err != nil {
 			t.cleanupFailures++
 		}
 	}

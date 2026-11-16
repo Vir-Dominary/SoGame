@@ -27,8 +27,8 @@ export namespace app {
 	export class ConfigInfo {
 	    community: string;
 	    ip: string;
-	    key_masked: string;
-	    key_set: boolean;
+	    keyMasked: string;
+	    keySet: boolean;
 	    supernode: string;
 	
 	    static createFrom(source: any = {}) {
@@ -39,8 +39,8 @@ export namespace app {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.community = source["community"];
 	        this.ip = source["ip"];
-	        this.key_masked = source["key_masked"];
-	        this.key_set = source["key_set"];
+	        this.keyMasked = source["keyMasked"];
+	        this.keySet = source["keySet"];
 	        this.supernode = source["supernode"];
 	    }
 	}

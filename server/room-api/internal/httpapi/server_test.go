@@ -44,10 +44,38 @@ func TestClientIPTrustsForwardedWhenProxyEnabled(t *testing.T) {
 	s := newServerForIPTest(true)
 	req := httptest.NewRequest(http.MethodPost, "/rooms", nil)
 	req.RemoteAddr = "10.0.0.1:51234"
-	req.Header.Set("X-Forwarded-For", "203.0.113.9, 10.0.0.1")
+	// traefik 追加真实对端 IP 到末尾；首值是客户端可伪造的，必须取最右值。
+	req.Header.Set("X-Forwarded-For", "6.6.6.6, 203.0.113.9")
 
 	if got := s.clientIP(req); got != "203.0.113.9" {
-		t.Fatalf("must take first X-Forwarded-For value, got %q", got)
+		t.Fatalf("must take rightmost X-Forwarded-For value, got %q", got)
+	}
+}
+
+func TestClientIPSingleForwardedValue(t *testing.T) {
+	s := newServerForIPTest(true)
+	req := httptest.NewRequest(http.MethodPost, "/rooms", nil)
+	req.RemoteAddr = "10.0.0.1:51234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+
+	if got := s.clientIP(req); got != "203.0.113.9" {
+		t.Fatalf("single X-Forwarded-For value must be used, got %q", got)
+	}
+}
+
+func TestClientIPSpoofedFirstValueDoesNotBypassLimit(t *testing.T) {
+	// 攻击者每次请求随机化 XFF 首值：取最右值时限流桶恒为真实客户端 IP，
+	// 伪造首值无法绕过 per-IP 限流。
+	s := newServerForIPTest(true)
+	seen := make(map[string]bool)
+	for _, spoof := range []string{"1.1.1.1", "2.2.2.2", "3.3.3.3"} {
+		req := httptest.NewRequest(http.MethodPost, "/rooms", nil)
+		req.RemoteAddr = "10.0.0.1:51234"
+		req.Header.Set("X-Forwarded-For", spoof+", 203.0.113.9")
+		seen[s.clientIP(req)] = true
+	}
+	if len(seen) != 1 || !seen["203.0.113.9"] {
+		t.Fatalf("spoofed XFF first value must not affect client identity, got %v", seen)
 	}
 }
 

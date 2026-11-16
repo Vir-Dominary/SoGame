@@ -20,7 +20,9 @@ package platform
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -29,6 +31,36 @@ import (
 )
 
 const firewallRuleName = "SoGame VPN"
+
+// powershellPath 返回 System32 下的 PowerShell 绝对路径，防 PATH 劫持
+// （主程序以管理员身份运行，经 PATH 解析外部程序是提权代码执行面）。
+func powershellPath() string {
+	if root := os.Getenv("SystemRoot"); root != "" {
+		candidate := filepath.Join(root, `System32\WindowsPowerShell\v1.0\powershell.exe`)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return "powershell.exe"
+}
+
+// runPowerShell 执行一段固定脚本并返回 trimmed 输出。
+// 安全红线：任何用户/系统可控数据（接口名、规则名等）一律经环境变量
+// 传入，脚本内只读 $env:*，绝不做 -Command 字符串拼接——主程序是
+// 管理员上下文，拼接注入即管理员代码执行。
+func runPowerShell(script string, env map[string]string) (string, error) {
+	cmd := exec.Command(powershellPath(), "-NoProfile", "-NonInteractive", "-Command", script)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	if len(env) > 0 {
+		full := cmd.Environ()
+		for key, value := range env {
+			full = append(full, key+"="+value)
+		}
+		cmd.Env = full
+	}
+	output, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(output)), err
+}
 
 // AddFirewallRule 为 TAP 适配器添加 Windows 防火墙入站规则，
 // 允许该接口上的所有流量通过。如果不添加此规则，Windows 会将
@@ -49,19 +81,14 @@ func AddFirewallRule(ifName string) error {
 
 	// 使用 PowerShell 添加入站规则：允许指定接口上的所有流量
 	// New-NetFirewallRule 支持 -InterfaceAlias 参数，可以用友好名称指定接口
-	psCmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
-		fmt.Sprintf(
-			"try { New-NetFirewallRule -DisplayName '%s' -Direction Inbound -Action Allow -InterfaceAlias '%s' -Protocol Any -ErrorAction Stop | Out-Null; Write-Output 'OK' } catch { Write-Error $_.Exception.Message }",
-			firewallRuleName, ifName,
-		),
+	outputStr, err := runPowerShell(
+		"try { New-NetFirewallRule -DisplayName $env:SOGAME_FW_RULE -Direction Inbound -Action Allow -InterfaceAlias $env:SOGAME_FW_IFACE -Protocol Any -ErrorAction Stop | Out-Null; Write-Output 'OK' } catch { Write-Error $_.Exception.Message }",
+		map[string]string{"SOGAME_FW_RULE": firewallRuleName, "SOGAME_FW_IFACE": ifName},
 	)
-	psCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := psCmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("添加防火墙规则失败: %v, %s", err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("添加防火墙规则失败: %v, %s", err, outputStr)
 	}
 
-	outputStr := strings.TrimSpace(string(output))
 	if outputStr != "OK" {
 		return fmt.Errorf("添加防火墙规则返回异常: %s", outputStr)
 	}
@@ -91,23 +118,18 @@ func RemoveFirewallRule() error {
 // removeFirewallRuleInternal 内部函数：移除防火墙规则
 func removeFirewallRuleInternal() error {
 	// 使用 PowerShell 移除规则，兼容性更好
-	psCmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
-		fmt.Sprintf(
-			"try { Remove-NetFirewallRule -DisplayName '%s' -ErrorAction Stop; Write-Output 'OK' } catch { if ($_.Exception.Message -like '*找不到*' -or $_.Exception.Message -like '*No matching*') { Write-Output 'NOT_FOUND' } else { Write-Error $_.Exception.Message } }",
-			firewallRuleName,
-		),
+	outputStr, err := runPowerShell(
+		"try { Remove-NetFirewallRule -DisplayName $env:SOGAME_FW_RULE -ErrorAction Stop; Write-Output 'OK' } catch { if ($_.Exception.Message -like '*找不到*' -or $_.Exception.Message -like '*No matching*') { Write-Output 'NOT_FOUND' } else { Write-Error $_.Exception.Message } }",
+		map[string]string{"SOGAME_FW_RULE": firewallRuleName},
 	)
-	psCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := psCmd.CombinedOutput()
 	if err != nil {
-		outputStr := strings.ToLower(string(output))
-		if strings.Contains(outputStr, "no matching") || strings.Contains(outputStr, "找不到") {
+		lowered := strings.ToLower(outputStr)
+		if strings.Contains(lowered, "no matching") || strings.Contains(outputStr, "找不到") {
 			return nil
 		}
-		return fmt.Errorf("移除防火墙规则失败: %v, %s", err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("移除防火墙规则失败: %v, %s", err, outputStr)
 	}
 
-	outputStr := strings.TrimSpace(string(output))
 	if outputStr == "NOT_FOUND" {
 		return nil
 	}
@@ -138,15 +160,10 @@ func SetNetworkCategoryPrivate(ifName string) error {
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		// 使用 PowerShell 设置网络类别为 Private
 		// Set-NetConnectionProfile 需要管理员权限
-		psCmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
-			fmt.Sprintf(
-				"try { $profile = Get-NetConnectionProfile -InterfaceAlias '%s' -ErrorAction Stop; Set-NetConnectionProfile -InterfaceAlias '%s' -NetworkCategory Private; Write-Output 'OK' } catch { Write-Error $_.Exception.Message }",
-				ifName, ifName,
-			),
+		outputStr, err := runPowerShell(
+			"try { Get-NetConnectionProfile -InterfaceAlias $env:SOGAME_FW_IFACE -ErrorAction Stop | Out-Null; Set-NetConnectionProfile -InterfaceAlias $env:SOGAME_FW_IFACE -NetworkCategory Private; Write-Output 'OK' } catch { Write-Error $_.Exception.Message }",
+			map[string]string{"SOGAME_FW_IFACE": ifName},
 		)
-		psCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-		output, err := psCmd.CombinedOutput()
-		outputStr := strings.TrimSpace(string(output))
 
 		if err == nil && outputStr == "OK" {
 			logger.Infof("接口 '%s' 的网络类别已设置为专用 (尝试 %d/%d)", ifName, attempt, maxRetries)

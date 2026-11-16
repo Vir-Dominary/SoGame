@@ -143,8 +143,8 @@ func (a *App) GetErrorMessage() string {
 type ConfigInfo struct {
 	Community string `json:"community"`
 	IP        string `json:"ip"`
-	KeyMasked string `json:"key_masked"`
-	KeySet    bool   `json:"key_set"`
+	KeyMasked string `json:"keyMasked"`
+	KeySet    bool   `json:"keySet"`
 	Supernode string `json:"supernode"`
 }
 
@@ -194,6 +194,10 @@ func (a *App) GetNodes() []NodeInfo {
 	return result
 }
 
+// latencyMu 保证节点测速 goroutine 单飞：连续调用（用户反复点测速）
+// 不会叠加多轮全节点 ping。
+var latencyMu sync.Mutex
+
 func (a *App) GetNodesWithLatency() []NodeLatencyInfo {
 	nodes := n2n.GetKnownNodes()
 	out := make([]NodeLatencyInfo, 0, len(nodes))
@@ -205,7 +209,12 @@ func (a *App) GetNodesWithLatency() []NodeLatencyInfo {
 		})
 	}
 
+	if !latencyMu.TryLock() {
+		// 已有一轮测速在跑：本轮结果仍会通过事件下发，直接复用。
+		return out
+	}
 	go func() {
+		defer latencyMu.Unlock()
 		results := n2n.MeasureAllNodesLatency()
 		updated := make([]NodeLatencyInfo, 0, len(results))
 		for _, r := range results {
@@ -258,6 +267,12 @@ func encodeInvite(data inviteData) (string, error) {
 
 // decodeInvite 解码邀请码，同时支持 v1（JSON + standard base64）和 v2（紧凑格式）。
 func decodeInvite(code string) (*inviteData, error) {
+	// 长度上限：邀请码是"群名+密钥+节点"的紧凑编码，正常在数百字节内；
+	// 超长输入只会是畸形数据，提前拒绝避免无谓的 base64 内存放大。
+	const maxInviteLength = 8 << 10
+	if len(code) == 0 || len(code) > maxInviteLength {
+		return nil, fmt.Errorf("无效的邀请码格式")
+	}
 	// 尝试 v1：standard base64 + JSON
 	if decoded, err := base64.StdEncoding.DecodeString(code); err == nil {
 		s := string(decoded)
@@ -394,10 +409,27 @@ func (a *App) ConnectWithInvite(code string) error {
 }
 
 func (a *App) Connect(community, ip, key, supernode string) error {
+	// 输入校验必须在任何落盘与进程编排之前：前端传入的字符串将直接进入
+	// edge.exe argv 与 config.yaml，非法值会造成 argv 语义注入或配置损坏
+	// （此前校验只在下次启动 LoadOrCreate 时触发，为时已晚）。
+	if err := config.ValidateCommunity(community); err != nil {
+		return fmt.Errorf("群名无效: %w", err)
+	}
+	if err := config.ValidateIP(ip); err != nil {
+		return fmt.Errorf("IP 地址无效: %w", err)
+	}
+	if key != "" {
+		if err := config.ValidateKey(key); err != nil {
+			return fmt.Errorf("密钥无效: %w", err)
+		}
+	}
 	// 归一化中心节点：废弃节点替换为当前默认；空值跟随默认。
 	supernode = config.NormalizeSupernode(supernode)
 	if supernode == "" {
 		supernode = config.DefaultSupernode
+	}
+	if err := config.ValidateSupernode(supernode); err != nil {
+		return fmt.Errorf("中心节点地址无效: %w", err)
 	}
 
 	a.mu.Lock()
@@ -414,9 +446,11 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 	} else {
 		a.cfg.Supernode = supernode
 	}
+	cfgSnapshot := *a.cfg
+	keySet := a.cfg.Key != ""
 	a.mu.Unlock()
 
-	if err := config.SaveCached(a.cfg); err != nil {
+	if err := config.SaveCached(&cfgSnapshot); err != nil {
 		a.mu.Lock()
 		a.state = StateFailed
 		a.errMsg = fmt.Sprintf("保存配置失败: %v", err)
@@ -424,7 +458,7 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 		return fmt.Errorf("保存配置失败: %w", err)
 	}
 
-	if a.cfg.Key == "" {
+	if !keySet {
 		a.mu.Lock()
 		a.state = StateFailed
 		a.errMsg = "请先设置密码"
@@ -478,7 +512,9 @@ func (a *App) Connect(community, ip, key, supernode string) error {
 
 	// edge 需要生效值（supernode 已回落默认）；a.cfg 中默认节点存空以便
 	// 未来默认节点迁移时穿透，因此传副本给 edge，不影响已持久化的配置。
+	a.mu.Lock()
 	edgeCfg := *a.cfg
+	a.mu.Unlock()
 	edgeCfg.Supernode = supernode
 	err = a.edge.Start(&edgeCfg)
 	if err != nil {
@@ -632,8 +668,13 @@ func (a *App) CheckUpdate() updater.UpdateInfo {
 
 func (a *App) PerformUpdate(downloadURL, sha256sum string) error {
 	ctx := context.Background()
+	a.mu.Lock()
+	wailsCtx := a.ctx
+	a.mu.Unlock()
 	zipPath, err := updater.Download(ctx, downloadURL, sha256sum, func(percent int) {
-		runtime.EventsEmit(a.ctx, "updateProgress", percent)
+		if wailsCtx != nil {
+			runtime.EventsEmit(wailsCtx, "updateProgress", percent)
+		}
 	})
 	if err != nil {
 		return err
@@ -669,9 +710,10 @@ func (a *App) DetectNATType() natdetect.NATResult {
 	result := natdetect.DetectWithTimeout(config.STUNServerA, config.STUNServerB, 10*time.Second)
 	a.mu.Lock()
 	a.natResult = &result
+	wailsCtx := a.ctx
 	a.mu.Unlock()
-	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "natDetectionComplete", result)
+	if wailsCtx != nil {
+		runtime.EventsEmit(wailsCtx, "natDetectionComplete", result)
 	}
 	return result
 }
@@ -754,13 +796,25 @@ func (a *App) SetMode(mode string) error {
 
 	a.mu.Lock()
 	a.cfg.Mode = mode
+	cfgSnapshot := *a.cfg
 	a.mu.Unlock()
 
-	if err := config.SaveCached(a.cfg); err != nil {
+	if err := config.SaveCached(&cfgSnapshot); err != nil {
 		return fmt.Errorf("保存模式失败: %w", err)
 	}
 	logger.Infof("mode switched to: %s", mode)
 	return nil
+}
+
+// GetExpressSettings 返回极速模式设置（Room API 地址生效值、昵称）。
+func (a *App) GetExpressSettings() map[string]string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	url := a.cfg.RoomAPIURL
+	if url == "" {
+		url = config.DefaultRoomAPIURL
+	}
+	return map[string]string{"roomApiUrl": url, "nickname": a.cfg.ExpressNickname}
 }
 
 // SaveExpressSettings 保存极速模式的配置（Room API 地址、昵称）
@@ -776,11 +830,26 @@ func (a *App) SaveExpressSettings(roomAPIURL, nickname string) error {
 	}
 
 	a.mu.Lock()
+	oldURL := a.cfg.RoomAPIURL
 	a.cfg.RoomAPIURL = roomAPIURL
 	a.cfg.ExpressNickname = nickname
+	cfgSnapshot := *a.cfg
 	a.mu.Unlock()
 
-	return config.SaveCached(a.cfg)
+	if err := config.SaveCached(&cfgSnapshot); err != nil {
+		return err
+	}
+
+	// Room API 地址变化时重组装极速控制器（此前保存后不生效、必须重启）。
+	// 房间命令进行中跳过：重组装会整体替换 session.Service，重启后生效。
+	if a.express != nil && oldURL != roomAPIURL && a.express.GetState().BusyCommand == "" {
+		effective := roomAPIURL
+		if effective == "" {
+			effective = config.DefaultRoomAPIURL
+		}
+		reassembleExpress(a.express, effective)
+	}
+	return nil
 }
 
 // ============================================================================
@@ -807,6 +876,7 @@ func (a *App) ExpressCreateRoom(nickname string) ExpressState {
 	if a.express == nil {
 		return ExpressState{State: "RecoverableError", Error: &ExpressError{Code: expressErrServiceUnavailable, Message: "极速模式不可用"}}
 	}
+	a.mu.Lock()
 	if strings.TrimSpace(nickname) == "" {
 		nickname = a.cfg.ExpressNickname
 	}
@@ -814,10 +884,10 @@ func (a *App) ExpressCreateRoom(nickname string) ExpressState {
 		nickname = a.cfg.NodeName
 	}
 	// 持久化昵称
-	a.mu.Lock()
 	a.cfg.ExpressNickname = nickname
+	cfgSnapshot := a.cfg
 	a.mu.Unlock()
-	_ = config.SaveCached(a.cfg)
+	_ = config.SaveCached(cfgSnapshot)
 	return a.express.CreateRoom(nickname)
 }
 
@@ -826,16 +896,17 @@ func (a *App) ExpressJoinRoom(roomCode, nickname string) ExpressState {
 	if a.express == nil {
 		return ExpressState{State: "RecoverableError", Error: &ExpressError{Code: expressErrServiceUnavailable, Message: "极速模式不可用"}}
 	}
+	a.mu.Lock()
 	if strings.TrimSpace(nickname) == "" {
 		nickname = a.cfg.ExpressNickname
 	}
 	if nickname == "" {
 		nickname = a.cfg.NodeName
 	}
-	a.mu.Lock()
 	a.cfg.ExpressNickname = nickname
+	cfgSnapshot := a.cfg
 	a.mu.Unlock()
-	_ = config.SaveCached(a.cfg)
+	_ = config.SaveCached(cfgSnapshot)
 	return a.express.JoinRoom(roomCode, nickname)
 }
 

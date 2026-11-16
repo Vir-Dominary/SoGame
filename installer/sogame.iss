@@ -1,4 +1,4 @@
-; SPDX-License-Identifier: AGPL-3.0-or-later
+﻿; SPDX-License-Identifier: AGPL-3.0-or-later
 ; Copyright (C) 2026 SoGame Contributors
 ;
 ; This file is part of SoGame.
@@ -120,6 +120,10 @@ var
 begin
   if CurUninstallStep = usUninstall then
   begin
+    // 防火墙规则属系统变更回滚，必须无条件删除——放在用户确认分支内
+    // 会让选择"保留数据"的机器永久残留入站放行规则。
+    Exec('netsh', 'advfirewall firewall delete rule name="SoGame VPN"',
+         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     if MsgBox('是否同时删除用户配置文件和本地密钥数据？', mbConfirmation, MB_YESNO) = IDYES then
     begin
       ConfigDir := ExpandConstant('{userappdata}\SoGame');
@@ -128,8 +132,6 @@ begin
       KeyDir := ExpandConstant('{localappdata}\SoGame');
       if DirExists(KeyDir) then
         DelTree(KeyDir, True, True, True);
-      Exec('netsh', 'advfirewall firewall delete rule name="SoGame VPN"',
-           '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     end;
   end;
 end;

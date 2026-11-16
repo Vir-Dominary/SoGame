@@ -1,6 +1,7 @@
 package natdetect
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"net"
@@ -33,7 +34,7 @@ func buildBindingRequest() ([]byte, error) {
 	return msg, nil
 }
 
-func sendSTUN(server string) (mappedAddr, error) {
+func sendSTUN(ctx context.Context, server string) (mappedAddr, error) {
 	addr, err := net.ResolveUDPAddr("udp", server)
 	if err != nil {
 		return mappedAddr{}, err
@@ -43,7 +44,13 @@ func sendSTUN(server string) (mappedAddr, error) {
 		return mappedAddr{}, err
 	}
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(stunTimeout))
+	// deadline 取 ctx 剩余预算与 stunTimeout 的较小值：
+	// DetectWithTimeout 的超时承诺必须真实生效。
+	deadline := time.Now().Add(stunTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	conn.SetDeadline(deadline)
 	req, err := buildBindingRequest()
 	if err != nil {
 		return mappedAddr{}, err

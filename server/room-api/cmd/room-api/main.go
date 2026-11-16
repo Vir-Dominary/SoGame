@@ -100,16 +100,23 @@ func main() {
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+	serveErr := make(chan error, 1)
 	go func() {
 		log.Printf("room API listening on %s", cfg.Addr)
+		// 错误发回主 goroutine 统一退出：goroutine 内 log.Fatal 会绕过
+		// 全部 defer（database.Close / stopWatchdog）直接 os.Exit。
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal(err)
+			serveErr <- err
 		}
 	}()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
+	select {
+	case <-stop:
+	case err := <-serveErr:
+		log.Fatalf("room API server failed: %v", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = server.Shutdown(ctx)

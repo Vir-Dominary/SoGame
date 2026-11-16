@@ -13,10 +13,11 @@ type UpdateInfo struct {
 }
 
 type remoteManifest struct {
-	Version       string `json:"version"`
-	DownloadURL   string `json:"downloadUrl"`
-	Sha256        string `json:"sha256"`
-	Size          int64  `json:"size"`
-	ReleaseNotes  string `json:"releaseNotes"`
-	MinVersion    string `json:"minVersion"`
+	Version      string `json:"version"`
+	DownloadURL  string `json:"downloadUrl"`
+	Sha256       string `json:"sha256"`
+	Signature    string `json:"signature,omitempty"`
+	Size         int64  `json:"size"`
+	ReleaseNotes string `json:"releaseNotes"`
+	MinVersion   string `json:"minVersion"`
 }

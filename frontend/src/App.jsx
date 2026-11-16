@@ -31,6 +31,7 @@ import {
   GetConnectionDetails,
   GetMode,
   SetMode,
+  GetExpressSettings,
   SaveExpressSettings,
   ExpressGetState,
   ExpressCreateRoom,
@@ -43,7 +44,6 @@ import {
   CheckUpdate,
   PerformUpdate,
   DetectNATType,
-  GetNATResult,
 } from '../wailsjs/go/app/App'
 import { BrowserOpenURL, ClipboardSetText, EventsOn } from '../wailsjs/runtime/runtime'
 
@@ -73,6 +73,8 @@ function App() {
 
   // 极速模式状态
   const [expressNickname, setExpressNickname] = useState('')
+  const [expressRoomApiUrl, setExpressRoomApiUrl] = useState('')
+  const [settingsSaved, setSettingsSaved] = useState(false)
   const [expressRoomCode, setExpressRoomCode] = useState('')
   const [expressState, setExpressState] = useState(null)
   const [expressBusy, setExpressBusy] = useState(false)
@@ -124,6 +126,10 @@ function App() {
       }
     }).catch(e => console.error('GetMode failed:', e))
 
+    GetExpressSettings().then(s => {
+      if (s) setExpressRoomApiUrl(s.roomApiUrl || '')
+    }).catch(e => console.error('GetExpressSettings failed:', e))
+
     loadNodesWithLatency()
     GetState().then(s => {
       if (s && s !== 'disconnected') setStatus(s)
@@ -131,39 +137,44 @@ function App() {
 
     GetAboutInfo().then(info => setAboutInfo(info)).catch(e => console.error('GetAboutInfo failed:', e))
 
-    EventsOn('nodeLatencyUpdated', (data) => {
-      if (data && data.length > 0) {
-        setNodes(data)
-        setLatencyLoading(false)
-        // 如果当前选中的节点不可用，自动切换到延迟最低的可用节点
-        const current = data.find(n => n.name === selectedNodeRef.current)
-        if (!current || current.latency < 0) {
-          const best = data.find(n => n.latency >= 0)
-          if (best) setSelectedNode(best.name)
+    // EventsOn 返回取消函数：必须在 cleanup 中注销，否则 StrictMode
+    // 双执行 effect 会叠加监听器（回调重复触发）。
+    const eventOffs = [
+      EventsOn('nodeLatencyUpdated', (data) => {
+        if (data && data.length > 0) {
+          setNodes(data)
+          setLatencyLoading(false)
+          // 如果当前选中的节点不可用，自动切换到延迟最低的可用节点
+          const current = data.find(n => n.name === selectedNodeRef.current)
+          if (!current || current.latency < 0) {
+            const best = data.find(n => n.latency >= 0)
+            if (best) setSelectedNode(best.name)
+          }
         }
-      }
-    })
+      }),
 
-    EventsOn('express:state-changed', (state) => {
-      if (state) {
-        setExpressState(state)
-        setExpressBusy(!!state.busyCommand)
-        setExpressInRoom(isExpressInRoom(state.state))
-      }
-    })
+      EventsOn('express:state-changed', (state) => {
+        if (state) {
+          setExpressState(state)
+          setExpressBusy(!!state.busyCommand)
+          setExpressInRoom(isExpressInRoom(state.state))
+        }
+      }),
 
-    EventsOn('updateProgress', (percent) => {
-      setUpdateProgress(percent)
-    })
+      EventsOn('updateProgress', (percent) => {
+        setUpdateProgress(percent)
+      }),
 
-    EventsOn('natDetectionComplete', (result) => {
-      if (result) {
-        setNatResult(result)
-        setNatDetecting(false)
-      }
-    })
+      EventsOn('natDetectionComplete', (result) => {
+        if (result) {
+          setNatResult(result)
+          setNatDetecting(false)
+        }
+      }),
+    ]
 
     return () => {
+      eventOffs.forEach(off => { if (typeof off === 'function') off() })
       if (pollRef.current) clearInterval(pollRef.current)
       if (timerRef.current) clearInterval(timerRef.current)
       if (latencyRef.current) clearInterval(latencyRef.current)
@@ -305,14 +316,15 @@ function App() {
 
   const handleExpressCopyCode = async () => {
     try {
-      await ClipboardSetText((expressState && expressState.roomCode) || expressRoomCodeRevealed)
+      await ClipboardSetText(expressRoomCodeRevealed)
       setExpressCopied(true)
       setTimeout(() => setExpressCopied(false), 2000)
     } catch (e) { setErrorMsg(String(e)) }
   }
 
+  // 完整房间码只经 ExpressRevealRoomCode 按需获取（后端状态快照不再下发明文）。
   useEffect(() => {
-    if (expressInRoom && !expressBusy && !expressRoomCodeRevealed && !(expressState && expressState.roomCode)) {
+    if (expressInRoom && !expressBusy && !expressRoomCodeRevealed) {
       ExpressRevealRoomCode().then(code => { if (code) setExpressRoomCodeRevealed(code) }).catch(e => {
         console.error('express reveal failed:', e)
       })
@@ -320,7 +332,7 @@ function App() {
       setExpressRoomCodeRevealed('')
       setExpressCopied(false)
     }
-  }, [expressInRoom, expressState, expressRoomCodeRevealed, expressBusy])
+  }, [expressInRoom, expressRoomCodeRevealed, expressBusy])
 
   const handleExpressResume = async () => {
     setLoadingAction('express-reconnect')
@@ -637,7 +649,7 @@ function App() {
             <>
               {tabMode === 'join' && (
                 <div className="invite-section"><div className="field"><label>房间链接</label>
-                  <input type="text" value={inviteCode} onChange={e => { setInviteCode(e.target.value); setErrorMsg('') }} placeholder="粘贴房间链接" />
+                  <input type="text" value={inviteCode} onChange={e => { setInviteCode(e.target.value); setErrorMsg('') }} placeholder="粘贴房间链接" maxLength={4096} />
                 </div></div>
               )}
               {tabMode === 'create' && (
@@ -667,7 +679,7 @@ function App() {
           {!expressInRoom && appMode === 'express' && !isConnected && !isConnecting && (
             <div className="invite-section">
               <div className="field"><label>昵称</label><input type="text" value={expressNickname} onChange={e => { setExpressNickname(e.target.value); setErrorMsg('') }} placeholder="您的昵称" maxLength={32} /></div>
-              {tabMode === 'join' && (<div className="field"><label>房间码</label><input type="text" value={expressRoomCode} onChange={e => { setExpressRoomCode(e.target.value); setErrorMsg('') }} placeholder="粘贴房间码" /></div>)}
+              {tabMode === 'join' && (<div className="field"><label>房间码</label><input type="text" value={expressRoomCode} onChange={e => { setExpressRoomCode(e.target.value); setErrorMsg('') }} placeholder="粘贴房间码" maxLength={14} /></div>)}
               <button className={`generate-btn ${(loadingAction === 'express-create' || loadingAction === 'express-join') ? 'loading-bar' : ''}`} onClick={tabMode === 'create' ? handleExpressCreate : handleExpressJoin} disabled={expressBusy || loadingAction === 'express-create' || loadingAction === 'express-join'}>{loadingAction === 'express-create' || loadingAction === 'express-join' ? (tabMode === 'create' ? '创建中...' : '加入中...') : (tabMode === 'create' ? '创建房间' : '加入房间')}</button>
               {expressState && expressState.service && (!expressState.service.installed || expressState.service.repairRequired) && (<div className="express-hint">守护进程{expressState.service.installed ? '异常' : '未安装'} <button className="repair-btn" onClick={handleExpressRepair} disabled={expressBusy || loadingAction === 'express-repair'}>{loadingAction === 'express-repair' ? '处理中...' : (expressState.service.installed ? '修复' : '安装')}</button></div>)}
               {loadingAction === 'express-repair' && (<div className="express-installing">正在安装守护进程，请稍后…</div>)}
@@ -691,7 +703,7 @@ function App() {
                   </div>
                 ) : (<div className="express-peers-empty">等待其他成员加入…</div>)}
               </div>
-              {((expressState && expressState.roomCode) || expressRoomCodeRevealed) && (<div className="code-result"><div className="code-label">房间码</div><div className="code-box"><span className="code-text">{(expressState && expressState.roomCode) || expressRoomCodeRevealed}</span><button className="copy-btn" onClick={handleExpressCopyCode}>{expressCopied?'已复制':'复制'}</button></div></div>)}
+              {expressRoomCodeRevealed && (<div className="code-result"><div className="code-label">房间码</div><div className="code-box"><span className="code-text">{expressRoomCodeRevealed}</span><button className="copy-btn" onClick={handleExpressCopyCode}>{expressCopied?'已复制':'复制'}</button></div></div>)}
               <div className="express-actions">
                 {(expressState && expressState.disconnected) ? (
                   <button className="express-leave-btn secondary" onClick={handleExpressResume} disabled={expressBusy || loadingAction === 'express-reconnect'}>{loadingAction === 'express-reconnect' ? '处理中...' : '重新连接'}</button>
@@ -867,6 +879,32 @@ function App() {
                   打开日志
                 </button>
               </div>
+              {appMode === 'express' && (
+                <div className="field">
+                  <label>Room API 地址（高级）</label>
+                  <input
+                    type="text"
+                    value={expressRoomApiUrl}
+                    onChange={e => { setExpressRoomApiUrl(e.target.value); setSettingsSaved(false) }}
+                    placeholder="https://legengen.top"
+                    maxLength={256}
+                  />
+                  <button
+                    className="log-btn"
+                    style={{ marginTop: 6 }}
+                    disabled={!expressNickname.trim()}
+                    onClick={async () => {
+                      try {
+                        await SaveExpressSettings(expressRoomApiUrl.trim(), expressNickname.trim())
+                        setSettingsSaved(true)
+                        setTimeout(() => setSettingsSaved(false), 2500)
+                      } catch (e) { setErrorMsg(String(e)) }
+                    }}
+                  >
+                    {settingsSaved ? '已保存' : '保存设置'}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}

@@ -40,6 +40,8 @@ export function GetConnectionDetails():Promise<app.ConnectionDetails>;
 
 export function GetErrorMessage():Promise<string>;
 
+export function GetExpressSettings():Promise<Record<string, string>>;
+
 export function GetLogContent():Promise<string>;
 
 export function GetMode():Promise<app.ModeInfo>;

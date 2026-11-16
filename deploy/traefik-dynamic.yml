@@ -12,7 +12,10 @@ http:
       rule: Host(`legengen.top`) && (PathPrefix(`/relay`) || PathPrefix(`/ws-proxy/`)
         || PathPrefix(`/api`) || PathPrefix(`/oauth2`))
       service: netbird-server@docker
-      tls: {}
+      # 显式 certResolver：tls:{} 空对象在 websecure 无默认证书配置时会
+      # 回退 traefik 自签默认证书，客户端 TLS 校验失败。
+      tls:
+        certResolver: le
     legengen-dashboard:
       entryPoints:
       - websecure
@@ -30,7 +33,8 @@ http:
       rule: Host(`legengen.top`) && (PathPrefix(`/signalexchange.SignalExchange/`)
         || PathPrefix(`/management.ManagementService/`) || PathPrefix(`/management.ProxyService/`))
       service: netbird-server-h2c@docker
-      tls: {}
+      tls:
+        certResolver: le
     legengen-http:
       entryPoints:
       - web
@@ -45,7 +49,8 @@ http:
       priority: 110
       rule: Host(`legengen.top`) && PathPrefix(`/rooms`)
       service: sogame-rooms@file
-      tls: {}
+      tls:
+        certResolver: le
   services:
     sogame-rooms:
       loadBalancer:

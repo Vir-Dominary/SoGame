@@ -27,7 +27,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"golang.org/x/sys/windows"
 
 	"sogame/internal/nbdaemon"
 	releasebuild "sogame/internal/releasebuild"
@@ -54,6 +57,10 @@ func main() {
 		if *resultPath == "" {
 			return
 		}
+		if err := validateWritablePath("--result", *resultPath); err != nil {
+			fmt.Fprintln(os.Stderr, "warn: refusing to write result file:", err)
+			return
+		}
 		reportResult(*resultPath, runErr)
 	}
 
@@ -68,8 +75,8 @@ func run(actionValue, artifactPath, logPath string) error {
 	if flag.NArg() != 0 {
 		return fmt.Errorf("unexpected positional arguments: %v", flag.Args())
 	}
-	if logPath == "" || !filepath.IsAbs(logPath) {
-		return fmt.Errorf("--log must be an absolute path")
+	if err := validateWritablePath("--log", logPath); err != nil {
+		return err
 	}
 	action := nbdaemon.MSIAction(actionValue)
 	if action != nbdaemon.MSIInstall && action != nbdaemon.MSIRepair && action != nbdaemon.MSIRemove {
@@ -117,7 +124,77 @@ func ensureLogDirectory(logPath string) error {
 	return os.MkdirAll(filepath.Dir(logPath), 0o700)
 }
 
+// validateWritablePath 约束提权后写文件的目标路径，防止 helper 被当成
+// "管理员任意文件写"原语滥用：
+//   - 必须是绝对路径；
+//   - 必须位于 SoGame 约定的数据目录之下（%LOCALAPPDATA%\SoGame、
+//     %ProgramData%\SoGame 或系统临时目录）；
+//   - 目标若已存在，必须是常规文件且不得是 reparse point（防止同用户进程
+//     预置 junction/symlink 把提权写入重定向到系统文件）。
+func validateWritablePath(flagName, path string) error {
+	if path == "" || !filepath.IsAbs(path) {
+		return fmt.Errorf("%s must be an absolute path", flagName)
+	}
+	clean := filepath.Clean(path)
+	allowed := false
+	for _, root := range writableRoots() {
+		if root == "" {
+			continue
+		}
+		rel, err := filepath.Rel(root, clean)
+		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return fmt.Errorf("%s path is outside the allowed SoGame data directories", flagName)
+	}
+	return rejectReparsePoint(flagName, clean)
+}
+
+func writableRoots() []string {
+	roots := []string{filepath.Clean(os.TempDir())}
+	if local := os.Getenv("LOCALAPPDATA"); local != "" {
+		roots = append(roots, filepath.Clean(filepath.Join(local, "SoGame")))
+	}
+	if programData := os.Getenv("ProgramData"); programData != "" {
+		roots = append(roots, filepath.Clean(filepath.Join(programData, "SoGame")))
+	}
+	return roots
+}
+
+// rejectReparsePoint 在路径已存在时拒绝 reparse point 与非常规文件；
+// 不存在的路径由调用方负责在写入前重新检查（见 reportResult）。
+func rejectReparsePoint(flagName, path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect %s target: %w", flagName, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s target must be a regular file", flagName)
+	}
+	pathUTF16, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return fmt.Errorf("encode %s path: %w", flagName, err)
+	}
+	attributes, err := windows.GetFileAttributes(pathUTF16)
+	if err != nil {
+		return fmt.Errorf("read %s attributes: %w", flagName, err)
+	}
+	if attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return fmt.Errorf("%s target must not be a reparse point", flagName)
+	}
+	return nil
+}
+
 // reportResult 将结果写入调用方指定的 JSON 文件。
+// 采用"临时文件 + rename"原子发布，主程序轮询读取时不会撞上写一半的
+// 内容而被误报为失败；写入前再次拒绝 reparse point（缩小与主程序侧
+// os.Remove 之间的 TOCTOU 窗口）。
 func reportResult(path string, runErr error) {
 	result := struct {
 		Success bool   `json:"success"`
@@ -132,7 +209,27 @@ func reportResult(path string, runErr error) {
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(path, payload, 0o600)
+	if err := rejectReparsePoint("--result", path); err != nil {
+		fmt.Fprintln(os.Stderr, "warn: refusing to write result file:", err)
+		return
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".result-*.tmp")
+	if err != nil {
+		return
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(payload); err != nil {
+		tmp.Close()
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		return
+	}
+	_ = os.Remove(path)
+	if err := os.Rename(tmpName, path); err != nil {
+		fmt.Fprintln(os.Stderr, "warn: publish result file failed:", err)
+	}
 }
 
 func fail(err error) {

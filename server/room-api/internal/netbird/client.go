@@ -35,6 +35,16 @@ import (
 // errors.Is 判定并把它视为幂等成功。
 var ErrNotFound = errors.New("netbird resource not found")
 
+// ErrResponseTooLarge 表示 Management 响应体超过解码上限。与 JSON 截断
+// 错误区分开：截断错误文案含糊（unexpected EOF），调用方无法判断是
+// 网络问题还是"账号规模已超出单页拉取能力"这一运营级信号。
+var ErrResponseTooLarge = errors.New("netbird API response exceeds size limit")
+
+// maxResponseBytes 响应解码上限：ListPeers 拉取全账号 peer（每 peer 约
+// 400-600 字节），64MB 覆盖约 10 万 peers；超过即说明账号规模已超出
+// 本服务"全量拉取再内存过滤"模型的承载能力，必须显式报错而非静默截断。
+const maxResponseBytes = 64 << 20
+
 type Client struct {
 	baseURL string
 	pat     string
@@ -175,7 +185,16 @@ func (c *Client) do(ctx context.Context, method, path string, input, output any)
 		io.Copy(io.Discard, io.LimitReader(resp.Body, 2048))
 		return nil
 	}
-	return json.NewDecoder(io.LimitReader(resp.Body, 10<<20)).Decode(output)
+	// 读满再判：解码器在 LimitReader 截断处报的是 JSON 语法错误，
+	// 无法与真实的响应损坏区分；显式长度检查给出可分类的错误。
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("netbird API %s %s: read response: %w", method, path, err)
+	}
+	if len(payload) > maxResponseBytes {
+		return fmt.Errorf("netbird API %s %s: %w", method, path, ErrResponseTooLarge)
+	}
+	return json.Unmarshal(payload, output)
 }
 
 func (c *Client) ListGroups(ctx context.Context) ([]Group, error) {
@@ -217,6 +236,12 @@ func (c *Client) CreateSetupKey(ctx context.Context, name, groupID string) (Setu
 	return key, err
 }
 
+// RevokeSetupKey 吊销 setup key。
+// 已知限制：Management 的 PUT /api/setup-keys/{id} 是整体替换语义，最小
+// body 可能把 name/type/expires 等元数据清零（不同 NetBird 版本行为有
+// 差异）。吊销本身有效；setup key 在房间生命周期内必然随
+// DeleteSetupKey 删除（teardown/compensate），元数据损失影响面有限。
+// TODO(netbird 版本实测后)：改为 GET 取回完整对象、改 revoked 后整体回写。
 func (c *Client) RevokeSetupKey(ctx context.Context, id string, groups []string) error {
 	body := map[string]any{"revoked": true, "auto_groups": groups}
 	return c.do(ctx, http.MethodPut, "/api/setup-keys/"+id, body, nil)

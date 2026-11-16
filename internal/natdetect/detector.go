@@ -22,7 +22,7 @@ func Detect(ctx context.Context, stunA, stunB string) NATResult {
 	result.LocalIP = laddr.IP.String()
 	result.LocalPort = laddr.Port
 
-	ma1, err := sendSTUN(stunA)
+	ma1, err := sendSTUN(ctx, stunA)
 	if err != nil {
 		result.Type = NATTypeUDPBlocked
 		result.Error = fmt.Sprintf("STUN 请求失败: %v", err)
@@ -38,7 +38,12 @@ func Detect(ctx context.Context, stunA, stunB string) NATResult {
 		return result
 	}
 
-	ma2, err := sendSTUN(stunB)
+	if ctx.Err() != nil {
+		result.Error = "探测超时"
+		result.Suggestion = result.SuggestionText()
+		return result
+	}
+	ma2, err := sendSTUN(ctx, stunB)
 	if err != nil {
 		result.Type = NATTypeRestrictedCone
 		result.Suggestion = result.SuggestionText()

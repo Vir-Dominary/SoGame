@@ -74,6 +74,9 @@ func listFromTable(match func(name string) bool) ([]Info, error) {
 	rowSize := unsafe.Sizeof(windows.MibIfRow2{})
 	base := uintptr(unsafe.Pointer(&table.Table[0]))
 	for i := uint32(0); i < table.NumEntries; i++ {
+		// go vet 会报 "possible misuse of unsafe.Pointer"，这是误报：
+		// table 由 defer FreeMibTable 保证在整个循环期间存活，行遍历是
+		// x/sys/windows 枚举 MIB 表的惯用模式。
 		row := (*windows.MibIfRow2)(unsafe.Pointer(base + uintptr(i)*rowSize))
 		name := aliasName(row)
 		if name == "" || isFilterLayer(name) || !match(name) {

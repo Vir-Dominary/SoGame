@@ -38,6 +38,10 @@ var (
 	hostURLPattern       = regexp.MustCompile(`(?i)(https?://)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?`)
 	hostnamePattern      = regexp.MustCompile(`(?i)\b[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z]{2,})+\b`)
 	peerIDPattern        = regexp.MustCompile(`(?i)\b[0-9a-f]{64}\b`)
+	// edgeKeyArgPattern 覆盖 n2n edge argv 的 "-k <值>" 形态（社区密钥）；
+	// hex32Pattern 覆盖经典模式 32 位十六进制密钥（hex(16B)）的兜底脱敏。
+	edgeKeyArgPattern = regexp.MustCompile(`(?i)(^|\s)-k\s+[^\s]+`)
+	hex32Pattern      = regexp.MustCompile(`(?i)\b[0-9a-f]{32}\b`)
 )
 
 var sensitiveKeys = map[string]struct{}{
@@ -55,9 +59,11 @@ var sensitiveKeys = map[string]struct{}{
 
 func Redact(value string) string {
 	value = privateKeyBlock.ReplaceAllString(value, "[PRIVATE_KEY]")
+	value = edgeKeyArgPattern.ReplaceAllString(value, "$1-k [REDACTED]")
 	value = credentialAssignment.ReplaceAllString(value, "$1=[REDACTED]")
 	value = urlCredentialPattern.ReplaceAllString(value, "${1}[REDACTED]@")
 	value = setupKeyPattern.ReplaceAllString(value, "[REDACTED]")
+	value = hex32Pattern.ReplaceAllString(value, "[REDACTED]")
 	return roomCodePattern.ReplaceAllString(value, "[REDACTED]")
 }
 
@@ -111,6 +117,9 @@ func (h *RedactingHandler) WithGroup(name string) slog.Handler {
 }
 
 func redactAttr(attr slog.Attr) slog.Attr {
+	// 先 Resolve：slog.LogValuer 实现会在下游 JSON 编码时才展开，
+	// 不展开则 KindLogValuer 会绕过下面所有分支形成脱敏旁路。
+	attr.Value = attr.Value.Resolve()
 	if isSensitiveKey(attr.Key) {
 		return slog.String(attr.Key, "[REDACTED]")
 	}

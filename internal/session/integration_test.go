@@ -97,7 +97,8 @@ func (a *mockRoomAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"setup_key":      room.key,
 		})
 	case r.Method == "GET" && len(r.URL.Path) >= 6 && r.URL.Path[len(r.URL.Path)-6:] == "/peers":
-		json.NewEncoder(w).Encode(map[string]any{"peers": []struct{}{}})
+		// 与生产契约一致:roomapi 客户端会校验 peers 响应必须携带 room_id。
+		json.NewEncoder(w).Encode(map[string]any{"room_id": "room-1", "peers": []struct{}{}})
 	default:
 		http.NotFound(w, r)
 	}

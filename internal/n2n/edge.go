@@ -188,13 +188,18 @@ func BuildArgs(cfg *config.Config) []string {
 	return args
 }
 
+// BuildArgsForLogging 返回脱敏后的 argv（-k 的值替换为 ******），仅用于
+// 日志输出；与 BuildArgs 保持同源，避免日志丢失扩展参数（-d/-t 等）。
 func BuildArgsForLogging(cfg *config.Config) []string {
-	return []string{
-		"-c", cfg.Community,
-		"-k", "******",
-		"-a", cfg.IP,
-		"-l", cfg.Supernode,
+	args := BuildArgs(cfg)
+	masked := make([]string, len(args))
+	copy(masked, args)
+	for i := 0; i+1 < len(masked); i++ {
+		if masked[i] == "-k" {
+			masked[i+1] = "******"
+		}
 	}
+	return masked
 }
 
 func (e *Edge) Start(cfg *config.Config) error {
@@ -267,12 +272,15 @@ func (e *Edge) Start(cfg *config.Config) error {
 
 	args := BuildArgs(cfg)
 
+	// 安全红线：edge argv 含明文社区密钥（-k），日志只允许打印脱敏版本；
+	// 切勿直接打印 BuildArgs 的结果。
+	logArgs := BuildArgsForLogging(cfg)
 	logger.Debugf("edge args:")
-	for i := 0; i < len(args); i += 2 {
-		if i+1 < len(args) {
-			logger.Debugf("  %s %s", args[i], args[i+1])
+	for i := 0; i < len(logArgs); i += 2 {
+		if i+1 < len(logArgs) {
+			logger.Debugf("  %s %s", logArgs[i], logArgs[i+1])
 		} else {
-			logger.Debugf("  %s", args[i])
+			logger.Debugf("  %s", logArgs[i])
 		}
 	}
 
@@ -374,6 +382,15 @@ func (e *Edge) Start(cfg *config.Config) error {
 
 				time.Sleep(e.restartCooldown)
 
+				// 冷却期间用户可能已手动断开：尊重显式意图，不复活进程。
+				e.mu.Lock()
+				stopped := e.manualStop
+				e.mu.Unlock()
+				if stopped {
+					logger.Infof("auto-restart cancelled: manually stopped during cooldown")
+					return
+				}
+
 				if restartErr := e.Start(cfg); restartErr != nil {
 					logger.Errorf("auto-restart failed: %v", restartErr)
 					if e.callback != nil {
@@ -462,12 +479,16 @@ func (e *Edge) Stop() error {
 	defer e.stopMu.Unlock()
 
 	e.mu.Lock()
+	// 无论进程是否已退出都标记手动停止并取消挂起的重试：此前"进程已
+	// 退出则直接返回"会让挂起的自动重启（10s 冷却）与注册冲突重试
+	// （AfterFunc）在用户以为已断开的状态下复活 edge 进程。
+	e.manualStop = true
+	e.registrationRetryPending = false
 	if e.cmd == nil || e.cmd.ProcessState != nil {
 		e.mu.Unlock()
 		return nil
 	}
 
-	e.manualStop = true
 	pid := e.cmd.Process.Pid
 	done := e.done
 	mgmtPort := e.mgmtPort
@@ -749,22 +770,37 @@ func KillOrphanEdgeProcess() error {
 	return nil
 }
 
-func (e *Edge) parseEdgeOutput(line string) {
-	lineLower := strings.ToLower(line)
-
-	// 优先检测注册成功状态（这是最终成功状态）
-	// n2n edge v3 多种输出格式：
-	//   [OK] edge <<< ================ >>> supernode
-	//   registered with supernode
-	//   successfully registered
-	//   连接状态: 已成功注册到中心节点
-	if strings.Contains(lineLower, "registered with supernode") ||
+// isRegistrationSuccessLine 判断 edge 输出行（已转小写）是否表示
+// "已成功注册到中心节点"（最终成功状态）。从 parseEdgeOutput 抽出为
+// 纯函数以便单元测试。n2n edge v3 多种输出格式：
+//   [OK] edge <<< ================ >>> supernode
+//   registered with supernode
+//   successfully registered
+//   连接状态: 已成功注册到中心节点
+//
+// 注意：最后的 (ok && edge && supernode) 组合条件较宽，理论上可能把
+// 普通 OK 行误判为注册成功——保留该行为以兼容现存部署，修改需实测。
+func isRegistrationSuccessLine(lineLower string) bool {
+	return strings.Contains(lineLower, "registered with supernode") ||
 		strings.Contains(lineLower, "successfully registered") ||
 		(strings.Contains(lineLower, "<<<") && strings.Contains(lineLower, ">>>") && strings.Contains(lineLower, "supernode")) ||
 		strings.Contains(lineLower, "连接状态: 已成功注册到中心节点") ||
-		strings.Contains(lineLower, "edge_operate") && strings.Contains(lineLower, "supernode") && !strings.Contains(lineLower, "error") ||
-		strings.Contains(lineLower, "supernode0:") && strings.Contains(lineLower, "ok") ||
-		(strings.Contains(lineLower, "ok") && strings.Contains(lineLower, "edge") && strings.Contains(lineLower, "supernode")) {
+		(strings.Contains(lineLower, "edge_operate") && strings.Contains(lineLower, "supernode") && !strings.Contains(lineLower, "error")) ||
+		(strings.Contains(lineLower, "supernode0:") && strings.Contains(lineLower, "ok")) ||
+		(strings.Contains(lineLower, "ok") && strings.Contains(lineLower, "edge") && strings.Contains(lineLower, "supernode"))
+}
+
+// isConnectedToSupernodeLine 判断输出行是否表示"已连接到中心节点"
+// （中间状态，不是最终成功）。
+func isConnectedToSupernodeLine(lineLower string) bool {
+	return strings.Contains(lineLower, "connected to supernode") ||
+		strings.Contains(lineLower, "supernode connection established")
+}
+
+func (e *Edge) parseEdgeOutput(line string) {
+	lineLower := strings.ToLower(line)
+
+	if isRegistrationSuccessLine(lineLower) {
 		e.mu.Lock()
 		if e.connectionState == StateRegistered {
 			e.mu.Unlock()
@@ -799,8 +835,7 @@ func (e *Edge) parseEdgeOutput(line string) {
 	}
 
 	// 检测 TCP 连接成功（中间状态，不是最终成功）
-	if strings.Contains(lineLower, "connected to supernode") ||
-		strings.Contains(lineLower, "supernode connection established") {
+	if isConnectedToSupernodeLine(lineLower) {
 		e.mu.Lock()
 		// 只有在 Connecting 状态下才升级为 Connected
 		// 如果已经 Registered，不降级
@@ -1417,6 +1452,15 @@ func (e *Edge) scheduleRegistrationRetry() {
 	logger.Infof("scheduling auth conflict retry %d/%d after %v", retries, maxAuthConflictRetry, authRetryDelay)
 
 	time.AfterFunc(authRetryDelay, func() {
+		// 定时器无法取消：回调时检查手动停止/重试已撤销，避免在用户
+		// 显式断开后复活 edge 进程。
+		e.mu.Lock()
+		if e.manualStop || !e.registrationRetryPending {
+			e.mu.Unlock()
+			logger.Infof("auth conflict retry cancelled: manually stopped")
+			return
+		}
+		e.mu.Unlock()
 		if err := e.Start(cfg); err != nil {
 			logger.Errorf("auth conflict retry failed: %v", err)
 		}

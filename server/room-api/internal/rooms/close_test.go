@@ -48,6 +48,8 @@ type fakeNetBird struct {
 	failDeletePeer bool
 	// failListPeers 为真时 ListPeers 一律失败,用于验证"无法确定成员在线必须硬失败"。
 	failListPeers bool
+	// failDeletePolicy 为真时 DeletePolicy 一律失败,用于验证 teardown 失败回滚 active。
+	failDeletePolicy bool
 	// notFoundOnDelete 为真时,删除/吊销类调用一律返回 netbird.ErrNotFound,
 	// 模拟"资源已被管理员在 NetBird dashboard 手动删除"。
 	notFoundOnDelete bool
@@ -139,6 +141,9 @@ func (f *fakeNetBird) CreateRoomPolicy(_ context.Context, name, groupID string) 
 }
 
 func (f *fakeNetBird) DeletePolicy(_ context.Context, id string) error {
+	if f.failDeletePolicy {
+		return errors.New("delete policy failed")
+	}
 	if f.notFoundOnDelete {
 		return netbird.ErrNotFound
 	}
@@ -328,20 +333,127 @@ func TestWatchdogSkipsLegacyRoomsWithoutOwner(t *testing.T) {
 }
 
 func TestCloseTeardownFailureKeepsActiveAndRetryable(t *testing.T) {
-	// NetBird 管理面出错时:不入 closed,可重试
-	service, database, _ := newTestService(t)
+	// NetBird 删除失败时：房间必须回滚 active（可重试）且记录 last_error；
+	// 故障恢复后重试必须成功关闭。
+	service, database, fake := newTestService(t)
 	response, err := service.Create(context.Background(), "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	// 破坏 setup key/资源一致性来触发失败路径(策略删除失败走 store 回退)
-	room, _ := database.GetRoom(context.Background(), response.RoomID)
-	if room.PolicyID == "" {
-		t.Fatal("expected policy id present")
+	fake.failDeletePolicy = true
+	if err := service.Close(context.Background(), response.RoomCode, response.OwnerToken); err == nil {
+		t.Fatal("close must fail when NetBird delete fails")
 	}
+	room, err := database.GetRoom(context.Background(), response.RoomID)
+	if err != nil {
+		t.Fatalf("reload room: %v", err)
+	}
+	if room.Status != "active" {
+		t.Fatalf("failed teardown must keep room active, got %s", room.Status)
+	}
+	if room.LastError == "" {
+		t.Fatal("last_error must record the teardown failure")
+	}
+	// 恢复后重试成功
+	fake.failDeletePolicy = false
 	if err := service.Close(context.Background(), response.RoomCode, response.OwnerToken); err != nil {
-		t.Fatalf("normal close should succeed: %v", err)
+		t.Fatalf("retry after recovery must succeed: %v", err)
 	}
+	room, _ = database.GetRoom(context.Background(), response.RoomID)
+	if room.Status != "closed" {
+		t.Fatalf("retried close must reach closed, got %s", room.Status)
+	}
+}
+
+// TestCompensateProvisioningNeverDeletesReusedGroup 回归（H-6）：
+// 复用的既有 group（createdGroup=false）绝不在补偿范围内被删除；
+// setup key 必须 Revoke+Delete 双管齐下（H-7）。
+func TestCompensateProvisioningNeverDeletesReusedGroup(t *testing.T) {
+	service, _, fake := newTestService(t)
+
+	service.compensateProvisioning(context.Background(), "pol-1", "key-1", "grp-reused", false)
+	if len(fake.deletedGroups) != 0 {
+		t.Fatalf("reused group must NOT be deleted, got %v", fake.deletedGroups)
+	}
+	if len(fake.revokedKeys) != 1 || len(fake.deletedKeys) != 1 {
+		t.Fatalf("setup key must be revoked AND deleted, got revoked=%v deleted=%v", fake.revokedKeys, fake.deletedKeys)
+	}
+	if len(fake.deletedPolicies) != 1 {
+		t.Fatalf("policy must be deleted, got %v", fake.deletedPolicies)
+	}
+
+	service.compensateProvisioning(context.Background(), "", "", "grp-owned", true)
+	if len(fake.deletedGroups) != 1 || fake.deletedGroups[0] != "grp-owned" {
+		t.Fatalf("created group must be deleted, got %v", fake.deletedGroups)
+	}
+}
+
+// TestResetOperationCAS 回归（H-5）：只有 error 状态的 operation 能被重置；
+// creating 状态的重置必须失败（防止并发重试双重建房）。
+func TestResetOperationCAS(t *testing.T) {
+	_, database, _ := newTestService(t)
+	ctx := context.Background()
+
+	if _, err := database.BeginOperation(ctx, "ik-cas", "room-x"); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	// creating 状态不可重置
+	reset, err := database.ResetOperation(ctx, "ik-cas", "room-y")
+	if err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if reset {
+		t.Fatal("creating operation must not be resettable")
+	}
+	// error 状态可重置一次；重置后回到 creating，再次重置失败（模拟并发竞争）
+	if err := database.SaveOperation(ctx, "ik-cas", nil, "error"); err != nil {
+		t.Fatalf("save error: %v", err)
+	}
+	reset, err = database.ResetOperation(ctx, "ik-cas", "room-y")
+	if err != nil || !reset {
+		t.Fatalf("error operation must be resettable, reset=%v err=%v", reset, err)
+	}
+	reset, err = database.ResetOperation(ctx, "ik-cas", "room-z")
+	if err != nil {
+		t.Fatalf("second reset: %v", err)
+	}
+	if reset {
+		t.Fatal("concurrent retry must lose the CAS race")
+	}
+}
+
+// TestReconcileRequeuesClosingRooms 回归（M-S7）：closing 僵尸被拨回 active
+// 且心跳置 0，看门狗下拍即可回收。
+func TestReconcileRequeuesClosingRooms(t *testing.T) {
+	service, database, fake := newTestService(t)
+	response, err := service.Create(context.Background(), "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// 手动把房间卡进 closing（模拟 teardown 中途进程退出）
+	if _, err := database.BeginClosing(context.Background(), response.RoomID); err != nil {
+		t.Fatalf("begin closing: %v", err)
+	}
+	if err := service.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	room, err := database.GetRoom(context.Background(), response.RoomID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if room.Status != "active" {
+		t.Fatalf("closing room must be requeued to active, got %s", room.Status)
+	}
+	if room.LastOwnerHeartbeat == nil || room.LastOwnerHeartbeat.Unix() != 0 {
+		t.Fatalf("heartbeat must be zeroed for immediate sweep, got %+v", room.LastOwnerHeartbeat)
+	}
+	// 看门狗下拍回收（心跳为 0 ≤ cutoff）
+	service.sweepOwnerOffline(context.Background(), 5*time.Minute)
+	room, _ = database.GetRoom(context.Background(), response.RoomID)
+	if room.Status != "closed" {
+		t.Fatalf("requeued room must be swept to closed, got %s", room.Status)
+	}
+	_ = fake
 }
 
 // TestCloseSucceedsWhenPeerKickFails 验证 DeletePeer 失败被降级为警告、

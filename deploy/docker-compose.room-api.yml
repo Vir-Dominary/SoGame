@@ -29,9 +29,17 @@
       - -healthcheck
       timeout: 5s
     image: sogame-room-api:latest
+    # 审计日志走 stdout：必须配置轮转，否则恶意请求洪泛会耗尽宿主磁盘。
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
     - netbird
     restart: unless-stopped
     volumes:
     - /root/room-api-data:/data
-    - /etc/pki/tls/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    # 注意：不要 bind mount 宿主机 CA 文件（如 /etc/pki/tls/certs/ca-bundle.crt
+    # 是 RHEL 系路径）——宿主机缺该文件时 Docker 会自动创建空目录挂载，
+    # 遮蔽镜像内 ca-certificates，导致 Management HTTPS 全部 TLS 失败。

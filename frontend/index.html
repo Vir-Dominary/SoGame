@@ -6,6 +6,9 @@
   <!-- This file is part of SoGame, licensed under the GNU Affero General Public License v3.0 or later. -->
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- 纵深防御 CSP：资源全部来自 embed FS 与 Wails 运行时，禁外部源。
+       style 需要 'unsafe-inline'（index.html 内联背景样式）。 -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wails:;" />
   <title>SoGame</title>
   <style>
     html, body { margin: 0; padding: 0; overflow: hidden; background: #0d1117; }

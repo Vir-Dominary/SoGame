@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-or-later
+﻿# SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 SoGame Contributors
 #
 # This file is part of SoGame.
@@ -33,15 +33,25 @@ $ErrorActionPreference = "Stop"
 $root = Resolve-Path "$PSScriptRoot/.."
 Set-Location $root
 
+# 构建顺序红线：必须先编译 sogame-helper.exe 并计算其 SHA256，再编译
+# 主程序并注入该哈希——主程序内嵌的 helper 完整性校验（UAC 提权前的
+# prepareElevation）依赖此哈希；顺序颠倒则校验链静默失效。
 Write-Host ""
-Write-Host "==> [1/4] 构建 Wails 主程序 (SoGame.exe)..." -ForegroundColor Cyan
-wails build -clean
-if ($LASTEXITCODE -ne 0) { throw "wails build failed" }
+Write-Host "==> [1/4] 构建 sogame-helper.exe (NetBird MSI 安装辅助程序)..." -ForegroundColor Cyan
+$helperTmp = "$root/build/tmp-helper"
+New-Item -ItemType Directory -Path $helperTmp -Force | Out-Null
+go build -o "$helperTmp/sogame-helper.exe" ./cmd/sogame-helper/
+if ($LASTEXITCODE -ne 0) { throw "sogame-helper build failed" }
+$helperHash = (Get-FileHash "$helperTmp/sogame-helper.exe" -Algorithm SHA256).Hash.ToLower()
+Write-Host "  sogame-helper.exe SHA256: $helperHash" -ForegroundColor Green
 
 Write-Host ""
-Write-Host "==> [2/4] 构建 sogame-helper.exe (NetBird MSI 安装辅助程序)..." -ForegroundColor Cyan
-go build -o "$root/build/bin/sogame-helper.exe" ./cmd/sogame-helper/
-if ($LASTEXITCODE -ne 0) { throw "sogame-helper build failed" }
+Write-Host "==> [2/4] 构建 Wails 主程序 (SoGame.exe，注入 helper 哈希)..." -ForegroundColor Cyan
+wails build -clean -ldflags "-X sogame/internal/releasebuild.helperSHA256Override=$helperHash"
+if ($LASTEXITCODE -ne 0) { throw "wails build failed" }
+# wails build -clean 会清空 build\bin：把先构建好的 helper 放回应有位置。
+Copy-Item "$helperTmp/sogame-helper.exe" "$root/build/bin/sogame-helper.exe" -Force
+Remove-Item $helperTmp -Recurse -Force
 
 Write-Host ""
 Write-Host "==> [3/4] 下载官方 NetBird MSI 并拷贝二进制到 build\bin\..." -ForegroundColor Cyan

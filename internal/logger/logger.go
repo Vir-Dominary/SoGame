@@ -233,7 +233,8 @@ func (l *Logger) rotateLogFile() {
 // Debugf 调试日志
 func Debugf(format string, args ...interface{}) {
 	if globalLogger == nil {
-		log.Printf("[DEBUG] "+format, args...)
+		// fallback 通道同样强制脱敏：Init 失败不代表敏感值可以裸奔。
+		log.Print("[DEBUG] " + observability.Redact(fmt.Sprintf(format, args...)))
 		return
 	}
 	globalLogger.log(DEBUG, fmt.Sprintf(format, args...))
@@ -242,7 +243,7 @@ func Debugf(format string, args ...interface{}) {
 // Infof 信息日志
 func Infof(format string, args ...interface{}) {
 	if globalLogger == nil {
-		log.Printf("[INFO] "+format, args...)
+		log.Print("[INFO] " + observability.Redact(fmt.Sprintf(format, args...)))
 		return
 	}
 	globalLogger.log(INFO, fmt.Sprintf(format, args...))
@@ -251,7 +252,7 @@ func Infof(format string, args ...interface{}) {
 // Warnf 警告日志
 func Warnf(format string, args ...interface{}) {
 	if globalLogger == nil {
-		log.Printf("[WARN] "+format, args...)
+		log.Print("[WARN] " + observability.Redact(fmt.Sprintf(format, args...)))
 		return
 	}
 	globalLogger.log(WARN, fmt.Sprintf(format, args...))
@@ -260,7 +261,7 @@ func Warnf(format string, args ...interface{}) {
 // Errorf 错误日志
 func Errorf(format string, args ...interface{}) {
 	if globalLogger == nil {
-		log.Printf("[ERROR] "+format, args...)
+		log.Print("[ERROR] " + observability.Redact(fmt.Sprintf(format, args...)))
 		return
 	}
 	globalLogger.log(ERROR, fmt.Sprintf(format, args...))

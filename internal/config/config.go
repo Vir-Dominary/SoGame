@@ -249,14 +249,17 @@ func Save(cfg *Config) error {
 	}
 
 	encryptedKey := cfg.Key
-	if enc := getEncryptor(); enc != nil {
+	if cfg.Key != "" {
+		enc := getEncryptor()
+		// 安全红线：加密器不可用时拒绝保存密钥，绝不明文落盘。
+		if enc == nil {
+			return fmt.Errorf("encryptor unavailable; refusing to save the key in plaintext")
+		}
 		encrypted, err := enc.Encrypt(cfg.Key)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt key: %w", err)
 		}
 		encryptedKey = encrypted
-	} else {
-		logger.Warnf("encryptor not available, saving key in plaintext")
 	}
 
 	configCopy.Key = encryptedKey
@@ -266,8 +269,32 @@ func Save(cfg *Config) error {
 		return err
 	}
 
-	// 写入配置文件，设置严格的权限（仅所有者可读写）
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	// 原子写入（临时文件 + 替换）：直接截断写时崩溃/断电会留下半截
+	// config.yaml；已有的 .bak 机制负责恢复，这里负责不让损坏发生。
+	// 注：0600 在 Windows 上仅映射只读属性位，实际访问控制由
+	// %AppData% 父目录 ACL（属主+SYSTEM+Administrators）承担。
+	tmp, err := os.CreateTemp(configDir, ".config-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp config file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("failed to write config file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("failed to sync config file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to close config file: %w", err)
+	}
+	// Windows 的 os.Rename 不能覆盖已存在目标，先删后换（.bak 已先行兜底）。
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to replace config file: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 
@@ -312,10 +339,14 @@ func ValidateNodeName(name string) error {
 }
 
 // ValidateCommunity 验证 Community
-// 规则：非空，长度 1-64，不能包含控制字符
+// 规则：非空，长度 1-64，不能包含控制字符，不得以 '-' 开头
+// （community 直接进入 edge.exe argv，以 '-' 开头会被参数解析吞并语义）。
 func ValidateCommunity(community string) error {
 	if len(community) == 0 || len(community) > 64 {
 		return fmt.Errorf("length must be between 1-64 characters")
+	}
+	if community[0] == '-' {
+		return fmt.Errorf("must not start with '-'")
 	}
 	// 检查是否包含控制字符
 	for _, ch := range community {
@@ -424,6 +455,12 @@ func RestoreFromBackup() (*Config, error) {
 				cfg.Key = decryptedKey
 			}
 		}
+	}
+
+	// 备份同样必须过校验：损坏/被篡改的 .bak 若绕过 Validate 直接进入
+	// 运行时并落盘，非法字段（畸形 IP/超长 community）会一路进入 edge argv。
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("backup config is invalid: %w", err)
 	}
 
 	return &cfg, nil

@@ -77,29 +77,18 @@ func TestPeerRefresherMarksMissingRoomStaleWithoutCallingAPI(t *testing.T) {
 	}
 }
 
-func TestPeerRefresherWatchUsesForegroundInterval(t *testing.T) {
+func TestPeerRefresherRefreshStoresSnapshot(t *testing.T) {
 	codes := &memoryRoomCode{value: []byte("AAAA-BBBB-CCCC")}
 	api := &fakePeerAPI{response: roomapi.PeerList{RoomID: "room-1", Peers: []roomapi.Peer{}}}
 	refresher := NewPeerRefresher(api, codes)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	updates := refresher.Watch(ctx, PeerRefreshForeground)
-	first := <-updates
-	if first.Stale {
-		t.Fatalf("initial snapshot=%+v", first)
+	snapshot, err := refresher.Refresh(context.Background())
+	if err != nil {
+		t.Fatalf("Refresh failed: %v", err)
 	}
-	select {
-	case <-updates:
-		t.Fatal("foreground watcher refreshed sooner than its configured interval")
-	case <-time.After(20 * time.Millisecond):
+	if snapshot.Stale {
+		t.Fatalf("initial snapshot=%+v", snapshot)
 	}
-	if got := peerRefreshInterval(PeerRefreshForeground); got != ForegroundPeerRefreshInterval {
-		t.Fatalf("foreground interval=%s", got)
-	}
-}
-
-func TestPeerRefresherUsesThirtySecondTrayInterval(t *testing.T) {
-	if got := peerRefreshInterval(PeerRefreshTray); got != 30*time.Second {
-		t.Fatalf("tray interval=%s", got)
+	if snapshot.LastRefreshAt.IsZero() {
+		t.Fatal("LastRefreshAt must be recorded after successful refresh")
 	}
 }

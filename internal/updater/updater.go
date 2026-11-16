@@ -3,7 +3,9 @@ package updater
 import (
 	"archive/zip"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -14,6 +16,35 @@ import (
 	"strings"
 	"time"
 )
+
+// manifestPublicKey 更新 manifest 的 ed25519 验签公钥，由 main 在启动时
+// 注入（内置常量 config.UpdateManifestPublicKey）。nil 表示未启用验签
+// （向后兼容模式：跳过签名校验）。
+var manifestPublicKey ed25519.PublicKey
+
+// SetManifestPublicKey 配置更新 manifest 的验签公钥（base64 编码的
+// ed25519 公钥）。必须在首次 Check 前调用；空值保持未启用状态。
+func SetManifestPublicKey(keyB64 string) error {
+	if keyB64 == "" {
+		return nil
+	}
+	key, err := base64.StdEncoding.DecodeString(keyB64)
+	if err != nil || len(key) != ed25519.PublicKeySize {
+		return fmt.Errorf("invalid update manifest public key")
+	}
+	manifestPublicKey = ed25519.PublicKey(key)
+	return nil
+}
+
+// ManifestSigningEnabled 报告是否启用了 manifest 验签（供诊断/测试）。
+func ManifestSigningEnabled() bool { return len(manifestPublicKey) != 0 }
+
+// signaturePayload 是 manifest 签名的覆盖内容：版本号与 zip 的 SHA256。
+// 签名把信任锚从"与分发信道同源的 sha256"升级为发布者离线持有的私钥——
+// 更新服务器/CDN/上传凭证失陷时，攻击者无法伪造能通过验签的 manifest。
+func signaturePayload(version, sha256Hex string) []byte {
+	return []byte(version + "\n" + strings.ToLower(strings.TrimSpace(sha256Hex)))
+}
 
 func Check(ctx context.Context, currentVersion, updateURL string) (UpdateInfo, error) {
 	info := UpdateInfo{CurrentVersion: currentVersion}
@@ -34,9 +65,20 @@ func Check(ctx context.Context, currentVersion, updateURL string) (UpdateInfo, e
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&manifest); err != nil {
 		return info, fmt.Errorf("解析更新信息失败: %w", err)
 	}
-	// sha256 是整个更新链唯一的信任锚（解压后文件无二次校验），缺失即视为无效。
+	// sha256 与签名的分工：sha256 防传输损坏；ed25519 签名防分发信道失陷
+	// （服务器被写/CDN 篡改/上传凭证泄露——攻击者可同时替换 zip 与 manifest
+	// 中的 sha256，但无法伪造签名）。公钥已配置时 manifest 必须携带有效签名。
 	if manifest.Version == "" || manifest.DownloadURL == "" || manifest.Sha256 == "" {
 		return info, fmt.Errorf("更新信息格式无效")
+	}
+	if len(manifestPublicKey) != 0 {
+		if manifest.Signature == "" {
+			return info, fmt.Errorf("更新信息缺少签名，已拒绝")
+		}
+		signature, err := base64.StdEncoding.DecodeString(manifest.Signature)
+		if err != nil || !ed25519.Verify(manifestPublicKey, signaturePayload(manifest.Version, manifest.Sha256), signature) {
+			return info, fmt.Errorf("更新信息签名校验失败，已拒绝")
+		}
 	}
 	info.LatestVersion = manifest.Version
 	info.DownloadURL = manifest.DownloadURL
@@ -98,11 +140,12 @@ func Download(ctx context.Context, url, expectedSha256 string, onProgress func(p
 		return "", fmt.Errorf("更新包超出大小上限")
 	}
 	tmpDir := os.TempDir()
-	zipPath := filepath.Join(tmpDir, "sogame-update.zip")
-	out, err := os.Create(zipPath)
+	// 随机化文件名（共享 %TEMP% 下避免与残留/他进程预置文件互相干扰）。
+	out, err := os.CreateTemp(tmpDir, "sogame-update-*.zip")
 	if err != nil {
 		return "", err
 	}
+	zipPath := out.Name()
 	defer out.Close()
 	hasher := sha256.New()
 	totalSize := resp.ContentLength
@@ -173,6 +216,9 @@ func Extract(zipPath, destDir string) error {
 		if !strings.HasPrefix(filepath.Clean(dest), filepath.Clean(destDir)+string(os.PathSeparator)) {
 			return fmt.Errorf("zip 路径逃逸: %s", f.Name)
 		}
+		if err := validateWindowsEntryName(f.Name); err != nil {
+			return fmt.Errorf("zip 条目名非法: %w", err)
+		}
 		if f.FileInfo().IsDir() {
 			os.MkdirAll(dest, 0755)
 			continue
@@ -206,4 +252,32 @@ func Extract(zipPath, destDir string) error {
 func CleanupTemp(zipPath, extractDir string) {
 	os.Remove(zipPath)
 	os.RemoveAll(extractDir)
+}
+
+// windowsReservedNames 是 Windows 设备保留名；zip 条目使用这些名字时
+// os.OpenFile 会打开设备而非文件。ADS 语法（file:stream）会写入 NTFS
+// 备用数据流。两者都不构成目录逃逸（已被前缀检查封死），但属于畸形包，
+// 直接拒绝。
+var windowsReservedNames = map[string]bool{
+	"CON": true, "PRN": true, "AUX": true, "NUL": true,
+	"COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true,
+	"COM6": true, "COM7": true, "COM8": true, "COM9": true,
+	"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true,
+	"LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
+}
+
+func validateWindowsEntryName(name string) error {
+	for _, segment := range strings.Split(strings.ReplaceAll(name, "/", `\`), `\`) {
+		if strings.Contains(segment, ":") {
+			return fmt.Errorf("entry %q contains NTFS stream syntax", name)
+		}
+		base := segment
+		if dot := strings.Index(base, "."); dot >= 0 {
+			base = base[:dot]
+		}
+		if windowsReservedNames[strings.ToUpper(base)] {
+			return fmt.Errorf("entry %q uses a reserved Windows device name", name)
+		}
+	}
+	return nil
 }

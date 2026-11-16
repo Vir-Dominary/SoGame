@@ -31,15 +31,15 @@ main.go                  # Wails 入口；--update-apply 自更新子进程模�
 cmd/
   sogame-helper/         # UAC 提权辅助程序（安装/修复/移除 NetBird MSI）
   nicctl/                # 网卡诊断工具
-  taptest/               # TAP 适配器测试工具
 internal/                # 客户端全部业务逻辑（见 §4 源码地图）
 frontend/                # React 前端（Vite + Wails 绑定，wailsjs/ 为生成代码）
 server/room-api/         # Room API 服务端（独立 module）
 installer/               # Inno Setup 打包（sogame.iss + build-installer.ps1）
 scripts/                 # build-all.ps1（一键构建）、publish-update.ps1（热更新发布）
-deploy/                  # DEPLOY.md + nginx 配置片段
-tools/                   # room-api-mock（联调替身，127.0.0.1:9099）、room-api-test.ps1
-docs/                    # 经典模式 TAP 测试记录
+deploy/                  # DEPLOY.md + nginx/traefik 配置片段
+tools/                   # room-api-mock（联调替身，127.0.0.1:9099）、
+                         # update-keygen / update-sign（热更新 ed25519 签名工具）
+docs/                    # 经典模式 TAP 测试记录、代码审计报告
 wireguard/               # 极速模式说明（README.md，详细叙述见本文档）
 ```
 
@@ -73,7 +73,9 @@ wireguard/               # 极速模式说明（README.md，详细叙述见本�
    安装前校验 MSI 的 SHA256 + Authenticode 签名 + publisher CN/O（`internal/nbdaemon/artifact_windows.go`）。
 3. **凭证分级保护**：房间码与 owner token 经 Windows DPAPI（current-user）加密落盘
    （`internal/securestore/`）；服务端 SQLite 中 setup key 以 AES-GCM 加密、
-   房间码与 owner token 仅存 SHA256 哈希。
+   owner token 仅存 SHA256 哈希；房间码查询键为 HMAC-SHA256(pepper, code)
+   （`server/room-api/internal/crypto.HashCode`，pepper 默认从主密钥域分离派生，
+   旧版无盐 SHA256 数据在首次查询时自动在线迁移）。
 4. **Relay 由服务器掌握**：开关 `ROOM_API_RELAY_ENABLED` 随房间下发，客户端被动遵循（见 §6.3）。
 
 ### 房间状态机（internal/session/state.go）
@@ -94,38 +96,52 @@ NoRoom → Enrolling → ControlPlaneConnected → WaitingForPeer → Connecting
 - Create 响应额外返回 `owner_token`（仅此一次下发，DPAPI 落盘）。
 - 房主每 60s 发送心跳（`ownerHeartbeatInterval`，`internal/session/service.go`）；
   服务端看门狗回收超过 `ROOM_API_OWNER_OFFLINE_AFTER`（默认 5m）无心跳的房间
-  （删除 Group/SetupKey/Policy 并禁用房间）。回收入口经 `store.BeginClosing` 状态 CAS
-  （仅 active→closing）防并发复活；NetBird 删除类调用容忍 404（`netbird.ErrNotFound`，
-  资源可能已被管理员在 dashboard 手动删除）。从不心跳的 legacy 房间（旧客户端无心跳
-  能力）不在回收之列，由客户端本地 24h 过期（`roomMaxAge`）兜底。
+  （`teardownRoom`：删除 Policy/SetupKey、强制 DeletePeer 踢成员下线、删除 Group，
+  终态 `closed` 并下发 410——成员客户端据此自动清理本地状态）。
+  回收入口经 `store.BeginClosing` 状态 CAS（仅 active→closing）防并发复活；
+  NetBird 删除类调用容忍 404（`netbird.ErrNotFound`，资源可能已被管理员在
+  dashboard 手动删除）。从不心跳的 legacy 房间（旧客户端无心跳能力）不在回收之列，
+  由客户端本地 24h 过期（`roomMaxAge`）兜底。
+- 房主心跳对 `closing` 状态返回 **409**（而非 410）：teardown 失败回滚 active 后
+  房间可继续服役，避免"房主收到 410 停跳→teardown 回滚→房主永不再跳"的自杀式回收链。
 - 房主可解散房间（Close，owner token 鉴权）；成员收到 `room_closed` 后自动清理本地状态。
 - 房主离线由服务端看门狗兜底；客户端另有身份自愈：进房必重置 daemon 身份，
   归属漂移/控制面死亡时自动以同一房间码重新 Join（`internal/session/repair.go`，
-  4 次观测防抖 + 2 分钟冷却）。
+  4 次观测防抖 + 2 分钟冷却 + re-join 后 60s 漂移判定宽限期；stale 成员快照
+  不参与漂移判定）。
+- **服务端启动恢复（Reconcile）四阶段**：Default all-to-all policy 隔离自检（告警）→
+  creating operation 收口 → closing 僵尸拨回 active 重排队（看门狗下拍回收）→
+  creating/error 僵尸房间（超 10 分钟）清理 → stale 房间按 `OwnerOfflineAfter`
+  阈值走 `teardownRoom` 回收（与看门狗同阈值同路径，不再是硬编码 30 分钟/Disable 语义）。
+- **Default All-to-All 策略是隔离红线**：NetBird 账号默认的 Default 放行策略若
+  enabled，所有房间数据面静默互通。新部署/重建账号必须执行一次
+  `room-api -disable-default-policy`；启动自检发现仍会 enabled 时打审计告警。
 
 ## 4. 源码地图（internal/）
 
 | 包 | 职责 |
 |---|---|
 | `webui/` | Wails 绑定层：`app.go`（通用+经典模式）、`express.go`（极速协调器）、`express_windows.go`（Windows 组装） |
-| `session/` | 极速模式会话核心：状态机、注册事务补偿、房主心跳、身份自愈、成员刷新（前台 5s/托盘 30s） |
-| `roomapi/` | Room API HTTP 客户端：幂等键、Retry-After 钳制、响应大小限制、SetupKey 防序列化 |
-| `netbird/` | daemon gRPC 适配器（`rpc/` 为 protoc 生成）、版本检查、恢复监控、profile 管理 |
+| `session/` | 极速模式会话核心：状态机、注册事务补偿、房主心跳、身份自愈、成员刷新（固定 5s；`Service.Close` 生命周期） |
+| `roomapi/` | Room API HTTP 客户端：幂等键、Retry-After 钳制（429 档 60s）、响应大小限制、Enrollment 防序列化/防打印 |
+| `netbird/` | daemon gRPC 适配器（`rpc/` 为 protoc 生成）、版本检查、恢复监控、profile 管理；`SetupKey` 类型（`String/Format/LogValue/MarshalJSON` 均 `[REDACTED]`） |
 | `nbdaemon/` | NetBird MSI 安装/修复/移除：签名校验、UAC 提权、服务生命周期 |
-| `securestore/` | DPAPI 加密存储：房间码、owner token、房间元数据（room.json），原子替换 |
-| `natdetect/` | STUN NAT 类型探测（RFC 3489 简化版），给用户提供组网建议 |
-| `updater/` | 热更新：版本比较、zip 下载（强制 SHA256、大小上限）、解压（ZipSlip 防护、目标目录先清理且拒绝符号链接） |
-| `releasebuild/` | 嵌入 `netbird-release.json`（MSI URL/SHA256/ProductCode） |
+| `securestore/` | DPAPI 加密存储：房间码、owner token、房间元数据（room.json，**元数据为明文 JSON**），原子替换 |
+| `natdetect/` | STUN NAT 类型探测（RFC 3489 简化版，ctx 生效），给用户提供组网建议 |
+| `updater/` | 热更新：版本比较、manifest ed25519 验签（公钥内置时强制）、zip 下载（强制 SHA256、大小上限）、解压（ZipSlip/保留名/ADS 防护、目标目录先清理且拒绝符号链接） |
+| `releasebuild/` | 嵌入 `netbird-release.json`（MSI URL/SHA256/ProductCode/证书指纹）；`helperSHA256Override` 经 ldflags 注入 |
 | `n2n/` | 经典模式 edge.exe 进程编排 |
 | `tap/` `nic/` | TAP 适配器安装/命名/等待；网卡查询 |
 | `config/` | 客户端配置（config.yaml）与内置常量（`app_config.go`） |
-| `observability/` | 日志脱敏（房间码/setup key/令牌/IP 模式） |
-| `logger/` `diagnostics/` `security/` `platform/` `poll/` | 日志（写盘点统一强制 `observability.Redact`）、诊断打包、经典模式配置加密、平台依赖、轮询工具 |
+| `observability/` | 日志脱敏（房间码/setup key/令牌/IP/`-k` argv/32hex 密钥模式；`RedactingHandler` 已接入默认 slog） |
+| `logger/` `diagnostics/` `security/` `platform/` `poll/` | 日志（写盘点统一强制 `observability.Redact`）、依赖检查、经典模式配置加密（AES-GCM v2）、平台依赖（PowerShell 一律环境变量传参+System32 绝对路径）、轮询工具 |
 
 ## 5. 构建与测试
 
 ```powershell
-# 一键构建（自动下载并校验 NetBird MSI）
+# 一键构建（顺序红线：先编译 sogame-helper.exe 算 SHA256，再 wails build
+# 注入该哈希——主程序 UAC 提权前的 helper 完整性校验依赖它；
+# 自动下载并校验 NetBird MSI）
 .\scripts\build-all.ps1
 # 输出：build\bin\SoGame.exe、sogame-helper.exe、edge.exe、netbird_installer_0.74.7_windows_amd64.msi
 
@@ -140,7 +156,9 @@ cd server\room-api; go test ./...
 .\installer\build-installer.ps1
 
 # 热更新发布（生成 publish\update.json + zip，上传见 deploy/DEPLOY.md）
-.\scripts\publish-update.ps1 -Version "2.2" -ReleaseNotes "..."
+# 启用签名（推荐）：先 tools/update-keygen 生成密钥对并把公钥填入
+# internal/config/app_config.go 的 UpdateManifestPublicKey，发布时加 -SignKeyFile
+.\scripts\publish-update.ps1 -Version "2.2" -ReleaseNotes "..." [-SignKeyFile <私钥路径>]
 ```
 
 本地联调 mock：
@@ -176,23 +194,26 @@ go run ./tools/room-api-mock/main.go   # 监听 127.0.0.1:9099，MOCK_RELAY_ENAB
 | `DefaultRoomAPIURL` | `https://legengen.top` | 生产 Room API（traefik `legengen-rooms` 路由，HTTPS；明文 IP 入口已于 2026-09-24 下线） |
 | `DefaultSupernode` | `8.148.244.159:10090` | 经典模式默认中心节点（节点表见 `internal/n2n/edge.go` knownNodes） |
 | `UpdateURL` | `https://virdy.cn/sogame/update.json` | 热更新 manifest |
+| `UpdateManifestPublicKey` | 空（未启用验签） | 更新 manifest ed25519 验签公钥（base64）；填入后 manifest 必须携带有效签名，见 §5 发布签名 |
 | `STUNServerA` / `STUNServerB` | `stun.virdy.cn:3478` / `stun.l.google.com:19302` | NAT 探测 |
 
 ### 6.2 Room API 服务端（环境变量，`server/room-api/internal/config/config.go`）
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `NETBIRD_PAT` | **必填** | Management API 的 Personal Access Token |
-| `ROOM_API_ENCRYPTION_KEY` | **必填** | setup key 落库加密密钥：base64(32B) 或 32 字符原文，其他取值按 SHA256 派生 |
+| `NETBIRD_PAT` | **必填** | Management API 的 Personal Access Token（全账号权限，爆炸半径=整个 NetBird 账号） |
+| `ROOM_API_ENCRYPTION_KEY` | **必填** | setup key 落库加密密钥：base64(32B) 或 32 字符原文，其他取值按 SHA256 派生（base64 合法但非 32B 直接报错） |
+| `ROOM_API_CODE_PEPPER` | 空（自动派生） | 房间码 HMAC 查询键的 pepper；空时从加密密钥域分离派生，显式配置可独立轮换 |
 | `NETBIRD_MANAGEMENT_URL` | `https://legengen.top` | NetBird Management 地址 |
 | `ROOM_API_ADDR` | `:8080` | 监听地址（明文 HTTP，生产应置于 TLS 反代之后） |
 | `ROOM_API_DB_PATH` | `room-api.db` | SQLite 路径（WAL 模式） |
 | `ROOM_API_ADMIN_TOKEN` | 空（禁用管理端点） | 管理员禁用房间的令牌 |
 | `ROOM_API_RELAY_ENABLED` | `false` | Relay 总开关（见 §6.3） |
-| `ROOM_API_CREATE_RATE_PER_MINUTE` | 5 | per-IP 限流 |
-| `ROOM_API_JOIN_RATE_PER_MINUTE` | 30 | per-IP 限流 |
-| `ROOM_API_PEER_RATE_PER_MINUTE` | 60 | per-IP 限流 |
-| `ROOM_API_MAX_BODY_BYTES` | 4096 | 请求体上限 |
+| `ROOM_API_TRUST_PROXY` | `false` | 信任反代 X-Forwarded-For 时取**最右值**（单跳 traefik 追加语义；多跳代理或不追加真实 IP 的拓扑下严禁开启） |
+| `ROOM_API_CREATE_RATE_PER_MINUTE` | 5 | per-IP 限流（429 带 `Retry-After`） |
+| `ROOM_API_JOIN_RATE_PER_MINUTE` | 30 | per-IP 限流（同上） |
+| `ROOM_API_PEER_RATE_PER_MINUTE` | 60 | per-IP 限流（同上） |
+| `ROOM_API_MAX_BODY_BYTES` | 4096 | 请求体上限（<256 拒绝启动） |
 | `ROOM_API_PROVISION_CONCURRENCY` | 2 | 建房并发信号量 |
 | `ROOM_API_OWNER_OFFLINE_AFTER` | 5m | 房主无心跳多久后由看门狗回收房间（`<=0` 关闭看门狗） |
 | `ROOM_API_OWNER_SWEEP_INTERVAL` | 1m | 看门狗扫描间隔 |
@@ -214,33 +235,55 @@ go run ./tools/room-api-mock/main.go   # 监听 127.0.0.1:9099，MOCK_RELAY_ENAB
 
 **安全红线：**
 
-- 房间码、setup key、owner token、PAT 不得进入日志。`internal/logger` 在最终写盘点统一
-  强制 `observability.Redact`（机制保证，不依赖调用点自觉）；携带敏感值的 error 不得把
-  含 URL/参数的底层错误文本（如 `*url.Error`，路径可能含明文房间码）内嵌进 `Error()`，
-  根因一律走 `Unwrap`。服务端审计日志只记录路由模板（`/rooms/:code/peers`），不记录原始路径。
-  `roomapi.SetupKey` 的 `String/Format/LogValue/MarshalJSON` 均返回 `[REDACTED]`，不要绕过。
-- 服务端 SQL 必须参数化；owner/admin token 比较必须用 `subtle.ConstantTimeCompare`。
-- MSI/更新包等外部产物必须先校验哈希与签名再执行；调用 `msiexec` 等系统程序用 System32 绝对路径。
-- 提权操作一律走 `sogame-helper.exe` UAC 通道，参数经 `syscall.EscapeArg` 转义，拒绝拼接命令行。
+- 房间码、setup key、owner token、PAT、经典模式社区密钥不得进入日志。`internal/logger`
+  在最终写盘点统一强制 `observability.Redact`（机制保证，不依赖调用点自觉；
+  fallback 通道同样脱敏）；裸 slog 调用经默认 `RedactingHandler` 兜底；携带敏感值的
+  error 不得把含 URL/参数的底层错误文本（如 `*url.Error`）内嵌进 `Error()`，根因一律走
+  `Unwrap`。服务端审计日志只记录路由模板（`/rooms/:code/peers`），不记录原始路径，
+  404 按 1/64 采样。`clientnetbird.SetupKey` 与 `roomapi.Enrollment` 的
+  `String/Format/LogValue/MarshalJSON` 均 `[REDACTED]`/拒绝序列化，不要绕过。
+  edge argv 含明文 `-k`：日志只允许打印 `BuildArgsForLogging`（同源脱敏版），
+  绝不直接打印 `BuildArgs`。
+- 服务端 SQL 必须参数化；owner/admin token 比较必须先哈希再 `subtle.ConstantTimeCompare`
+  （消除长度时序侧信道）。
+- MSI/更新包等外部产物必须先校验哈希与签名再执行；调用 `msiexec`/`powershell` 等系统
+  程序一律用 System32 绝对路径；PowerShell 脚本不做字符串拼接，外部数据一律经环境
+  变量传入（`$env:SOGAME_*` 模式）。
+- 提权操作一律走 `sogame-helper.exe` UAC 通道，参数经 `syscall.EscapeArg` 转义，拒绝拼接
+  命令行；helper 的 `--log`/`--result` 写路径受白名单前缀约束（SoGame 数据目录/TEMP），
+  已存在目标拒绝 reparse point，结果文件"临时文件+rename"原子发布。经典模式的
+  TAP/防火墙/网卡操作在主进程（requireAdministrator）内执行，属已知提权面，
+  新增特权操作应优先放 helper。
+- 完整房间码只经 `ExpressRevealRoomCode` 按需获取：`ExpressState` 快照的 `roomCode`
+  恒为空串，任何轮询/广播路径不得填充明文房间码。
 
 **并发与生命周期：**
 
-- `session.Service` 命令经 `beginCommand/endCommand` 互斥（30s 超时）；View 是高频只读路径，不得持锁调用外部服务。
+- `session.Service` 命令经 `beginCommand/endCommand` 互斥（30s 命令 ctx 超时；
+  `beginCommand` 本身无看门狗）。View 是高频只读路径，不得持锁调用外部服务；
+  room_closed 清理必须在命令互斥 + RoomID 二次校验下执行（不得在无锁 View 内
+  forceClear）。`ExpressController` 替换/销毁 Service 实例前必须调用其 `Close()`
+  （停房主心跳等后台 goroutine），`RepairService` 与房间命令共用 BusyCommand 互斥。
 - goroutine 必须有明确的 ctx 取消/退出路径（房主心跳、peers 轮询、daemon 事件订阅）。
-- enroll 采用事务补偿模式：任何一步失败必须按逆序清理（daemon logout → 删除 profile → 清理本地凭证）。
+- enroll 采用事务补偿模式：任何一步失败必须按严格逆序清理
+  （daemon logout → 删除 profile → tokens → metadata → codes）。
+- 服务端 teardown 的落库（`MarkRoomClosed`/回滚 `SetStatus`）必须与外部 ctx 解耦
+  （`context.WithoutCancel` + 短预算），防止 ctx 取消把房间卡进 `closing`。
 
 **前后端契约：**
 
 - Wails 绑定的方法签名变更后必须重新生成 `frontend/wailsjs/`（`wails generate module`），
   不要手工修补生成文件。
 - Room API 请求/响应字段双侧保持一致；客户端对瞬态错误重试、永久错误不重试，
-  服务端不得把内部错误与"资源不存在"混为同一 404。
+  服务端不得把内部错误与"资源不存在"混为同一 404；429/503 必须带 `Retry-After`。
 
 ## 8. 部署
 
-- 热更新分发与 nginx 配置：`deploy/DEPLOY.md`（含 room-api 部署章节）。
-- 生产事实：Room API 默认 `http://123.56.254.224`；Management 默认 `https://legengen.top`；
-  更新分发在 `https://virdy.cn/sogame/`。
+- 热更新分发与 nginx/traefik 配置：`deploy/DEPLOY.md`（含 room-api 部署章节与
+  `-disable-default-policy` 强制步骤、ed25519 签名发布指引）。
+- 生产事实：Room API 与 Management 均经 `https://legengen.top`（traefik；
+  明文 IP 入口 `http://123.56.254.224` 已于 2026-09-24 下线，仅作容器宿主存在）；
+  更新分发在 `https://virdy.cn/sogame/`（上传目标仅 `/opt/sogame/downloads/sogame/`）。
 
 ## 9. 许可证
 
@@ -258,6 +301,7 @@ Wintun MIT、Go/npm 依赖各自许可证）。详见 NOTICE、TRADEMARK.md、TH
 | `wireguard/README.md` | 极速模式叙述性介绍（与本文档互补，以本文档为准） |
 | `docs/TAP_*.md` | 经典模式 TAP 适配器测试用例与回归记录 |
 | `docs/CODE_REVIEW_*.md` | 分支代码评审报告（按评审日期与分支命名） |
+| `docs/AUDIT_REPORT_2026-11-12.md` | 全项目代码审计报告（含同日完成的修复记录与升级须知） |
 | `internal/netbird/rpc/README.md` | daemon.proto 生成代码说明 |
 | `THIRD_PARTY_LICENSES/` | 第三方组件许可证 |
 

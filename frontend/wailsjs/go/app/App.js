@@ -74,6 +74,10 @@ export function GetErrorMessage() {
   return window['go']['app']['App']['GetErrorMessage']();
 }
 
+export function GetExpressSettings() {
+  return window['go']['app']['App']['GetExpressSettings']();
+}
+
 export function GetLogContent() {
   return window['go']['app']['App']['GetLogContent']();
 }

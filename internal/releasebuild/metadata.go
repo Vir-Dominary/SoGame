@@ -57,6 +57,13 @@ type InstallProperties struct {
 	Arguments   []string `json:"arguments"`
 }
 
+// helperSHA256Override 由构建脚本经 -ldflags "-X sogame/internal/releasebuild.helperSHA256Override=<hash>"
+// 注入：构建顺序为"先编译 sogame-helper.exe → 计算其 SHA256 → 再编译
+// 主程序并注入"，使主程序内嵌的 helper 完整性校验（prepareElevation）
+// 真正生效。此前元数据 JSON 无 helperSha256 字段，校验被静默跳过——
+// 安装到用户可写目录时，同用户进程可替换 helper 借 UAC 提权。
+var helperSHA256Override string
+
 func Load() (Metadata, error) {
 	data, err := releaseFS.ReadFile("netbird-release.json")
 	if err != nil {
@@ -68,6 +75,9 @@ func Load() (Metadata, error) {
 	}
 	if metadata.SchemaVersion != 1 || metadata.Version == "" || metadata.WindowsX64.SHA256 == "" {
 		return Metadata{}, fmt.Errorf("invalid embedded NetBird release metadata")
+	}
+	if helperSHA256Override != "" {
+		metadata.HelperSHA256 = helperSHA256Override
 	}
 	return metadata, nil
 }

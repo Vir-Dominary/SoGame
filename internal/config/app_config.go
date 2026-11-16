@@ -31,6 +31,13 @@ const (
 	STUNServerA    = "stun.virdy.cn:3478"
 	STUNServerB    = "stun.l.google.com:19302"
 
+	// UpdateManifestPublicKey 是热更新 manifest 的 ed25519 验签公钥（base64）。
+	// 签名私钥由发布者离线保管（绝不可入库）；生成密钥对用
+	// tools/update-keygen，发布签名集成在 scripts/publish-update.ps1。
+	// 空字符串表示未启用验签（向后兼容：跳过签名校验）；
+	// 一旦填入公钥，manifest 必须携带有效签名，否则更新被拒绝。
+	UpdateManifestPublicKey = ""
+
 	// DefaultRoomAPIURL 是极速模式（netbird）的默认 Room API 服务地址。
 	// 指向 legengen.top（traefik 的 legengen-rooms 路由，HTTPS 加密传输；
 	// virdy.cn 是主站/更新服务域名，没有 /rooms 路由——勿用）。

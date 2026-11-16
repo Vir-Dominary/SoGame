@@ -69,6 +69,10 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// SQLite 单写者模型：多连接并发写只会撞 SQLITE_BUSY 后等 busy_timeout
+	// 再报错。限制为单连接让 database/sql 自己排队，消除看门狗 worker 与
+	// HTTP 写并发导致的偶发 busy 失败；WAL 下读吞吐仍足够当前规模。
+	db.SetMaxOpenConns(1)
 	s := &Store{DB: db}
 	if err := s.migrate(context.Background()); err != nil {
 		db.Close()
@@ -176,9 +180,20 @@ func (s *Store) SaveOperation(ctx context.Context, key string, response []byte, 
 	return err
 }
 
-func (s *Store) ResetOperation(ctx context.Context, key, roomID string) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE operations SET room_id=?, response_ciphertext='', status='creating' WHERE idempotency_key=?`, roomID, key)
-	return err
+// ResetOperation 把 error 状态的幂等操作原子重置为 creating 以便重试。
+// WHERE status='error' 是必要的 CAS：两个并发请求同时看到 error 时，
+// 只有一个能抢到重置权（返回 true），另一个必须放弃——否则两者都会
+// 继续执行完整建房流程，产出双份房间与 NetBird 孤儿资源。
+func (s *Store) ResetOperation(ctx context.Context, key, roomID string) (bool, error) {
+	result, err := s.DB.ExecContext(ctx, `UPDATE operations SET room_id=?, response_ciphertext='', status='creating' WHERE idempotency_key=? AND status='error'`, roomID, key)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected == 1, nil
 }
 
 func (s *Store) CreateRoom(ctx context.Context, room Room) error {
@@ -203,6 +218,12 @@ func (s *Store) Disable(ctx context.Context, roomID string) error {
 
 func (s *Store) GetRoomByCodeHash(ctx context.Context, hash []byte) (Room, error) {
 	return s.scanRoom(s.DB.QueryRowContext(ctx, `SELECT id, code_hash, code_ciphertext, group_id, setup_key_id, setup_key_ciphertext, policy_id, status, created_at, disabled_at, last_error, owner_token_hash, last_owner_heartbeat, closed_at, closed_reason FROM rooms WHERE code_hash=?`, hash))
+}
+
+// UpdateCodeHash 重算房间的查询键（旧版无盐 SHA256 → HMAC 的在线迁移）。
+func (s *Store) UpdateCodeHash(ctx context.Context, roomID string, hash []byte) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE rooms SET code_hash=? WHERE id=?`, hash, roomID)
+	return err
 }
 
 func (s *Store) GetRoom(ctx context.Context, id string) (Room, error) {
@@ -330,11 +351,51 @@ func (s *Store) scanRoom(row rowScanner) (Room, error) {
 }
 
 func (s *Store) MustHealthy(ctx context.Context) error {
-	var result string
-	if err := s.DB.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&result); err == nil && result == "ok" {
+	// 轻量探活：integrity_check 是全库扫描，DB 增大后单次会议即超过
+	// 容器 healthcheck 的 5s 超时，会把健康实例误判为 unhealthy 引发
+	// 重启循环。SELECT 1 足够证明"库可打开、连接可用"。
+	var result int
+	if err := s.DB.QueryRowContext(ctx, `SELECT 1`).Scan(&result); err == nil && result == 1 {
 		return nil
 	}
 	return fmt.Errorf("store health check failed")
+}
+
+// ListZombieRooms 返回"卡在 creating / error 状态且创建时间早于阈值"的房间。
+// 这些房间从未交付给任何客户端：
+//   - 无幂等键的 Create 在 NetBird 调用中途崩溃 → 无 operation 记录，
+//     启动恢复前两阶段看不到它；
+//   - Create 补偿后落为 error 的房间（重试会生成新 roomID，旧的永不触碰）。
+// 其 NetBird 资源（group/setup key/policy）需要被回收。
+func (s *Store) ListZombieRooms(ctx context.Context, createdBefore int64) ([]Room, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT id, code_hash, code_ciphertext, group_id, setup_key_id, setup_key_ciphertext, policy_id, status, created_at, disabled_at, last_error, owner_token_hash, last_owner_heartbeat, closed_at, closed_reason FROM rooms WHERE status IN ('creating','error') AND created_at <= ?`, createdBefore)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var rooms []Room
+	for rows.Next() {
+		room, err := s.scanRoom(rows)
+		if err != nil {
+			return nil, err
+		}
+		rooms = append(rooms, room)
+	}
+	return rooms, rows.Err()
+}
+
+// RequeueClosingRooms 把卡在 closing 的房间拨回 active 并使其心跳立即可回收：
+// 进程重启意味着此前在途 teardown 已随进程死亡（closing 不可能是活跃状态），
+// 拨回 active + heartbeat 置 0 后由看门狗按标准路径重跑 teardown——
+// teardown 的删除类调用容忍 404，重跑幂等安全。
+// 注：OwnerOfflineAfter<=0（看门狗关闭）时这些房间退化为"无心跳 legacy 房间"，
+// 由客户端 24h 本地过期兜底。
+func (s *Store) RequeueClosingRooms(ctx context.Context) (int64, error) {
+	result, err := s.DB.ExecContext(ctx, `UPDATE rooms SET status='active', last_error='teardown interrupted, re-queued for watchdog', last_owner_heartbeat=0 WHERE status='closing'`)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 // ListStaleActiveRooms 返回需要被启动时 Reconcile 清理的 active 房间：

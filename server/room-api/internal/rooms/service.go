@@ -20,6 +20,7 @@ package rooms
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -48,6 +49,14 @@ const (
 	ownerSweepWorkers = 4
 	// ownerSweepBudget 单次清扫的总超时预算；防止积压房间时一次 sweep 长时间阻塞后续 ticker。
 	ownerSweepBudget = 30 * time.Second
+	// zombieRoomGrace 僵尸房间（creating/error 且从未交付）的宽限期：
+	// 超过该时长仍未交付即由启动恢复回收其 NetBird 资源。
+	// 必须显著大于正常建房耗时（秒级），取 10 分钟。
+	zombieRoomGrace = 10 * time.Minute
+	// peersCacheTTL 全账号 peer 列表的缓存时长：Peers 轮询（每房间每成员
+	// 5s）与 teardown 共用，避免 Management QPS 随 房间数×成员数 线性放大。
+	// 成员列表秒级延迟可接受。
+	peersCacheTTL = 2 * time.Second
 )
 
 type NetBirdAPI interface {
@@ -70,6 +79,10 @@ type NetBirdAPI interface {
 type Config struct {
 	ManagementURL string
 	EncryptionKey []byte
+	// CodePepper 房间码 HMAC 查询键的 pepper（见 crypto.HashCode）。
+	// 为空时由 EncryptionKey 域分离派生（部署零新增变量）；
+	// 显式配置（ROOM_API_CODE_PEPPER）可独立轮换。
+	CodePepper []byte
 	// RelayEnabled 表示该服务器是否允许房间使用 Relay 中继。
 	// 由提供服务的服务器掌握，随房间 enrollment 下发给客户端：
 	//   false（默认）→ 纯 P2P 优先
@@ -85,6 +98,10 @@ type Service struct {
 	store *store.Store
 	nb    NetBirdAPI
 	cfg   Config
+	// peersMu/peersCache/peersFetchedAt 全账号 peer 列表的短 TTL 缓存。
+	peersMu        sync.Mutex
+	peersCache     []netbird.Peer
+	peersFetchedAt time.Time
 }
 
 type RoomResponse struct {
@@ -113,7 +130,22 @@ type PeerResponse struct {
 }
 
 func New(s *store.Store, nb NetBirdAPI, cfg Config) *Service {
+	if len(cfg.CodePepper) == 0 {
+		cfg.CodePepper = DeriveCodePepper(cfg.EncryptionKey, "")
+	}
 	return &Service{store: s, nb: nb, cfg: cfg}
+}
+
+// DeriveCodePepper 派生房间码 HMAC 的 pepper：显式值（ROOM_API_CODE_PEPPER，
+// 可独立轮换）优先；未配置时从加密密钥域分离派生，避免与密文密钥混用。
+func DeriveCodePepper(encryptionKey []byte, explicit string) []byte {
+	if explicit != "" {
+		sum := sha256.Sum256([]byte("room-code-pepper-v1|explicit|" + explicit))
+		return sum[:]
+	}
+	mac := hmac.New(sha256.New, encryptionKey)
+	mac.Write([]byte("room-code-pepper-v1|derived"))
+	return mac.Sum(nil)
 }
 
 func (s *Service) Create(ctx context.Context, idempotencyKey string) (RoomResponse, error) {
@@ -156,8 +188,15 @@ func (s *Service) Create(ctx context.Context, idempotencyKey string) (RoomRespon
 	}
 	if idempotencyKey != "" {
 		if retryOperation {
-			if err := s.store.ResetOperation(ctx, idempotencyKey, roomID); err != nil {
+			// 并发重试同一幂等键时只有一个能抢到重置权（CAS）；
+			// 抢不到者必须放弃，否则会与持有者双双执行完整建房流程，
+			// 产出一套永不被回收的孤儿房间与 NetBird 资源。
+			reset, err := s.store.ResetOperation(ctx, idempotencyKey, roomID)
+			if err != nil {
 				return RoomResponse{}, err
+			}
+			if !reset {
+				return RoomResponse{}, ErrOperationInProgress
 			}
 		}
 		created, err := s.store.BeginOperation(ctx, idempotencyKey, roomID)
@@ -170,16 +209,30 @@ func (s *Service) Create(ctx context.Context, idempotencyKey string) (RoomRespon
 	}
 	codeCiphertext, err := roomcrypto.Seal(s.cfg.EncryptionKey, []byte(code))
 	if err != nil {
-		return RoomResponse{}, err
+		return s.fail(ctx, roomID, idempotencyKey, fmt.Errorf("seal room code: %w", err))
 	}
-	if err := s.store.CreateRoom(ctx, store.Room{
-		ID: roomID, CodeHash: roomcrypto.Hash(code), CodeCiphertext: codeCiphertext,
-		Status: "creating", CreatedAt: time.Now().UTC(), OwnerTokenHash: ownerTokenHash,
-	}); err != nil {
-		return RoomResponse{}, err
-	}
-	if err := s.store.SetOwnerTokenHash(ctx, roomID, ownerTokenHash); err != nil {
-		return RoomResponse{}, err
+	// code_hash UNIQUE 冲突（概率 ~2^-60）时重生成房间码重试一次，
+	// 避免用户看到一次莫名的 502。
+	for attempt := 0; ; attempt++ {
+		err = s.store.CreateRoom(ctx, store.Room{
+			ID: roomID, CodeHash: roomcrypto.HashCode(s.cfg.CodePepper, code), CodeCiphertext: codeCiphertext,
+			Status: "creating", CreatedAt: time.Now().UTC(), OwnerTokenHash: ownerTokenHash,
+		})
+		if err == nil {
+			break
+		}
+		if attempt == 0 && strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			code, err = randomRoomCode()
+			if err != nil {
+				return s.fail(ctx, roomID, idempotencyKey, err)
+			}
+			codeCiphertext, err = roomcrypto.Seal(s.cfg.EncryptionKey, []byte(code))
+			if err != nil {
+				return s.fail(ctx, roomID, idempotencyKey, fmt.Errorf("seal room code: %w", err))
+			}
+			continue
+		}
+		return s.fail(ctx, roomID, idempotencyKey, fmt.Errorf("create room record: %w", err))
 	}
 
 	resourceName := "room-" + roomID
@@ -194,56 +247,65 @@ func (s *Service) Create(ctx context.Context, idempotencyKey string) (RoomRespon
 	}
 	key, err := s.nb.CreateSetupKey(ctx, resourceName, group.ID)
 	if err != nil {
-		if createdGroup {
-			_ = s.nb.DeleteGroup(ctx, group.ID)
-		}
+		s.compensateProvisioning(ctx, "", "", group.ID, createdGroup)
 		return s.fail(ctx, roomID, idempotencyKey, fmt.Errorf("create setup key: %w", err))
 	}
 	keyCiphertext, err := roomcrypto.Seal(s.cfg.EncryptionKey, []byte(key.Key))
 	if err != nil {
-		_ = s.nb.RevokeSetupKey(ctx, key.ID, []string{group.ID})
-		if createdGroup {
-			_ = s.nb.DeleteGroup(ctx, group.ID)
-		}
+		s.compensateProvisioning(ctx, "", key.ID, group.ID, createdGroup)
 		return s.fail(ctx, roomID, idempotencyKey, fmt.Errorf("encrypt setup key: %w", err))
 	}
 	if err := s.store.UpdateExternalIDs(ctx, roomID, group.ID, key.ID, "", keyCiphertext); err != nil {
-		_ = s.nb.RevokeSetupKey(ctx, key.ID, []string{group.ID})
-		if createdGroup {
-			_ = s.nb.DeleteGroup(ctx, group.ID)
-		}
+		s.compensateProvisioning(ctx, "", key.ID, group.ID, createdGroup)
 		return s.fail(ctx, roomID, idempotencyKey, fmt.Errorf("save resources: %w", err))
 	}
 	policy, err := s.nb.CreateRoomPolicy(ctx, resourceName+"-internal", group.ID)
 	if err != nil {
-		_ = s.nb.RevokeSetupKey(ctx, key.ID, []string{group.ID})
-		if createdGroup {
-			_ = s.nb.DeleteGroup(ctx, group.ID)
-		}
+		s.compensateProvisioning(ctx, "", key.ID, group.ID, createdGroup)
 		return s.fail(ctx, roomID, idempotencyKey, fmt.Errorf("create policy: %w", err))
 	}
 	if err := s.store.UpdateExternalIDs(ctx, roomID, group.ID, key.ID, policy.ID, keyCiphertext); err != nil {
-		_ = s.nb.DeletePolicy(ctx, policy.ID)
-		_ = s.nb.RevokeSetupKey(ctx, key.ID, []string{group.ID})
-		_ = s.nb.DeleteGroup(ctx, group.ID)
+		s.compensateProvisioning(ctx, policy.ID, key.ID, group.ID, createdGroup)
 		return s.fail(ctx, roomID, idempotencyKey, fmt.Errorf("save policy: %w", err))
 	}
 	if err := s.store.SetStatus(ctx, roomID, "active", ""); err != nil {
-		return RoomResponse{}, err
+		return s.fail(ctx, roomID, idempotencyKey, fmt.Errorf("activate room: %w", err))
 	}
 	response := RoomResponse{RoomID: roomID, RoomCode: code, ManagementURL: s.cfg.ManagementURL, SetupKey: key.Key, RelayEnabled: s.cfg.RelayEnabled, OwnerToken: ownerToken}
 	if idempotencyKey != "" {
 		clear, _ := json.Marshal(response)
 		ciphertext, sealErr := roomcrypto.Seal(s.cfg.EncryptionKey, clear)
 		if sealErr != nil {
-			return RoomResponse{}, sealErr
+			// 房间从未交付（Create 返回错误），标 error 由启动恢复的
+			// 僵尸清理兜底回收其 NetBird 资源，不能留在 active。
+			return s.fail(ctx, roomID, idempotencyKey, fmt.Errorf("seal idempotent response: %w", sealErr))
 		}
 		if err := s.store.SaveOperation(ctx, idempotencyKey, ciphertext, "active"); err != nil {
-			return RoomResponse{}, err
+			return s.fail(ctx, roomID, idempotencyKey, fmt.Errorf("save idempotent response: %w", err))
 		}
 	}
 	audit.Event("room_created", map[string]any{"room_id": roomID, "group_id": group.ID})
 	return response, nil
+}
+
+// compensateProvisioning 建房事务的 NetBird 侧补偿（全部失败路径共用）：
+// 删除 policy → 吊销并删除 setup key → 按 createdGroup 条件删除 group。
+//   - setup key 必须 Revoke+Delete 双管齐下：只吊销会让 revoked key 垃圾
+//     永久残留账号、稀释配额并拖慢管理面 List。
+//   - createdGroup=false 时 group 是 findGroup 复用的既有资源（上次失败
+//     残留），不在本次补偿范围，绝不能删。
+// 删除失败仅忽略（与原语义一致）：残留由启动恢复的僵尸清理兜底。
+func (s *Service) compensateProvisioning(ctx context.Context, policyID, setupKeyID, groupID string, createdGroup bool) {
+	if policyID != "" {
+		_ = s.nb.DeletePolicy(ctx, policyID)
+	}
+	if setupKeyID != "" {
+		_ = s.nb.RevokeSetupKey(ctx, setupKeyID, []string{groupID})
+		_ = s.nb.DeleteSetupKey(ctx, setupKeyID)
+	}
+	if createdGroup && groupID != "" {
+		_ = s.nb.DeleteGroup(ctx, groupID)
+	}
 }
 
 func (s *Service) findGroup(ctx context.Context, name string) (netbird.Group, bool, error) {
@@ -259,7 +321,14 @@ func (s *Service) findGroup(ctx context.Context, name string) (netbird.Group, bo
 	return netbird.Group{}, false, nil
 }
 
+// Reconcile 启动恢复：进程重启后把所有中断/残留状态收口。分四个阶段，
+// 每个阶段幂等，任何阶段失败即返回（下一次启动重试）。
 func (s *Service) Reconcile(ctx context.Context) error {
+	// 阶段零：隔离自检。账号级 Default all-to-all policy 若仍 enabled，
+	// 所有房间的 peer 在数据面全账号互通——房间隔离静默失效。
+	s.warnIfDefaultPolicyEnabled(ctx)
+
+	// 阶段一：creating 状态的幂等操作收口（进程在 NetBird 调用中途退出）。
 	operations, err := s.store.ListOperationsByStatus(ctx, "creating")
 	if err != nil {
 		return err
@@ -303,12 +372,27 @@ func (s *Service) Reconcile(ctx context.Context) error {
 		audit.Event("room_provision_reconciled", map[string]any{"room_id": room.ID})
 	}
 
-	staleBefore := time.Now().Add(-30 * time.Minute).UnixNano()
-	staleRooms, err := s.store.ListStaleActiveRooms(ctx, staleBefore)
+	// 阶段二：卡在 closing 的房间重排队。进程重启意味着在途 teardown
+	// 已中断（teardown 中途 ctx 取消/进程退出都会留下 closing 僵尸，
+	// 而看门狗只扫 active、Close 重试被 CAS 幂等吞掉——无任何恢复路径）。
+	// 拨回 active 且心跳置 0 后，看门狗下一拍即按标准路径回收。
+	requeued, err := s.store.RequeueClosingRooms(ctx)
 	if err != nil {
 		return err
 	}
-	for _, room := range staleRooms {
+	if requeued > 0 {
+		audit.Event("rooms_requeued_from_closing", map[string]any{"count": requeued})
+	}
+
+	// 阶段三：僵尸房间（creating/error 且超时）清理。这些房间从未交付
+	// 给任何客户端（无幂等键崩溃残留、或建房失败后重试已另建新房），
+	// 其 NetBird 资源必须回收，否则永久泄漏。
+	zombieBefore := time.Now().Add(-zombieRoomGrace).UnixNano()
+	zombies, err := s.store.ListZombieRooms(ctx, zombieBefore)
+	if err != nil {
+		return err
+	}
+	for _, room := range zombies {
 		if room.PolicyID != "" {
 			_ = s.nb.DeletePolicy(ctx, room.PolicyID)
 		}
@@ -319,12 +403,52 @@ func (s *Service) Reconcile(ctx context.Context) error {
 		if room.GroupID != "" {
 			_ = s.nb.DeleteGroup(ctx, room.GroupID)
 		}
-		if err := s.store.Disable(ctx, room.ID); err != nil {
+		if err := s.store.MarkRoomClosed(ctx, room.ID, "zombie_reaped", time.Now().UTC()); err != nil {
 			return err
 		}
-		audit.Event("room_stale_reaped", map[string]any{"room_id": room.ID})
+		audit.Event("room_zombie_reaped", map[string]any{"room_id": room.ID})
+	}
+
+	// 阶段四：stale 房间（心跳超时）启动回收。与看门狗同一阈值（可配置的
+	// OwnerOfflineAfter，而非独立的硬编码值——调大配置后重启不得误杀
+	// 正常房间）、同一路径（teardownRoom：closed 语义 + 强制踢 peer，
+	// 而非 Disable 的 404 语义——成员客户端需要 410 才能自动清理本地状态）。
+	if s.cfg.OwnerOfflineAfter > 0 {
+		staleBefore := time.Now().Add(-s.cfg.OwnerOfflineAfter).UnixNano()
+		staleRooms, err := s.store.ListStaleActiveRooms(ctx, staleBefore)
+		if err != nil {
+			return err
+		}
+		for _, room := range staleRooms {
+			if err := s.teardownRoom(ctx, room, "stale_reaped"); err != nil {
+				// 失败不阻塞其余房间；房间保持 active 由看门狗下拍兜底。
+				audit.Event("room_stale_reap_failed", map[string]any{"room_id": room.ID, "error": err.Error()})
+			}
+		}
 	}
 	return nil
+}
+
+// warnIfDefaultPolicyEnabled 启动自检：NetBird 账号默认存在名为 Default 的
+// all-to-all 放行策略；本项目全靠每房间一个 Group+Policy 实现隔离，只要
+// Default 仍 enabled，所有房间的 peer 在数据面全账号静默互通——房间隔离
+// 形同虚设，且无任何用户侧可见症状。发现时显著告警；禁用需显式执行
+// `room-api -disable-default-policy`（该 policy 可能被账号其他用途依赖，
+// 不宜未经确认自动关闭）。
+func (s *Service) warnIfDefaultPolicyEnabled(ctx context.Context) {
+	policies, err := s.nb.ListPolicies(ctx)
+	if err != nil {
+		audit.Event("default_policy_check_failed", map[string]any{"error": err.Error()})
+		return
+	}
+	for _, policy := range policies {
+		if policy.Name == "Default" && policy.Enabled {
+			audit.Event("default_policy_still_enabled", map[string]any{
+				"policy_id": policy.ID,
+				"warning":   "account-wide all-to-all policy is ENABLED; room isolation is NOT in effect. Run: room-api -disable-default-policy",
+			})
+		}
+	}
 }
 
 func (s *Service) fail(ctx context.Context, roomID, idempotencyKey string, err error) (RoomResponse, error) {
@@ -336,9 +460,31 @@ func (s *Service) fail(ctx context.Context, roomID, idempotencyKey string, err e
 	return RoomResponse{}, err
 }
 
+// lookupRoomByCode 按房间码查房间：优先 HMAC 查询键；未命中回退旧版
+// 无盐 SHA256 查询键（旧数据），命中后在线迁移为 HMAC——迁移对调用方
+// 透明，迁移失败不阻塞本次请求（下次访问重试）。
+func (s *Service) lookupRoomByCode(ctx context.Context, code string) (store.Room, error) {
+	code = strings.TrimSpace(code)
+	room, err := s.store.GetRoomByCodeHash(ctx, roomcrypto.HashCode(s.cfg.CodePepper, code))
+	if err == nil {
+		return room, nil
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		return store.Room{}, err
+	}
+	legacy, legacyErr := s.store.GetRoomByCodeHash(ctx, roomcrypto.Hash(code))
+	if legacyErr != nil {
+		return store.Room{}, legacyErr
+	}
+	if migrateErr := s.store.UpdateCodeHash(ctx, legacy.ID, roomcrypto.HashCode(s.cfg.CodePepper, code)); migrateErr != nil {
+		audit.Event("room_code_hash_migrate_failed", map[string]any{"room_id": legacy.ID})
+	}
+	return legacy, nil
+}
+
 // lookupActiveRoom 按房间码查房间；区分"不存在"与"已关闭"。
 func (s *Service) lookupActiveRoom(ctx context.Context, code string) (store.Room, error) {
-	room, err := s.store.GetRoomByCodeHash(ctx, roomcrypto.Hash(strings.TrimSpace(code)))
+	room, err := s.lookupRoomByCode(ctx, code)
 	if errors.Is(err, store.ErrNotFound) {
 		return store.Room{}, ErrInvalidRoom
 	}
@@ -367,12 +513,35 @@ func (s *Service) Join(ctx context.Context, code string) (RoomResponse, error) {
 	return RoomResponse{RoomID: room.ID, ManagementURL: s.cfg.ManagementURL, SetupKey: string(key), RelayEnabled: s.cfg.RelayEnabled}, nil
 }
 
+// listPeers 获取全账号 peer 列表（短 TTL 缓存）。
+// 每个活跃房间的每个成员每 5s 轮询一次 Peers，若每次都向 Management
+// 发起全量 GET /api/peers，QPS 会随 房间数×成员数 线性放大并拖垮
+// 自托管 Management。秒级缓存把常态 QPS 压到 1/TTL。
+func (s *Service) listPeers(ctx context.Context) ([]netbird.Peer, error) {
+	s.peersMu.Lock()
+	if s.peersCache != nil && time.Since(s.peersFetchedAt) < peersCacheTTL {
+		cached := s.peersCache
+		s.peersMu.Unlock()
+		return cached, nil
+	}
+	s.peersMu.Unlock()
+	peers, err := s.nb.ListPeers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.peersMu.Lock()
+	s.peersCache = peers
+	s.peersFetchedAt = time.Now()
+	s.peersMu.Unlock()
+	return peers, nil
+}
+
 func (s *Service) Peers(ctx context.Context, code string) (PeerResponse, error) {
 	room, err := s.lookupActiveRoom(ctx, code)
 	if err != nil {
 		return PeerResponse{}, err
 	}
-	peers, err := s.nb.ListPeers(ctx)
+	peers, err := s.listPeers(ctx)
 	if err != nil {
 		return PeerResponse{}, err
 	}
@@ -398,7 +567,7 @@ func (s *Service) Peers(ctx context.Context, code string) (PeerResponse, error) 
 // Close 房主凭令牌解散房间：先删 policy / 吊销+删 setup key / 强制删除组内
 // 所有 peer（成员立即掉线）/ 删 group，最后落库状态。关闭幂等：重复调用直接成功。
 func (s *Service) Close(ctx context.Context, code, ownerToken string) error {
-	room, err := s.store.GetRoomByCodeHash(ctx, roomcrypto.Hash(strings.TrimSpace(code)))
+	room, err := s.lookupRoomByCode(ctx, code)
 	if errors.Is(err, store.ErrNotFound) {
 		return ErrInvalidRoom
 	}
@@ -420,14 +589,21 @@ func (s *Service) Close(ctx context.Context, code, ownerToken string) error {
 // Heartbeat 房主心跳：验证令牌并刷新存活时间。房间已关闭时返回 ErrRoomClosed，
 // 让房主客户端尽快停止心跳并转本地无房态。
 func (s *Service) Heartbeat(ctx context.Context, code, ownerToken string) error {
-	room, err := s.store.GetRoomByCodeHash(ctx, roomcrypto.Hash(strings.TrimSpace(code)))
+	room, err := s.lookupRoomByCode(ctx, code)
 	if errors.Is(err, store.ErrNotFound) {
 		return ErrInvalidRoom
 	}
 	if err != nil {
 		return err
 	}
-	if room.Status == "closed" || room.Status == "closing" {
+	// closing（看门狗/Close 的 teardown 进行中）：返回 409 而非 410。
+	// 若 teardown 失败房间会回滚 active——此时房主必须仍在心跳，
+	// 否则"心跳收到 410 → 客户端停跳清凭证 → teardown 回滚 → 房主永不再跳
+	// → 下轮 sweep 回收"的自杀式回收链会杀死一个本可继续服役的房间。
+	if room.Status == "closing" {
+		return ErrOperationInProgress
+	}
+	if room.Status == "closed" {
 		return ErrRoomClosed
 	}
 	if room.Status != "active" {
@@ -469,12 +645,12 @@ func (s *Service) StartOwnerWatchdog(ctx context.Context) {
 // 拖垮后续 ticker。单个 room 回收失败不影响本次 sweep 的其余房间。
 func (s *Service) sweepOwnerOffline(ctx context.Context, offlineAfter time.Duration) {
 	cutoff := time.Now().UTC().Add(-offlineAfter)
-	rooms, err := s.store.ListOwnerSweepCandidates(ctx, cutoff)
+	candidates, err := s.store.ListOwnerSweepCandidates(ctx, cutoff)
 	if err != nil {
 		audit.Event("room_owner_sweep_failed", map[string]any{"error": err.Error()})
 		return
 	}
-	if len(rooms) == 0 {
+	if len(candidates) == 0 {
 		return
 	}
 
@@ -501,11 +677,14 @@ func (s *Service) sweepOwnerOffline(ctx context.Context, offlineAfter time.Durat
 		}()
 	}
 
-	for _, room := range rooms {
+dispatch:
+	for _, room := range candidates {
 		select {
 		case jobs <- room:
 		case <-sweepCtx.Done():
-			// 预算耗尽：停止投递，worker 处理完已接收的批次后退出。
+			// 预算耗尽：停止投递（此前分支是空 continue，注释与行为不符），
+			// worker 处理完已接收的批次后退出。
+			break dispatch
 		}
 	}
 	close(jobs)
@@ -544,7 +723,7 @@ func (s *Service) teardownRoom(ctx context.Context, room store.Room, reason stri
 	// 已阻断新成员入网，成员客户端最终靠轮询 ErrRoomClosed(410) 自行退出。
 	// 但 ListPeers 失败则无法确定成员是否仍在线，必须视为需要重试的硬失败。
 	if room.GroupID != "" {
-		peers, err := s.nb.ListPeers(ctx)
+		peers, err := s.listPeers(ctx)
 		if err != nil {
 			failures = append(failures, "list peers: "+err.Error())
 		} else {
@@ -576,10 +755,18 @@ func (s *Service) teardownRoom(ctx context.Context, room store.Room, reason stri
 	}
 	if len(failures) > 0 {
 		message := strings.Join(failures, "; ")
-		_ = s.store.SetStatus(ctx, room.ID, "active", message)
+		// 状态回滚与外部 ctx 解耦：请求超时/sweep 预算耗尽取消 ctx 时，
+		// 回滚必须仍能落库，否则房间永久卡在 closing 且无恢复路径。
+		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = s.store.SetStatus(writeCtx, room.ID, "active", message)
 		return fmt.Errorf("close room failed (will remain active): %s", message)
 	}
-	if err := s.store.MarkRoomClosed(ctx, room.ID, reason, time.Now().UTC()); err != nil {
+	// 落库与外部 ctx 解耦（同上）：NetBird 资源已删完，MarkRoomClosed
+	// 必须完成，否则房间卡在 closing（资源已删但状态未收口）。
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := s.store.MarkRoomClosed(writeCtx, room.ID, reason, time.Now().UTC()); err != nil {
 		return err
 	}
 	audit.Event("room_closed", map[string]any{"room_id": room.ID, "reason": reason})
@@ -611,9 +798,15 @@ func newOwnerToken() (string, string, error) {
 }
 
 func (s *Service) Disable(ctx context.Context, code string) error {
-	room, err := s.store.GetRoomByCodeHash(ctx, roomcrypto.Hash(strings.TrimSpace(code)))
-	if errors.Is(err, store.ErrNotFound) || err != nil {
+	room, err := s.lookupRoomByCode(ctx, code)
+	if errors.Is(err, store.ErrNotFound) {
 		return ErrInvalidRoom
+	}
+	// 红线：DB 故障等内部错误必须原样上抛（HTTP 层映射 502），
+	// 不得与"房间不存在"混为同一 404——否则管理员会把"处置失败"
+	// 误判为"房间已被清理"。
+	if err != nil {
+		return err
 	}
 	if room.Status == "disabled" {
 		return nil
@@ -668,8 +861,4 @@ func randomRoomCode() (string, error) {
 		buf[i] = alphabet[int(buf[i])%len(alphabet)]
 	}
 	return fmt.Sprintf("%s-%s-%s", buf[:4], buf[4:8], buf[8:]), nil
-}
-
-func decrypt(key []byte, ciphertext []byte) ([]byte, error) {
-	return roomcrypto.Open(key, ciphertext)
 }

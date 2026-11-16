@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"unsafe"
@@ -42,12 +43,18 @@ func (WindowsSignatureVerifier) Verify(ctx context.Context, path string, expecte
 	if err := verifyWindowsTrust(path); err != nil {
 		return err
 	}
-	subject, err := authenticodeSubject(ctx, path)
+	subject, thumbprint, err := authenticodeSignature(ctx, path)
 	if err != nil {
 		return err
 	}
 	if !hasDNValue(subject, "CN", expected.SubjectCommonName) || !hasDNValue(subject, "O", expected.Organization) {
 		return fmt.Errorf("%w: subject %q", ErrPublisherMismatch, subject)
+	}
+	// 证书指纹钉扎：发布元数据携带签名证书指纹时强制比对——CN/O 只是
+	// 字符串匹配，同一 CA 下被误签的同名证书也能通过；指纹把信任锚
+	// 收敛到发布时锁定的那张证书。
+	if expected.CertificateThumbprintAtRelease != "" && !strings.EqualFold(thumbprint, expected.CertificateThumbprintAtRelease) {
+		return fmt.Errorf("%w: certificate thumbprint mismatch", ErrPublisherMismatch)
 	}
 	return nil
 }
@@ -93,25 +100,40 @@ func winVerifyTrust(fileInfo *windows.WinTrustFileInfo, revocationChecks, provFl
 	return nil
 }
 
-func authenticodeSubject(ctx context.Context, path string) (string, error) {
-	const script = `$ErrorActionPreference='Stop'; $s=Get-AuthenticodeSignature -LiteralPath $env:SOGAME_SIGNATURE_PATH; [Console]::Out.Write(([pscustomobject]@{Status=$s.Status.ToString();Subject=$s.SignerCertificate.Subject}|ConvertTo-Json -Compress))`
-	command := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
+// powershellPath 返回 System32 下的 PowerShell 绝对路径。
+// 安全红线：本函数在提权 helper 进程内执行，经 PATH 解析外部程序时，
+// 被污染的 PATH 会把伪造 powershell.exe 以管理员身份启动——与
+// msiexecPath() 同一标准，必须绝对路径。
+func powershellPath() string {
+	if root := os.Getenv("SystemRoot"); root != "" {
+		candidate := filepath.Join(root, `System32\WindowsPowerShell\v1.0\powershell.exe`)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return "powershell.exe"
+}
+
+func authenticodeSignature(ctx context.Context, path string) (subject, thumbprint string, err error) {
+	const script = `$ErrorActionPreference='Stop'; $s=Get-AuthenticodeSignature -LiteralPath $env:SOGAME_SIGNATURE_PATH; [Console]::Out.Write(([pscustomobject]@{Status=$s.Status.ToString();Subject=$s.SignerCertificate.Subject;Thumbprint=$s.SignerCertificate.Thumbprint}|ConvertTo-Json -Compress))`
+	command := exec.CommandContext(ctx, powershellPath(), "-NoProfile", "-NonInteractive", "-Command", script)
 	command.Env = append(os.Environ(), "SOGAME_SIGNATURE_PATH="+path)
 	output, err := command.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("read Authenticode publisher: %w: %s", err, strings.TrimSpace(string(output)))
+		return "", "", fmt.Errorf("read Authenticode publisher: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	var result struct {
-		Status  string `json:"Status"`
-		Subject string `json:"Subject"`
+		Status     string `json:"Status"`
+		Subject    string `json:"Subject"`
+		Thumbprint string `json:"Thumbprint"`
 	}
 	if err := json.Unmarshal(output, &result); err != nil {
-		return "", fmt.Errorf("parse Authenticode publisher: %w", err)
+		return "", "", fmt.Errorf("parse Authenticode publisher: %w", err)
 	}
 	if !strings.EqualFold(result.Status, "Valid") || result.Subject == "" {
-		return "", fmt.Errorf("%w: status %s", ErrSignatureInvalid, result.Status)
+		return "", "", fmt.Errorf("%w: status %s", ErrSignatureInvalid, result.Status)
 	}
-	return result.Subject, nil
+	return result.Subject, result.Thumbprint, nil
 }
 
 func hasDNValue(subject, key, value string) bool {

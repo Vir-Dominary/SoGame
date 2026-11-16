@@ -40,9 +40,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"crypto/subtle"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -85,6 +87,9 @@ func main() {
 		log.Printf("=== 本地 Mock Room API ===")
 		log.Printf("地址:  http://%s", listenAddr)
 		log.Printf("管理:  %s (客户端使用)", mockManagementURL)
+		if host, _, err := net.SplitHostPort(listenAddr); err == nil && host != "127.0.0.1" && host != "::1" && host != "localhost" && host != "" {
+			log.Printf("警告: mock 绑定到非 loopback 地址，/debug/rooms 与全部房间数据对网络可见——仅限受信局域网联调使用")
+		}
 
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal(err)
@@ -202,7 +207,7 @@ func (s *mockService) close(code string, body json.RawMessage) (int, any) {
 	if !found {
 		return 404, apiError("room_unavailable")
 	}
-	if room.OwnerToken != request.OwnerToken {
+	if subtle.ConstantTimeCompare([]byte(room.OwnerToken), []byte(request.OwnerToken)) != 1 {
 		return 403, apiError("forbidden")
 	}
 	room.Status = "closed"
@@ -223,7 +228,7 @@ func (s *mockService) heartbeat(code string, body json.RawMessage) (int, any) {
 	if !found {
 		return 404, apiError("room_unavailable")
 	}
-	if room.OwnerToken != request.OwnerToken {
+	if subtle.ConstantTimeCompare([]byte(room.OwnerToken), []byte(request.OwnerToken)) != 1 {
 		return 403, apiError("forbidden")
 	}
 	if room.Status == "closed" {
@@ -273,10 +278,21 @@ func (s *mockService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, response)
 
 	case r.Method == http.MethodGet && r.URL.Path == "/debug/rooms":
+		// 调试端点不得返回明文凭证（SetupKey/OwnerToken）：
+		// mock 若被绑定到非 loopback 地址，一次 GET 即泄露全部房间凭证。
 		s.mu.RLock()
-		rooms := make([]*mockRoom, 0, len(s.rooms))
+		type debugRoom struct {
+			ID        string     `json:"id"`
+			Code      string     `json:"code"`
+			Status    string     `json:"status"`
+			CreatedAt int64      `json:"created_at"`
+			Peers     []mockPeer `json:"peers"`
+		}
+		rooms := make([]debugRoom, 0, len(s.rooms))
 		for _, room := range s.rooms {
-			rooms = append(rooms, room)
+			rooms = append(rooms, debugRoom{
+				ID: room.ID, Code: room.Code, Status: room.Status, CreatedAt: room.CreatedAt, Peers: room.Peers,
+			})
 		}
 		s.mu.RUnlock()
 		writeJSON(w, 200, rooms)

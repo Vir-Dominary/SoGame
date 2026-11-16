@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -47,6 +48,9 @@ const (
 	joinIntentEntropySize   = 16
 	maximumRetryAfter       = 3600
 	maximumRetryDelay       = 5 * time.Second
+	// rateLimitRetryCap 429 限流的重试延迟上限：服务端的限流窗口为
+	// 1 分钟，Retry-After 是窗口重置时间；钳制必须容纳整个窗口。
+	rateLimitRetryCap = 60 * time.Second
 )
 
 var defaultRetryDelays = []time.Duration{
@@ -159,6 +163,16 @@ func (e Enrollment) takeSetupKey() (*clientnetbird.SetupKey, error) {
 func (Enrollment) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("room enrollment serialization is forbidden")
 }
+
+// String/Format/LogValue 与 MarshalJSON 同级的防泄露红线：
+// Enrollment 携带明文房间码与房主令牌，任何日志/打印路径都不得展开。
+func (e Enrollment) String() string { return "[REDACTED enrollment]" }
+
+func (e Enrollment) Format(state fmt.State, verb rune) {
+	_, _ = fmt.Fprint(state, e.String())
+}
+
+func (e Enrollment) LogValue() slog.Value { return slog.StringValue("[REDACTED enrollment]") }
 
 type Peer struct {
 	ID        string
@@ -409,8 +423,15 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, heade
 		if errors.As(err, &httpError) && httpError.RetryAfter > delay {
 			delay = httpError.RetryAfter
 		}
-		if delay > maximumRetryDelay {
-			delay = maximumRetryDelay
+		// 429（限流）单独放宽钳制：服务端 Retry-After 是窗口重置时间，
+		// 压到 5s 会让重试持续撞窗口边界，把短暂限流滚成持续限流。
+		// 其他错误（如 503）仍按短钳制，防恶意服务端挂起客户端。
+		cap := maximumRetryDelay
+		if errors.As(err, &httpError) && httpError.StatusCode == 429 {
+			cap = rateLimitRetryCap
+		}
+		if delay > cap {
+			delay = cap
 		}
 		if err := c.wait(requestCtx, delay); err != nil {
 			return err

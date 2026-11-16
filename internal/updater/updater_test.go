@@ -3,7 +3,10 @@ package updater
 import (
 	"archive/zip"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -167,5 +170,63 @@ func TestExtractRejectsSymlinkDestDir(t *testing.T) {
 	zipPath := buildZip(t, map[string]string{"SoGame.exe": "new"})
 	if err := Extract(zipPath, link); err == nil {
 		t.Fatal("符号链接解压目标应被拒绝")
+	}
+}
+
+func TestExtractRejectsReservedNamesAndStreams(t *testing.T) {
+	for name := range map[string]string{
+		"CON":              "x",
+		"subdir/NUL.exe":   "x",
+		"file.txt:hidden":  "x",
+		"aux":              "x",
+		"com1.dll":         "x",
+	} {
+		t.Run(name, func(t *testing.T) {
+			zipPath := buildZip(t, map[string]string{name: "x"})
+			destDir := filepath.Join(t.TempDir(), "dest")
+			if err := Extract(zipPath, destDir); err == nil {
+				t.Fatalf("保留名/ADS 条目 %q 应被拒绝", name)
+			}
+		})
+	}
+}
+
+func TestCheckRejectsUnsignedManifestWhenPublicKeyConfigured(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SetManifestPublicKey(base64.StdEncoding.EncodeToString(pub)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { manifestPublicKey = nil })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"version":"9.9","downloadUrl":"https://example.com/x.zip","sha256":"abc123"}`)
+	}))
+	defer srv.Close()
+
+	if _, err := Check(context.Background(), "1.0", srv.URL); err == nil {
+		t.Fatal("启用验签后，缺签名的 manifest 必须被拒绝")
+	}
+
+	// 有效签名放行
+	payload := signaturePayload("9.9", "abc123")
+	sig := ed25519.Sign(priv, payload)
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"version":"9.9","downloadUrl":"https://example.com/x.zip","sha256":"abc123","signature":%q}`, base64.StdEncoding.EncodeToString(sig))
+	}))
+	defer srv2.Close()
+	if _, err := Check(context.Background(), "1.0", srv2.URL); err != nil {
+		t.Fatalf("有效签名的 manifest 应放行: %v", err)
+	}
+
+	// 错签名拒绝
+	srv3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"version":"9.9","downloadUrl":"https://example.com/x.zip","sha256":"def456","signature":%q}`, base64.StdEncoding.EncodeToString(sig))
+	}))
+	defer srv3.Close()
+	if _, err := Check(context.Background(), "1.0", srv3.URL); err == nil {
+		t.Fatal("签名与内容不符必须被拒绝")
 	}
 }

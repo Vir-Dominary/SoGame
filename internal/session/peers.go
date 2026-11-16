@@ -20,27 +20,16 @@ package session
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
 	"sogame/internal/roomapi"
 )
 
-const (
-	ForegroundPeerRefreshInterval = 5 * time.Second
-	TrayPeerRefreshInterval       = 30 * time.Second
-)
-
 type PeerAPI interface {
 	Peers(context.Context, string) (roomapi.PeerList, error)
 }
-
-type PeerRefreshMode string
-
-const (
-	PeerRefreshForeground PeerRefreshMode = "foreground"
-	PeerRefreshTray       PeerRefreshMode = "tray"
-)
 
 type PeerRefreshSnapshot struct {
 	Peers         []roomapi.Peer
@@ -55,6 +44,10 @@ type PeerRefresher struct {
 	mu    sync.Mutex
 	state PeerRefreshSnapshot
 	now   func() time.Time
+	// rateLimitUntil 429 限流的退避截止时间：限流期间 Refresh 直接返回
+	// 上次快照（stale），不向服务端发请求——避免每 5s 轮询叠加 do() 内
+	// 重试把短暂限流滚成持续限流（自维持 429）。
+	rateLimitUntil time.Time
 }
 
 func NewPeerRefresher(api PeerAPI, codes RoomCodeStorage) *PeerRefresher {
@@ -66,6 +59,10 @@ func NewPeerRefresher(api PeerAPI, codes RoomCodeStorage) *PeerRefresher {
 	}
 }
 
+// rateLimitFloor 429 的最小退避时长（服务端限流窗口为 1 分钟，
+// 服务端 Retry-After 缺失/过小时按此退避）。
+const rateLimitFloor = 15 * time.Second
+
 func (r *PeerRefresher) Snapshot() PeerRefreshSnapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -73,6 +70,16 @@ func (r *PeerRefresher) Snapshot() PeerRefreshSnapshot {
 }
 
 func (r *PeerRefresher) Refresh(ctx context.Context) (PeerRefreshSnapshot, error) {
+	r.mu.Lock()
+	if r.now().Before(r.rateLimitUntil) {
+		// 限流退避中：直接返回上次快照（stale），不再向服务端加压。
+		snapshot := clonePeerSnapshot(r.state)
+		snapshot.Stale = true
+		r.mu.Unlock()
+		return snapshot, r.state.LastError
+	}
+	r.mu.Unlock()
+
 	roomCode, err := r.codes.Load()
 	if err != nil {
 		return r.markStale(err), err
@@ -80,6 +87,16 @@ func (r *PeerRefresher) Refresh(ctx context.Context) (PeerRefreshSnapshot, error
 	defer clearBytes(roomCode)
 	peerList, err := r.api.Peers(ctx, string(roomCode))
 	if err != nil {
+		var httpErr *roomapi.HTTPError
+		if errors.As(err, &httpErr) && httpErr.StatusCode == 429 {
+			backoff := httpErr.RetryAfter
+			if backoff < rateLimitFloor {
+				backoff = rateLimitFloor
+			}
+			r.mu.Lock()
+			r.rateLimitUntil = r.now().Add(backoff)
+			r.mu.Unlock()
+		}
 		return r.markStale(err), err
 	}
 	now := r.now().UTC()
@@ -88,49 +105,10 @@ func (r *PeerRefresher) Refresh(ctx context.Context) (PeerRefreshSnapshot, error
 		Peers:         append([]roomapi.Peer(nil), peerList.Peers...),
 		LastRefreshAt: now,
 	}
+	r.rateLimitUntil = time.Time{}
 	snapshot := clonePeerSnapshot(r.state)
 	r.mu.Unlock()
 	return snapshot, nil
-}
-
-func (r *PeerRefresher) Watch(ctx context.Context, mode PeerRefreshMode) <-chan PeerRefreshSnapshot {
-	updates := make(chan PeerRefreshSnapshot, 1)
-	interval := peerRefreshInterval(mode)
-	go func() {
-		defer close(updates)
-		emit := func(snapshot PeerRefreshSnapshot) bool {
-			select {
-			case updates <- snapshot:
-				return true
-			case <-ctx.Done():
-				return false
-			}
-		}
-		if snapshot, _ := r.Refresh(ctx); !emit(snapshot) {
-			return
-		}
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				snapshot, _ := r.Refresh(ctx)
-				if !emit(snapshot) {
-					return
-				}
-			}
-		}
-	}()
-	return updates
-}
-
-func peerRefreshInterval(mode PeerRefreshMode) time.Duration {
-	if mode == PeerRefreshTray {
-		return TrayPeerRefreshInterval
-	}
-	return ForegroundPeerRefreshInterval
 }
 
 func (r *PeerRefresher) markStale(err error) PeerRefreshSnapshot {

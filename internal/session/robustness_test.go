@@ -151,44 +151,6 @@ func TestLeaveFailsOnOtherDeregisterErrors(t *testing.T) {
 	}
 }
 
-func TestCountDistinctPeersMergesByIP(t *testing.T) {
-	daemon := []clientnetbird.Peer{
-		{NetBirdIP: "100.115.10.21"},
-		{NetBirdIP: "100.115.10.22"},
-		{FQDN: "peer-3.example.com"},
-	}
-	members := []roomapi.Peer{
-		{ID: "p1", NetBirdIP: "100.115.10.22"},
-		{ID: "p2", NetBirdIP: "100.115.10.23"},
-		{ID: "p3"},
-	}
-	if got := countDistinctPeers(daemon, members, "100.115.10.10"); got != 5 {
-		t.Fatalf("countDistinctPeers=%d, want 5", got)
-	}
-}
-
-func TestCountDistinctPeersExcludesLocalIP(t *testing.T) {
-	daemon := []clientnetbird.Peer{
-		{NetBirdIP: "100.115.10.21"},
-	}
-	members := []roomapi.Peer{
-		{ID: "p1", NetBirdIP: "100.115.10.21"},
-	}
-	if got := countDistinctPeers(daemon, members, "100.115.10.21"); got != 0 {
-		t.Fatalf("countDistinctPeers=%d, want 0", got)
-	}
-}
-
-func TestCountDistinctPeersNormalizesCIDRLocalIP(t *testing.T) {
-	daemon := []clientnetbird.Peer{}
-	members := []roomapi.Peer{
-		{ID: "p1", NetBirdIP: "100.66.172.6"},
-	}
-	if got := countDistinctPeers(daemon, members, "100.66.172.6/16"); got != 0 {
-		t.Fatalf("countDistinctPeers=%d, want 0 (local IP with CIDR must match)", got)
-	}
-}
-
 func TestExcludeLocalPeerNormalizesCIDR(t *testing.T) {
 	members := []roomapi.Peer{
 		{ID: "self", NetBirdIP: "100.66.172.6"},

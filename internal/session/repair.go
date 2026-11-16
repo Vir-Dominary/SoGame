@@ -34,6 +34,11 @@ const (
 	repairTriggerPolls = 4
 	// repairCooldown 修复尝试之间的最小间隔;失败不立刻重试,防抖。
 	repairCooldown = 2 * time.Minute
+	// repairDriftGracePeriod 一次修复尝试后的漂移判定宽限期:
+	// re-join 成功后服务端成员列表同步存在传播延迟,本机新 IP 可能
+	// 连续多次(≈20s)未出现在快照中;宽限期内不做漂移判定,避免
+	// "修复→误判漂移→再修复"的震荡循环。
+	repairDriftGracePeriod = 60 * time.Second
 )
 
 // 两类运行时异常的共用自愈:
@@ -48,7 +53,7 @@ const (
 // 废弃受管 profile(销毁旧 peer 私钥)→ 用同一房间码重新 Join 注册。
 func (s *Service) maybeRepairIdentity(ctx context.Context, status clientnetbird.Snapshot, members []roomapi.Peer) {
 	s.mu.Lock()
-	if s.busy || s.disconnected || s.resumePending {
+	if s.closed || s.busy || s.disconnected || s.resumePending {
 		s.repairPolls = 0
 		s.mu.Unlock()
 		return
@@ -61,7 +66,7 @@ func (s *Service) maybeRepairIdentity(ctx context.Context, status clientnetbird.
 
 	cltDead := !(status.ManagementConnected && status.SignalConnected)
 	drifted := false
-	if !cltDead {
+	if !cltDead && time.Since(s.lastRepairAttempt) >= repairDriftGracePeriod {
 		if localIP := ipHost(status.LocalNetBirdIP); localIP != "" && len(members) > 0 {
 			drifted = true
 			for _, member := range members {
@@ -128,6 +133,17 @@ func (s *Service) repairRoomIdentity() {
 		return s.rooms.Join(ctx, string(code))
 	}); err != nil {
 		logger.Warnf("express repair: re-join failed: %v", err)
+		// 修复失败是后台自愈动作:performEnrollment 已把状态机置为
+		// RecoverableError,但下一轮 View 会立即冲掉,形成"错误横幅闪烁"。
+		// 用当前 daemon 事实重新派生,恢复用户可见状态;修复本身
+		// 等冷却期后由轮询再次触发。
+		if status, statErr := s.netbird.Status(ctx); statErr == nil {
+			s.machine.Apply(Facts{
+				RoomSaved:         true,
+				ControlPlaneReady: status.ManagementConnected && status.SignalConnected,
+				MembershipKnown:   true,
+			})
+		}
 		return
 	}
 	logger.Infof("express repair: identity healed by re-joining room")

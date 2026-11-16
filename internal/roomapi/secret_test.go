@@ -21,6 +21,9 @@ package roomapi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -67,6 +70,27 @@ func TestEnrollmentCannotBeSerialized(t *testing.T) {
 	if payload, err := json.Marshal(enrollment); err == nil {
 		t.Fatalf("enrollment serialized: %s", payload)
 	}
+}
+
+// TestEnrollmentCannotBePrinted 与 MarshalJSON 同级的防泄露红线：
+// fmt/slog 任何打印路径都不得展开明文房间码与房主令牌。
+func TestEnrollmentCannotBePrinted(t *testing.T) {
+	enrollment := Enrollment{
+		RoomID:     "room-1",
+		RoomCode:   "AAAA-BBBB-CCCC",
+		OwnerToken: "super-secret-owner-token",
+	}
+	for _, rendered := range []string{
+		fmt.Sprintf("%v", enrollment),
+		fmt.Sprintf("%+v", enrollment),
+		fmt.Sprintf("%s", enrollment),
+		enrollment.LogValue().String(),
+	} {
+		if strings.Contains(rendered, "AAAA-BBBB-CCCC") || strings.Contains(rendered, "super-secret-owner-token") {
+			t.Fatalf("enrollment leaked via print/log path: %s", rendered)
+		}
+	}
+	var _ slog.LogValuer = enrollment // 编译期断言 LogValuer 已实现
 }
 
 func TestEnrollmentDiscardClearsUnconsumedSetupKey(t *testing.T) {

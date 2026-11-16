@@ -140,12 +140,40 @@ func assembleWindowsExpress(controller *ExpressController, roomAPIBaseURL string
 	return nil
 }
 
-// closePreviousRPC 关闭并清空控制器中旧的 RPC 连接（如果存在）。
+// reassembleExpress 在 Room API 地址变更后重组装控制器并刷新状态。
+// 调用方负责确保当前无房间命令进行中（BusyCommand 为空）。
+func reassembleExpress(controller *ExpressController, roomAPIBaseURL string) {
+	if controller == nil {
+		return
+	}
+	if err := assembleWindowsExpress(controller, roomAPIBaseURL); err != nil {
+		logger.Warnf("express: reassemble after Room API URL change failed: %v", err)
+		return
+	}
+	controller.mu.Lock()
+	ctx := controller.ctx
+	controller.mu.Unlock()
+	if ctx != nil {
+		controller.refreshRoomView(ctx)
+		controller.refreshService(ctx)
+	}
+	logger.Infof("express: controller reassembled after Room API URL change")
+}
+
+// closePreviousRPC 关闭并清空控制器中旧的 session.Service 与 RPC 连接（如果存在）。
 func closePreviousRPC(controller *ExpressController) {
 	controller.mu.Lock()
 	oldClose := controller.close
 	controller.close = nil
+	oldRooms := controller.rooms
+	controller.rooms = nil
 	controller.mu.Unlock()
+	// 先 Close 旧 session.Service（停止房主心跳等后台 goroutine），
+	// 再关闭 RPC 连接：否则旧实例在令牌未清除时心跳永不退出，
+	// 重组装后会形成新旧实例对同一房间的双心跳并发与对象图泄漏。
+	if oldRooms != nil {
+		oldRooms.Close()
+	}
 	if oldClose != nil {
 		_ = oldClose()
 	}

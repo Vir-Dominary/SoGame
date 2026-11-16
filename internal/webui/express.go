@@ -52,8 +52,11 @@ type ExpressState struct {
 	Error          *ExpressError  `json:"error"`          // 最近一次错误（nil 表示无错误）
 	BusyCommand    string         `json:"busyCommand"`    // 正在执行的命令（空表示空闲）
 	HasSavedRoom   bool           `json:"hasSavedRoom"`   // 本地保存了上次的房间且等待用户确认恢复
-	Disconnected   bool           `json:"disconnected"`
-	RoomCode       string         `json:"roomCode"`   // 用户已主动断开（可重新连接）
+	// Disconnected 用户已主动断开（可重新连接）。
+	Disconnected bool `json:"disconnected"`
+	// RoomCode 完整房间码。状态快照中始终为空串：完整码是入会凭证，
+	// 仅经 ExpressRevealRoomCode 按需获取，不随轮询/事件广播下发。
+	RoomCode string `json:"roomCode"`
 	// RelayEnabled 该房间所属服务器是否允许 Relay 中继（由服务器下发，客户端被动遵循）。
 	RelayEnabled bool `json:"relayEnabled"`
 	// RelayBlocked 服务器不允许 Relay，但底层 daemon 检测到中继连接（被忽略）：
@@ -150,11 +153,6 @@ func (c *ExpressController) Configure(rooms *session.Service, closeFn func() err
 	c.mu.Unlock()
 }
 
-// hasError 返回控制器是否处于错误状态。
-func (c *ExpressController) hasError() bool {
-	return c.state.Error != nil
-}
-
 // Startup 在 Wails 启动时调用，启动后台刷新协程。
 func (c *ExpressController) Startup(ctx context.Context) {
 	c.mu.Lock()
@@ -172,11 +170,15 @@ func (c *ExpressController) Startup(ctx context.Context) {
 	go c.refreshService(ctx)
 }
 
-// Shutdown 在 Wails 关闭时调用，释放 RPC 连接。
+// Shutdown 在 Wails 关闭时调用，停止后台 goroutine 并释放 RPC 连接。
 func (c *ExpressController) Shutdown(_ context.Context) {
 	c.mu.Lock()
 	closeFn := c.close
+	rooms := c.rooms
 	c.mu.Unlock()
+	if rooms != nil {
+		rooms.Close()
+	}
 	if closeFn != nil {
 		if err := closeFn(); err != nil {
 			logger.Warnf("express: close NetBird RPC adapter: %v", err)
@@ -286,10 +288,23 @@ func (c *ExpressController) RevealRoomCode() (string, *ExpressError) {
 }
 
 // RepairService 修复/重新安装 NetBird 守护进程。
+// 与房间命令共用 BusyCommand 互斥：修复成功后的重组装会整体替换
+// session.Service，与进行中的房间命令并发会导致状态错乱。
 func (c *ExpressController) RepairService() ExpressState {
 	c.mu.Lock()
 	repair := c.repair
 	ctx := c.ctx
+	if c.state.BusyCommand != "" {
+		c.state.Error = &ExpressError{
+			Code:      expressErrOperationConflict,
+			Message:   "已有操作正在进行",
+			Retryable: true,
+			Action:    "等待当前操作完成",
+		}
+		state := c.cloneState()
+		c.mu.Unlock()
+		return state
+	}
 	c.mu.Unlock()
 	if ctx == nil {
 		ctx = context.Background()
@@ -320,13 +335,16 @@ func (c *ExpressController) RepairService() ExpressState {
 	c.mu.Unlock()
 	// MSI 安装完成后服务注册到 Windows 服务管理器需要数秒，
 	// 最多重试 5 次（约 10 秒）等待 refreshService 检测到安装。
+	// 注意：检测成功后必须先释放 c.mu 再 break，不得在持锁状态下
+	// 跳出循环（下方会再次加锁，sync.Mutex 不可重入会自死锁）。
 	for i := 0; i < 5; i++ {
 		c.refreshService(ctx)
 		c.mu.Lock()
-		if c.state.Service.Installed {
+		installed := c.state.Service.Installed
+		c.mu.Unlock()
+		if installed {
 			break
 		}
-		c.mu.Unlock()
 		if i < 4 {
 			time.Sleep(2 * time.Second)
 		}
@@ -474,12 +492,11 @@ func (c *ExpressController) refreshRoomView(ctx context.Context) {
 	c.state.HasSavedRoom = view.ResumePending
 	c.state.Disconnected = view.Disconnected
 	c.state.IsOwner = view.IsOwner
+	// 安全红线：轮询路径不得把明文房间码塞进状态快照——房间码是入会凭证，
+	// 高频快照与事件广播会把它常驻到前端 JS 状态里。完整房间码只经
+	// ExpressRevealRoomCode 按需获取（前端复制/展示动作触发），
+	// 状态快照中始终为空串。
 	c.state.RoomCode = ""
-	if view.Session.State != session.StateNoRoom && view.Session.State != session.StateEnrolling {
-		if code, err := rooms.RevealRoomCode(ctx); err == nil {
-			c.state.RoomCode = code
-		}
-	}
 	// 状态机回到非错误状态时同步清除错误横幅,避免出现
 	// "已连接"与"错误"同时展示的矛盾界面。
 	if view.Session.State != session.StateRecoverableError {
@@ -626,7 +643,9 @@ func expressPublicError(err error) *ExpressError {
 	if strings.Contains(strings.ToLower(err.Error()), "room session is unavailable") {
 		return &ExpressError{Code: expressErrServiceUnavailable, Message: "守护进程不可用", Retryable: true, Action: "检查后重试"}
 	}
-	return &ExpressError{Code: expressErrEnrollmentFailed, Message: "加入房间失败", Retryable: true, Action: "稍后重试"}
+	// 兜底文案不得写死"加入房间失败"：create/disconnect/leave/repair 等
+	// 命令的未识别错误都会走到这里。
+	return &ExpressError{Code: expressErrEnrollmentFailed, Message: "操作未完成", Retryable: true, Action: "稍后重试"}
 }
 
 // maskValue 对短字符串进行脱敏（仅保留前 4 位 + ****）。

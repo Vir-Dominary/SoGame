@@ -180,8 +180,9 @@ cmd/
   - 房间码明文展示 + 一键复制；房间成员列表 / 空状态提示；
   - 断开 / 离开房间按钮（样式与整体 UI 统一）；
   - 失败事务回滚（codes/metadata 清理）与孤儿 `sogame-room` profile 自动自愈。
-- **默认指向真实控制平面**：客户端 `DefaultRoomAPIURL` 为 `http://123.56.254.224`（Room API，
-  Management 为 `https://legengen.top`），本地 Mock（`tools/room-api-mock`）仅作为开发期可选替身，
+- **默认指向真实控制平面**：客户端 `DefaultRoomAPIURL` 为 `https://legengen.top`
+  （Room API 与 Management 同域；明文 IP 入口已于 2026-09-24 下线），
+  本地 Mock（`tools/room-api-mock`）仅作为开发期可选替身，
   需在 UI 设置/配置中显式切到 `http://127.0.0.1:9099` 才会使用。
 - **Room API 服务端**：已随本仓库提供（`server/room-api/`，独立 Go module，SQLite 存储），
   房主心跳/解散、relay 开关下发均已实现。

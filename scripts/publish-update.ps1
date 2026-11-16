@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-or-later
+﻿# SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 SoGame Contributors
 #
 # This file is part of SoGame.
@@ -43,7 +43,11 @@ param(
 
     [string]$ReleaseNotes = "",
 
-    [string]$OutputDir = "./publish"
+    [string]$OutputDir = "./publish",
+
+    # 更新 manifest 签名私钥（tools/update-keygen 生成的 base64 私钥文件）。
+    # 提供时 update.json 会写入 ed25519 签名字段；客户端内置公钥后强制验签。
+    [string]$SignKeyFile = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -74,16 +78,21 @@ try {
     Pop-Location
 }
 
-# --- 2. 编译 SoGame.exe（注入版本号） ---
-Write-Host "[2/5] Building SoGame.exe v$Version..." -ForegroundColor Yellow
-$ldflags = "-s -w -H windowsgui -X sogame/internal/config.AppVersion=$Version"
-go build -tags "production" -ldflags $ldflags -o "$buildDir/SoGame.exe" .
-if ($LASTEXITCODE -ne 0) { throw "SoGame.exe build failed" }
-
-# --- 3. 编译 sogame-helper.exe ---
-Write-Host "[3/5] Building sogame-helper.exe..." -ForegroundColor Yellow
+# --- 2. 编译 sogame-helper.exe 并计算哈希 ---
+# 顺序红线：helper 必须先于主程序构建——主程序经 -X 注入 helper 的 SHA256，
+# 使 UAC 提权前的 helper 完整性校验生效；两脚本（build-all/publish）的
+# helper 构建 flags 必须一致，否则注入值与发布产物不匹配。
+Write-Host "[2/5] Building sogame-helper.exe..." -ForegroundColor Yellow
 go build -tags "production" -ldflags "-s -w -H windowsgui" -o "$buildDir/sogame-helper.exe" ./cmd/sogame-helper
 if ($LASTEXITCODE -ne 0) { throw "sogame-helper.exe build failed" }
+$helperHash = (Get-FileHash "$buildDir/sogame-helper.exe" -Algorithm SHA256).Hash.ToLower()
+Write-Host "  sogame-helper.exe SHA256: $helperHash"
+
+# --- 3. 编译 SoGame.exe（注入版本号 + helper 哈希） ---
+Write-Host "[3/5] Building SoGame.exe v$Version..." -ForegroundColor Yellow
+$ldflags = "-s -w -H windowsgui -X sogame/internal/config.AppVersion=$Version -X sogame/internal/releasebuild.helperSHA256Override=$helperHash"
+go build -tags "production" -ldflags $ldflags -o "$buildDir/SoGame.exe" .
+if ($LASTEXITCODE -ne 0) { throw "SoGame.exe build failed" }
 
 # --- 4. 打包 zip ---
 Write-Host "[4/5] Packaging zip..." -ForegroundColor Yellow
@@ -122,16 +131,40 @@ Write-Host "  SHA256: $zipHash"
 
 # --- 5. 生成 update.json ---
 Write-Host "[5/5] Generating update.json..." -ForegroundColor Yellow
-$updateJson = @{
+
+# 可选：ed25519 签名（信任锚独立于分发信道）。签名覆盖内容与客户端
+# updater.signaturePayload 一致：version + "\n" + lowercase(sha256)。
+$signature = ""
+if ($SignKeyFile -ne "") {
+    if (-not (Test-Path $SignKeyFile)) { throw "SignKeyFile not found: $SignKeyFile" }
+    $signOut = go run ./tools/update-sign -key $SignKeyFile -version $Version -zip $zipPath
+    if ($LASTEXITCODE -ne 0) { throw "update-sign failed" }
+    foreach ($line in $signOut) {
+        if ($line -match '^signature=(.+)$') { $signature = $Matches[1] }
+    }
+    if ($signature -eq "") { throw "update-sign produced no signature" }
+    Write-Host "  Signature: $($signature.Substring(0,16))..." -ForegroundColor Green
+}
+
+$manifest = [ordered]@{
     version      = $Version
     downloadUrl  = "https://virdy.cn/sogame/$zipName"
     sha256       = $zipHash
     size         = $zipSize
     releaseNotes = $ReleaseNotes
     minVersion   = "2.0"
-} | ConvertTo-Json
+}
+if ($signature -ne "") { $manifest.signature = $signature }
+$updateJson = $manifest | ConvertTo-Json
 
-$updateJson | Out-File -Encoding utf8 -NoNewline $jsonPath
+# Windows PowerShell 5.1 的 `Out-File -Encoding utf8` 固定写入 BOM（EF BB BF），
+# Go 的 json.Decoder 会因 BOM 报 "invalid character" 导致全量客户端更新解析失败。
+# 必须用无 BOM 的 UTF-8 写入。
+[System.IO.File]::WriteAllText($jsonPath, $updateJson, (New-Object System.Text.UTF8Encoding($false)))
+
+# 首字节自检：update.json 必须以 '{' 开头（BOM 检测）。
+$firstByte = [System.IO.File]::ReadAllBytes($jsonPath)[0]
+if ($firstByte -ne 0x7B) { throw "update.json starts with unexpected byte 0x$($firstByte.ToString('X2')) (BOM?)" }
 
 Write-Host "`n=== Publish Complete ===" -ForegroundColor Green
 Write-Host ""

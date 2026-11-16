@@ -119,29 +119,26 @@ scp publish/update.json sogame-server:/opt/sogame/downloads/sogame/
 
 ## SSH 密钥配置（可选）
 
-如果服务器开放 SSH，可以将本地公钥添加到服务器：
+如果服务器开放 SSH，将你本机的公钥添加到服务器的 `~/.ssh/authorized_keys`
+（`ssh-ed25519 AAAA... <注释>` 一行），并 `chmod 600 ~/.ssh/authorized_keys`。
 
-```bash
-# 本地公钥内容（C:\Users\Administrator\.ssh\id_ed25519.pub）
-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKuQWo3TQAOmN+XBtJEKODvE4pwxgeIRjSZSnFRBkEs0 sogame-agent
-
-# 在服务器上执行
-echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKuQWo3TQAOmN+XBtJEKODvE4pwxgeIRjSZSnFRBkEs0 sogame-agent" >> ~/.ssh/authorized_keys
-chmod 600 ~/.ssh/authorized_keys
-```
-
-配置后可直接使用 `scp` 上传：
+配置后可直接使用 `scp` 上传。**上传目标路径只有一套**——sogame-downloads
+容器挂载的 `/opt/sogame/downloads/sogame/`（update.json 与 zip 同目录）：
 
 ```powershell
-scp publish/SoGame-windows-amd64.zip virdy:/var/www/sogame/
-scp publish/update.json virdy:/var/www/sogame/
+scp publish/SoGame-windows-amd64.zip virdy:/opt/sogame/downloads/sogame/
+scp publish/update.json virdy:/opt/sogame/downloads/sogame/
 ```
+
+> 历史文档中出现的 `/var/www/sogame/` 是旧独立 nginx 路径，已废弃：
+> 上传到该路径不会被任何路由服务，update.json 会静默不更新。
 
 ## 注意事项
 
 1. **首次发布必须包含 NetBird MSI**：`publish-update.ps1` 会在 `build/bin/` 中检查 `netbird_installer_0.74.7_windows_amd64.msi`，如果不存在会警告。首次发布前需确保该文件存在。
 2. **版本号必须递增**：`update.json` 中的 `version` 必须大于客户端当前版本，客户端才会检测到更新。
 3. **SHA256 必须匹配**：`update.json` 中的 `sha256` 必须与 zip 文件的实际 SHA256 一致，否则客户端会拒绝更新。
+4. **（推荐）启用 ed25519 签名 manifest**：`tools/update-keygen` 生成密钥对，公钥填入 `internal/config/app_config.go` 的 `UpdateManifestPublicKey` 并发版；之后每次发布加 `-SignKeyFile` 参数：`.\scripts\publish-update.ps1 -Version "2.2" -SignKeyFile <私钥路径>`。客户端内置公钥后，缺少有效签名的 manifest 会被拒绝——更新服务器/CDN 失陷也无法推送恶意更新。私钥绝不可入库。
 4. **缓存控制**：Nginx 配置中已禁用缓存，确保客户端每次都能获取最新的 `update.json`。
 
 ---

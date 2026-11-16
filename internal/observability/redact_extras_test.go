@@ -76,3 +76,44 @@ func TestRedactMasksURLsWithCredentialsAndRoomCodes(t *testing.T) {
 		t.Fatalf("redaction removed the URL host: %s", got)
 	}
 }
+
+func TestRedactMasksEdgeKeyArgument(t *testing.T) {
+	// n2n edge argv 形态：-k 后跟随明文社区密钥，必须脱敏（DEBUG 日志引信回归）。
+	key := "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+	input := "edge args: -c myroom -k " + key + " -a 10.10.10.5"
+	got := Redact(input)
+	if strings.Contains(got, key) {
+		t.Fatalf("edge key leaked after redaction: %s", got)
+	}
+	if !strings.Contains(got, "-c myroom") {
+		t.Fatalf("redaction should preserve non-secret args: %s", got)
+	}
+}
+
+func TestRedactMasksHex32ClassicKey(t *testing.T) {
+	// 经典模式密钥为 hex(16B) 的 32 位十六进制，任何文本形态出现都兜底脱敏。
+	key := "0123456789abcdef0123456789abcdef"
+	got := Redact("decrypt failed for key " + key)
+	if strings.Contains(got, key) {
+		t.Fatalf("hex32 key leaked after redaction: %s", got)
+	}
+}
+
+func TestRedactingHandlerResolvesLogValuer(t *testing.T) {
+	// KindLogValuer 不展开会绕过全部脱敏分支（旁路回归）。
+	var output bytes.Buffer
+	logger := slog.New(NewRedactingHandler(&output, slog.LevelDebug))
+
+	logger.LogAttrs(context.Background(), slog.LevelError, "valuer",
+		slog.Any("wrapped", roomCodeValuer{"AAAA-BBBB-CCCC"}),
+	)
+
+	got := output.String()
+	if strings.Contains(got, "AAAA-BBBB-CCCC") {
+		t.Fatalf("LogValuer bypassed redaction: %s", got)
+	}
+}
+
+type roomCodeValuer struct{ code string }
+
+func (v roomCodeValuer) LogValue() slog.Value { return slog.StringValue(v.code) }
