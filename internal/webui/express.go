@@ -21,7 +21,6 @@ package app
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -53,7 +52,9 @@ type ExpressState struct {
 	BusyCommand    string         `json:"busyCommand"`    // 正在执行的命令（空表示空闲）
 	HasSavedRoom   bool           `json:"hasSavedRoom"`   // 本地保存了上次的房间且等待用户确认恢复
 	// Disconnected 用户已主动断开（可重新连接）。
-	Disconnected bool `json:"disconnected"`
+	Disconnected   bool           `json:"disconnected"`
+	// DaemonPreparing 守护进程自动就绪流程进行中（准备中提示由前端展示）。
+	DaemonPreparing bool          `json:"daemonPreparing"`
 	// RoomCode 完整房间码。状态快照中始终为空串：完整码是入会凭证，
 	// 仅经 ExpressRevealRoomCode 按需获取，不随轮询/事件广播下发。
 	RoomCode string `json:"roomCode"`
@@ -82,6 +83,10 @@ type ExpressService struct {
 	Version         string `json:"version"`
 	ExpectedVersion string `json:"expectedVersion"`
 	RepairRequired  bool   `json:"repairRequired"`
+	UpdateAvailable bool   `json:"updateAvailable"`
+	// DaemonNeedsSetup 守护进程需要自动补齐（未安装/版本不匹配/未运行）。
+	// 前端据此显示"待准备"提示条；用户点击或执行房间命令时自动补齐。
+	DaemonNeedsSetup bool `json:"daemonNeedsSetup"`
 }
 
 // ExpressError 是面向用户的错误信息。
@@ -126,7 +131,35 @@ type ExpressController struct {
 	service *nbdaemon.ServiceInspector
 	repair  func(context.Context) error
 	state   ExpressState
+	// setup 守护进程自动就绪状态（独立锁：就绪流程长达数十秒，
+	// 不能与高频状态读写共用 c.mu）。
+	setup daemonSetupState
 }
+
+// daemonSetupState 守护进程自动就绪的协调状态。
+type daemonSetupState struct {
+	mu       sync.Mutex
+	running  bool             // 一个就绪流程进行中
+	done     chan struct{}    // 就绪流程完成信号（并发调用方等待复用结果）
+	err      error            // 最近一次就绪结果
+	failures int              // 连续失败次数（达到上限后停止自动重试，防 UAC 轰炸）
+	lastAt   time.Time        // 最近一次失败时间（冷却判定）
+}
+
+const (
+	// daemonSetupCooldown 自动就绪失败后的冷却期。
+	daemonSetupCooldown = 60 * time.Second
+	// daemonSetupMaxRetries 连续自动重试上限；超过后仅当用户执行新操作时重试。
+	daemonSetupMaxRetries = 3
+	// daemonSetupTimeout 单次就绪流程的总预算（msiexec 首装可能 30s+）。
+	daemonSetupTimeout = 90 * time.Second
+)
+
+var (
+	errDaemonSetupUnavailable = errors.New("daemon setup unavailable")
+	errDaemonSetupGiveUp      = errors.New("daemon setup failed repeatedly")
+	errDaemonSetupTimeout     = errors.New("daemon setup timed out")
+)
 
 // NewExpressController 创建一个空的极速模式协调器。
 // 实际的 session/service 注入由平台特定的构造函数（NewWindowsExpressController）完成。
@@ -201,6 +234,9 @@ func (c *ExpressController) CreateRoom(displayName string) ExpressState {
 		hostname, _ := os.Hostname()
 		displayName = hostname
 	}
+	if state, ok := c.ensureDaemonForCommand(); !ok {
+		return state
+	}
 	return c.runRoomCommand("create", func(ctx context.Context) (session.Snapshot, error) {
 		if c.rooms == nil {
 			return session.Snapshot{}, errors.New("room session is unavailable")
@@ -219,6 +255,9 @@ func (c *ExpressController) JoinRoom(roomCode, displayName string) ExpressState 
 	roomCode = strings.TrimSpace(roomCode)
 	if roomCode == "" {
 		return c.failCommand(expressErrInvalidInput, "房间码不能为空", false, "请输入房间码")
+	}
+	if state, ok := c.ensureDaemonForCommand(); !ok {
+		return state
 	}
 	return c.runRoomCommand("join", func(ctx context.Context) (session.Snapshot, error) {
 		if c.rooms == nil {
@@ -240,6 +279,9 @@ func (c *ExpressController) Disconnect() ExpressState {
 
 // Reconnect 重新连接到已保存的房间。
 func (c *ExpressController) Reconnect() ExpressState {
+	if state, ok := c.ensureDaemonForCommand(); !ok {
+		return state
+	}
 	return c.runCommand("connect", func(ctx context.Context) (session.Snapshot, error) {
 		if c.rooms == nil {
 			return session.Snapshot{}, errors.New("room session is unavailable")
@@ -287,88 +329,193 @@ func (c *ExpressController) RevealRoomCode() (string, *ExpressError) {
 	return code, nil
 }
 
-// RepairService 修复/重新安装 NetBird 守护进程。
-// 与房间命令共用 BusyCommand 互斥：修复成功后的重组装会整体替换
-// session.Service，与进行中的房间命令并发会导致状态错乱。
-func (c *ExpressController) RepairService() ExpressState {
-	c.mu.Lock()
-	repair := c.repair
+// ExpressPrepareDaemon 由前端"立即准备"提示条按钮调用：主动触发守护进程
+// 自动就绪（含一次 UAC）。房间命令（创建/加入/重连）入口也会自动调用
+// EnsureDaemonReady，无需用户感知守护进程概念。
+// 守护进程是一体化内建依赖（docs/DAEMON_AUTO_SETUP_DESIGN.md）——
+// UI 不再有"安装/修复守护进程"概念。
+func (c *ExpressController) ExpressPrepareDaemon() ExpressState {
+	return c.prepareDaemon()
+}
+
+// prepareDaemon 触发自动就绪并把结果映射为状态快照。
+func (c *ExpressController) prepareDaemon() ExpressState {
 	ctx := c.ctx
-	if c.state.BusyCommand != "" {
-		c.state.Error = &ExpressError{
-			Code:      expressErrOperationConflict,
-			Message:   "已有操作正在进行",
-			Retryable: true,
-			Action:    "等待当前操作完成",
-		}
-		state := c.cloneState()
-		c.mu.Unlock()
-		return state
-	}
-	c.mu.Unlock()
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if repair == nil {
-		c.mu.Lock()
-		c.state.Error = &ExpressError{Code: expressErrServiceMissing, Message: "守护进程未安装", Retryable: true, Action: "重新安装守护进程"}
-		c.state.Service.RepairRequired = true
-		state := c.cloneState()
-		c.mu.Unlock()
-		return state
+	if err := c.EnsureDaemonReady(ctx); err != nil {
+		return c.failDaemonSetup(err)
 	}
-	c.mu.Lock()
-	c.state.BusyCommand = "repair"
-	c.state.Error = nil
-	c.mu.Unlock()
-	err := repair(ctx)
-	c.mu.Lock()
-	c.state.BusyCommand = ""
+	c.refreshService(ctx)
+	return c.GetState()
+}
+
+// EnsureDaemonReady 保证守护进程可用：不健康时自动修复（含一次 UAC），
+// 成功后重组装控制器。与房间命令共用 BusyCommand 互斥（busy="daemon-setup"）。
+// 并发调用复用同一就绪流程的结果；失败冷却 60s，连续 3 次失败后停止
+// 自动重试（防止杀软拦截场景下的 UAC 弹窗轰炸）。
+// 返回 nil 表示就绪；返回错误表示准备失败。
+func (c *ExpressController) EnsureDaemonReady(ctx context.Context) error {
+	// 快路径：已就绪直接返回（巡检由 refreshService 后台轮询负责）。
+	if c.daemonHealthy(ctx) {
+		c.setup.mu.Lock()
+		c.setup.failures = 0
+		c.setup.mu.Unlock()
+		return nil
+	}
+
+	c.setup.mu.Lock()
+	if c.setup.running {
+		// 已有就绪流程在跑：等待其完成并复用结果。
+		done := c.setup.done
+		c.setup.mu.Unlock()
+		select {
+		case <-done:
+			c.setup.mu.Lock()
+			err := c.setup.err
+			c.setup.mu.Unlock()
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if c.setup.failures >= daemonSetupMaxRetries {
+		err := errDaemonSetupGiveUp
+		c.setup.mu.Unlock()
+		c.setDaemonError(err)
+		return err
+	}
+	if c.setup.err != nil && !c.setup.lastAt.IsZero() && time.Since(c.setup.lastAt) < daemonSetupCooldown {
+		// 冷却期内：直接返回上次错误，不重复弹 UAC。
+		err := c.setup.err
+		c.setup.mu.Unlock()
+		return err
+	}
+	// 占用本次就绪流程。
+	c.setup.running = true
+	c.setup.done = make(chan struct{})
+	c.setup.mu.Unlock()
+
+	err := c.performDaemonSetup(ctx)
+
+	c.setup.mu.Lock()
+	c.setup.running = false
+	c.setup.err = err
 	if err != nil {
-		c.state.Error = expressPublicError(err)
-		c.state.Service.RepairRequired = true
-		state := c.cloneState()
-		c.mu.Unlock()
-		return state
+		c.setup.failures++
+		c.setup.lastAt = time.Now()
+	} else {
+		c.setup.failures = 0
+		c.setup.lastAt = time.Time{}
+		c.setup.err = nil
 	}
-	c.state.Error = nil
-	c.mu.Unlock()
-	// MSI 安装完成后服务注册到 Windows 服务管理器需要数秒，
-	// 最多重试 5 次（约 10 秒）等待 refreshService 检测到安装。
-	// 注意：检测成功后必须先释放 c.mu 再 break，不得在持锁状态下
-	// 跳出循环（下方会再次加锁，sync.Mutex 不可重入会自死锁）。
-	for i := 0; i < 5; i++ {
-		c.refreshService(ctx)
-		c.mu.Lock()
-		installed := c.state.Service.Installed
-		c.mu.Unlock()
-		if installed {
-			break
-		}
-		if i < 4 {
-			time.Sleep(2 * time.Second)
-		}
+	close(c.setup.done)
+	c.setup.mu.Unlock()
+	if err != nil {
+		c.setDaemonError(err)
 	}
+	return err
+}
+
+// performDaemonSetup 执行一次就绪流程：占用 daemon-setup busy 位、
+// 调用修复函数（UAC + msiexec）、等待服务就绪。
+func (c *ExpressController) performDaemonSetup(ctx context.Context) error {
 	c.mu.Lock()
-	if !c.state.Service.Installed {
-		// msiexec 成功但服务仍不存在（安装被回滚/服务未创建）：
-		// 给出明确的失败提示，而不是让"守护进程未安装"报错反复出现。
-		c.state.Error = &ExpressError{
-			Code:      expressErrServiceMissing,
-			Message:   "守护进程安装未完成，请查看运行日志",
-			Retryable: true,
-			Action:    "重新安装",
-		}
-		c.state.Service.RepairRequired = true
-	} else if c.state.Error != nil {
-		// 已安装但守护进程尚未就绪（启动需要数秒）：先不报错，
-		// 由后台 waitForDaemonAndReassemble 在就绪后刷新状态，
-		// 避免"安装完毕"与"未运行"同时展示的矛盾界面。
-		c.state.Error = nil
-	}
+	repair := c.repair
+	c.state.BusyCommand = "daemon-setup"
+	c.state.Error = nil
 	state := c.cloneState()
 	c.mu.Unlock()
-	return state
+	if c.ctx != nil {
+		runtime.EventsEmit(c.ctx, "express:state-changed", state)
+	}
+	defer func() {
+		c.mu.Lock()
+		if c.state.BusyCommand == "daemon-setup" {
+			c.state.BusyCommand = ""
+		}
+		c.mu.Unlock()
+	}()
+	if repair == nil {
+		return errDaemonSetupUnavailable
+	}
+	setupCtx, cancel := context.WithTimeout(ctx, daemonSetupTimeout)
+	defer cancel()
+	if err := repair(setupCtx); err != nil {
+		return err
+	}
+	// MSI 安装完成后服务注册到 Windows 服务管理器需要数秒：
+	// 轮询等待就绪（总预算受 setupCtx 90s 限制）。
+	for {
+		if c.daemonHealthy(setupCtx) {
+			c.refreshService(setupCtx)
+			return nil
+		}
+		select {
+		case <-setupCtx.Done():
+			return errDaemonSetupTimeout
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+// daemonHealthy 巡检守护进程是否就绪。
+func (c *ExpressController) daemonHealthy(ctx context.Context) bool {
+	c.mu.Lock()
+	inspector := c.service
+	c.mu.Unlock()
+	if inspector == nil {
+		return false
+	}
+	inspectCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	inspection, err := inspector.Inspect(inspectCtx)
+	return err == nil && inspection.Health == nbdaemon.ServiceReady
+}
+
+// setDaemonError 将就绪失败写入状态（通俗化文案）。
+func (c *ExpressController) setDaemonError(err error) {
+	c.mu.Lock()
+	c.state.Error = daemonPublicError(err)
+	c.mu.Unlock()
+}
+
+// failDaemonSetup 返回就绪失败的状态快照。
+func (c *ExpressController) failDaemonSetup(err error) ExpressState {
+	c.setDaemonError(err)
+	return c.GetState()
+}
+
+// daemonPublicError 把守护进程就绪失败映射为用户可理解的文案。
+// 红线：文案不出现"守护进程"字样——对用户而言这是"极速模式"的内部依赖。
+func daemonPublicError(err error) *ExpressError {
+	switch {
+	case errors.Is(err, nbdaemon.ErrElevationCancelled):
+		return &ExpressError{Code: expressErrOperationConflict, Message: "准备已取消", Retryable: true, Action: "重试需要管理员授权一次"}
+	case errors.Is(err, nbdaemon.ErrArtifactMissing), errors.Is(err, errDaemonSetupUnavailable):
+		return &ExpressError{Code: expressErrServiceMissing, Message: "极速模式组件不完整", Retryable: false, Action: "请重新安装 SoGame"}
+	case errors.Is(err, nbdaemon.ErrElevationTimedOut), errors.Is(err, errDaemonSetupTimeout):
+		return &ExpressError{Code: expressErrInternal, Message: "极速模式准备超时", Retryable: true, Action: "稍后重试"}
+	case errors.Is(err, errDaemonSetupGiveUp):
+		return &ExpressError{Code: expressErrServiceUnavailable, Message: "极速模式准备多次失败", Retryable: true, Action: "请检查安全软件后重试"}
+	default:
+		return &ExpressError{Code: expressErrServiceUnavailable, Message: "极速模式暂时不可用", Retryable: true, Action: "重试"}
+	}
+}
+
+// ensureDaemonForCommand 房间命令前置保障：守护进程未就绪时先自动补齐
+//（透明等待，至多一次 UAC）；失败返回错误状态快照。
+// 断开/离开等本地清理命令不经过此函数——它们必须总能执行。
+func (c *ExpressController) ensureDaemonForCommand() (ExpressState, bool) {
+	ctx := c.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := c.EnsureDaemonReady(ctx); err != nil {
+		return c.failDaemonSetup(err), false
+	}
+	return ExpressState{}, true
 }
 
 // runRoomCommand 执行创建/加入房间命令（初始状态为 Enrolling）。
@@ -540,6 +687,8 @@ func (c *ExpressController) refreshRoomView(ctx context.Context) {
 }
 
 // refreshService 检查 NetBird 守护进程的安装与运行状态。
+// 健康状态只驱动 daemonNeedsSetup 提示条，不再把"守护进程未安装"等
+// 技术文案塞进错误横幅——补齐动作由 EnsureDaemonReady 自动执行。
 func (c *ExpressController) refreshService(ctx context.Context) {
 	c.mu.Lock()
 	inspector := c.service
@@ -550,29 +699,22 @@ func (c *ExpressController) refreshService(ctx context.Context) {
 	inspection, err := inspector.Inspect(ctx)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	needsSetup := inspection.Health != nbdaemon.ServiceReady
 	c.state.Service = ExpressService{
-		Installed:       inspection.Installed,
-		Running:         inspection.Running,
-		Version:         inspection.Version,
-		ExpectedVersion: inspection.ExpectedVersion,
-		RepairRequired:  inspection.Health != nbdaemon.ServiceReady,
+		Installed:        inspection.Installed,
+		Running:          inspection.Running,
+		Version:          inspection.Version,
+		ExpectedVersion:  inspection.ExpectedVersion,
+		RepairRequired:   needsSetup,
+		DaemonNeedsSetup: needsSetup,
 	}
-	if inspection.Health != nbdaemon.ServiceReady {
+	if needsSetup {
 		logger.Warnf("express: service health=%s installed=%v running=%v version=%q expected=%q",
 			inspection.Health, inspection.Installed, inspection.Running, inspection.Version, inspection.ExpectedVersion)
 	}
+	// Inspect 调用本身失败（服务查询不可用）仍上浮为错误；健康态不写文案。
 	if err != nil && c.state.Error == nil {
 		c.state.Error = expressPublicError(err)
-	}
-	if c.state.Error == nil {
-		switch inspection.Health {
-		case nbdaemon.ServiceMissing:
-			c.state.Error = &ExpressError{Code: expressErrServiceMissing, Message: "守护进程未安装", Retryable: true, Action: "重新安装守护进程"}
-		case nbdaemon.ServiceVersionMismatch:
-			c.state.Error = &ExpressError{Code: expressErrVersionMismatch, Message: "守护进程版本不匹配", Action: "重新安装守护进程"}
-		case nbdaemon.ServiceStopped, nbdaemon.ServiceUnhealthy:
-			c.state.Error = &ExpressError{Code: expressErrServiceUnavailable, Message: "守护进程未运行", Retryable: true, Action: "修复或启动守护进程"}
-		}
 	}
 }
 
@@ -580,6 +722,7 @@ func (c *ExpressController) refreshService(ctx context.Context) {
 func (c *ExpressController) cloneState() ExpressState {
 	clone := c.state
 	clone.Peers = append([]ExpressPeer(nil), c.state.Peers...)
+	clone.DaemonPreparing = c.state.BusyCommand == "daemon-setup"
 	return clone
 }
 
@@ -620,28 +763,28 @@ func expressPublicError(err error) *ExpressError {
 	}
 	var mismatch *clientnetbird.VersionMismatchError
 	if errors.As(err, &mismatch) {
-		return &ExpressError{Code: expressErrVersionMismatch, Message: fmt.Sprintf("守护进程版本不匹配，需要 v%s", mismatch.Expected), Action: "重新安装守护进程"}
+		return &ExpressError{Code: expressErrVersionMismatch, Message: "极速模式组件版本不匹配", Action: "将自动补齐"}
 	}
 	if errors.Is(err, clientnetbird.ErrManagedProfileConflict) || errors.Is(err, clientnetbird.ErrManagedProfileInconsistent) {
-		return &ExpressError{Code: expressErrProfileConflict, Message: "守护进程配置与本地房间不一致", Action: "重新安装守护进程"}
+		return &ExpressError{Code: expressErrProfileConflict, Message: "极速模式组件配置不一致", Action: "重试"}
 	}
 	if errors.Is(err, nbdaemon.ErrServiceMissing) {
-		return &ExpressError{Code: expressErrServiceMissing, Message: "守护进程未安装", Retryable: true, Action: "重新安装守护进程"}
+		return &ExpressError{Code: expressErrServiceMissing, Message: "极速模式组件未安装", Retryable: true, Action: "将自动补齐"}
 	}
 	if errors.Is(err, nbdaemon.ErrServiceUnavailable) {
-		return &ExpressError{Code: expressErrServiceUnavailable, Message: "守护进程暂时不可用", Retryable: true, Action: "检查守护进程或重试"}
+		return &ExpressError{Code: expressErrServiceUnavailable, Message: "极速模式组件暂时不可用", Retryable: true, Action: "重试"}
 	}
 	if errors.Is(err, nbdaemon.ErrServiceAccess) {
-		return &ExpressError{Code: expressErrServiceUnavailable, Message: "无法读取守护进程状态", Retryable: true, Action: "重试或重新安装"}
+		return &ExpressError{Code: expressErrServiceUnavailable, Message: "无法读取极速模式组件状态", Retryable: true, Action: "重试"}
 	}
 	if errors.Is(err, nbdaemon.ErrElevationCancelled) {
-		return &ExpressError{Code: expressErrOperationConflict, Message: "已取消安装", Action: "可稍后重新点击安装"}
+		return &ExpressError{Code: expressErrOperationConflict, Message: "准备已取消", Retryable: true, Action: "重试需要管理员授权一次"}
 	}
 	if errors.Is(err, nbdaemon.ErrElevationTimedOut) {
-		return &ExpressError{Code: expressErrInternal, Message: "安装未在规定时间内完成", Retryable: true, Action: "稍后重试"}
+		return &ExpressError{Code: expressErrInternal, Message: "极速模式准备超时", Retryable: true, Action: "稍后重试"}
 	}
 	if strings.Contains(strings.ToLower(err.Error()), "room session is unavailable") {
-		return &ExpressError{Code: expressErrServiceUnavailable, Message: "守护进程不可用", Retryable: true, Action: "检查后重试"}
+		return &ExpressError{Code: expressErrServiceUnavailable, Message: "极速模式尚未就绪", Retryable: true, Action: "稍后重试"}
 	}
 	// 兜底文案不得写死"加入房间失败"：create/disconnect/leave/repair 等
 	// 命令的未识别错误都会走到这里。

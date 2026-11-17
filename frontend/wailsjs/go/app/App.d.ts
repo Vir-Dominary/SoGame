@@ -24,9 +24,9 @@ export function ExpressJoinRoom(arg1:string,arg2:string):Promise<app.ExpressStat
 
 export function ExpressLeaveRoom():Promise<app.ExpressState>;
 
-export function ExpressReconnect():Promise<app.ExpressState>;
+export function ExpressPrepareDaemon():Promise<app.ExpressState>;
 
-export function ExpressRepairService():Promise<app.ExpressState>;
+export function ExpressReconnect():Promise<app.ExpressState>;
 
 export function ExpressRevealRoomCode():Promise<string|app.ExpressError>;
 

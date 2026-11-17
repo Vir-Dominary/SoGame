@@ -56,7 +56,8 @@ $required = @(
     @{ Path = "$root/THIRD_PARTY_LICENSES/README.md";                 Why = "第三方许可证清单（随安装包分发）" }
 )
 
-# NetBird MSI：缺失时极速模式在新机器上无法安装守护进程（报“NetBird 服务未安装”）
+# NetBird MSI：守护进程一体化后，安装包 postinstall 预装依赖它——
+# 缺失时新机器只能走运行时补齐路径，禁止带病打包。
 $releaseJson = Get-Content -Raw -LiteralPath "$root/internal/releasebuild/netbird-release.json" | ConvertFrom-Json
 $required += @{ Path = Join-Path $root ("bin/" + $releaseJson.windowsX64.artifact); Why = "官方 NetBird MSI（先运行 scripts\build-all.ps1 自动下载）" }
 

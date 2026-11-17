@@ -942,10 +942,11 @@ func (a *App) ExpressRevealRoomCode() (string, *ExpressError) {
 	return a.express.RevealRoomCode()
 }
 
-// ExpressRepairService 修复/重新安装 NetBird 守护进程
-func (a *App) ExpressRepairService() ExpressState {
+// ExpressPrepareDaemon 主动触发极速模式组件自动就绪（前端"立即准备"
+// 提示条按钮）。房间命令入口也会自动就绪；守护进程对用户不可见。
+func (a *App) ExpressPrepareDaemon() ExpressState {
 	if a.express == nil {
 		return ExpressState{State: "RecoverableError", Error: &ExpressError{Code: expressErrServiceUnavailable, Message: "极速模式不可用"}}
 	}
-	return a.express.RepairService()
+	return a.express.ExpressPrepareDaemon()
 }

@@ -108,6 +108,8 @@ export namespace app {
 	    version: string;
 	    expectedVersion: string;
 	    repairRequired: boolean;
+	    updateAvailable: boolean;
+	    daemonNeedsSetup: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ExpressService(source);
@@ -120,6 +122,8 @@ export namespace app {
 	        this.version = source["version"];
 	        this.expectedVersion = source["expectedVersion"];
 	        this.repairRequired = source["repairRequired"];
+	        this.updateAvailable = source["updateAvailable"];
+	        this.daemonNeedsSetup = source["daemonNeedsSetup"];
 	    }
 	}
 	export class ExpressState {
@@ -135,6 +139,7 @@ export namespace app {
 	    busyCommand: string;
 	    hasSavedRoom: boolean;
 	    disconnected: boolean;
+	    daemonPreparing: boolean;
 	    roomCode: string;
 	    relayEnabled: boolean;
 	    relayBlocked: boolean;
@@ -158,6 +163,7 @@ export namespace app {
 	        this.busyCommand = source["busyCommand"];
 	        this.hasSavedRoom = source["hasSavedRoom"];
 	        this.disconnected = source["disconnected"];
+	        this.daemonPreparing = source["daemonPreparing"];
 	        this.roomCode = source["roomCode"];
 	        this.relayEnabled = source["relayEnabled"];
 	        this.relayBlocked = source["relayBlocked"];

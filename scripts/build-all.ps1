@@ -29,7 +29,16 @@
 # NetBird 守护进程通信。守护进程由 sogame-helper.exe 在首次使用极速模式时
 # 以 UAC 提权安装为 Windows 系统服务。
 
+# param 必须位于所有可执行语句之前。
+param(
+    # 官方 NetBird MSI 的本地路径：网络受限无法从 GitHub 下载时手动指定。
+    # 注意勿命名为 MsiPath——PowerShell 变量不区分大小写，会与脚本内
+    # 局部变量 $msiPath 冲突。
+    [string]$LocalMsiPath = ""
+)
+
 $ErrorActionPreference = "Stop"
+
 $root = Resolve-Path "$PSScriptRoot/.."
 Set-Location $root
 
@@ -73,6 +82,17 @@ if (Test-Path -LiteralPath $msiPath) {
         Write-Host "  NetBird MSI 存在但 SHA256 不匹配，重新下载..." -ForegroundColor Yellow
         Remove-Item -LiteralPath $msiPath -Force
     }
+}
+
+# 手动指定的本地 MSI：校验 SHA256 后拷入 bin\（与下载产物同标准）
+if (-not (Test-Path -LiteralPath $msiPath) -and $LocalMsiPath -ne "") {
+    if (-not (Test-Path -LiteralPath $LocalMsiPath)) { throw "指定的 MSI 不存在: $LocalMsiPath" }
+    $manualHash = (Get-FileHash -LiteralPath $LocalMsiPath -Algorithm SHA256).Hash.ToLower()
+    if ($manualHash -ne $expectedSha256.ToLower()) {
+        throw "指定 MSI 的 SHA256 与内置期望值不匹配：期望 $expectedSha256，实际 $manualHash"
+    }
+    Copy-Item -LiteralPath $LocalMsiPath -Destination $msiPath -Force
+    Write-Host "  NetBird MSI 已从本地路径导入并校验通过" -ForegroundColor Green
 }
 
 if (-not (Test-Path -LiteralPath $msiPath)) {

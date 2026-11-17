@@ -135,11 +135,12 @@ scp publish/update.json virdy:/opt/sogame/downloads/sogame/
 
 ## 注意事项
 
-1. **首次发布必须包含 NetBird MSI**：`publish-update.ps1` 会在 `build/bin/` 中检查 `netbird_installer_0.74.7_windows_amd64.msi`，如果不存在会警告。首次发布前需确保该文件存在。
+1. **每次发布必须包含 NetBird MSI**：`publish-update.ps1` 会检查 `build/bin/netbird_installer_0.74.7_windows_amd64.msi`，**缺失时直接失败**（守护进程一体化后，安装包 postinstall 预装与更新包内嵌 MSI 是新机器开箱即用的前提；网络受限时用 `-LocalMsiPath` 指定本地文件）。先运行 `scripts\build-all.ps1`（自动下载并校验 SHA256）再发布。
 2. **版本号必须递增**：`update.json` 中的 `version` 必须大于客户端当前版本，客户端才会检测到更新。
 3. **SHA256 必须匹配**：`update.json` 中的 `sha256` 必须与 zip 文件的实际 SHA256 一致，否则客户端会拒绝更新。
 4. **（推荐）启用 ed25519 签名 manifest**：`tools/update-keygen` 生成密钥对，公钥填入 `internal/config/app_config.go` 的 `UpdateManifestPublicKey` 并发版；之后每次发布加 `-SignKeyFile` 参数：`.\scripts\publish-update.ps1 -Version "2.2" -SignKeyFile <私钥路径>`。客户端内置公钥后，缺少有效签名的 manifest 会被拒绝——更新服务器/CDN 失陷也无法推送恶意更新。私钥绝不可入库。
-4. **缓存控制**：Nginx 配置中已禁用缓存，确保客户端每次都能获取最新的 `update.json`。
+5. **NetBird 内置版本策略**：发版时评估是否升级 `internal/releasebuild/netbird-release.json` 的内置版本（新版本需在干净机器实测：postinstall 预装、极速模式建房/入房、对端互 ping）；不升级则沿用当前内置版本（客户端巡检发现版本漂移时会自动回装内置版本）。
+6. **缓存控制**：Nginx 配置中已禁用缓存，确保客户端每次都能获取最新的 `update.json`。
 
 ---
 

@@ -42,12 +42,12 @@ export function ExpressLeaveRoom() {
   return window['go']['app']['App']['ExpressLeaveRoom']();
 }
 
-export function ExpressReconnect() {
-  return window['go']['app']['App']['ExpressReconnect']();
+export function ExpressPrepareDaemon() {
+  return window['go']['app']['App']['ExpressPrepareDaemon']();
 }
 
-export function ExpressRepairService() {
-  return window['go']['app']['App']['ExpressRepairService']();
+export function ExpressReconnect() {
+  return window['go']['app']['App']['ExpressReconnect']();
 }
 
 export function ExpressRevealRoomCode() {

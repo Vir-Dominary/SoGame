@@ -45,6 +45,10 @@ param(
 
     [string]$OutputDir = "./publish",
 
+# 可选：官方 NetBird MSI 的本地路径（网络受限无法下载时手动指定）。
+    # 命名勿用 MsiPath——PowerShell 变量不区分大小写，会与局部变量冲突。
+    [string]$LocalMsiPath = "",
+
     # 更新 manifest 签名私钥（tools/update-keygen 生成的 base64 私钥文件）。
     # 提供时 update.json 会写入 ed25519 签名字段；客户端内置公钥后强制验签。
     [string]$SignKeyFile = ""
@@ -111,12 +115,16 @@ $zipContent = @(
 )
 # 检查 MSI 是否存在（首次发布需要）
 $msiPath = "$buildDir/netbird_installer_0.74.7_windows_amd64.msi"
+if (-not (Test-Path $msiPath) -and $LocalMsiPath -ne "") {
+    if (-not (Test-Path $LocalMsiPath)) { throw "指定的 MSI 不存在: $LocalMsiPath" }
+    Copy-Item -LiteralPath $LocalMsiPath -Destination $msiPath -Force
+}
 if (Test-Path $msiPath) {
     $zipContent += $msiPath
 } else {
-    Write-Host "WARNING: NetBird MSI not found at $msiPath" -ForegroundColor Red
-    Write-Host "         First release requires the MSI. Download from:"
-    Write-Host "         https://github.com/netbirdio/netbird/releases/download/v0.74.7/netbird_installer_0.74.7_windows_amd64.msi"
+    # 缺 MSI 的热更新包会让极速模式在新机器上无法自动补齐组件
+    # （守护进程一体化后依赖安装包/更新包内嵌 MSI），禁止带病发布。
+    throw "NetBird MSI not found at $msiPath. Run scripts\build-all.ps1 first (or pass -MsiPath <path>)."
 }
 
 Compress-Archive -Path $zipContent -DestinationPath $zipPath -Force

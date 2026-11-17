@@ -34,7 +34,7 @@
 ; windowsX64.artifact），找到后通过 UAC 提权（sogame-helper --action install
 ; --artifact <msi>）将其安装为 Windows 系统服务。
 ; 2. MSI（38MB 二进制产物）不随 git 仓库携带，但【必须】打进安装包，
-;    否则新机器上极速模式会报“NetBird 服务未安装”。
+;    否则新机器上极速模式无法在 postinstall 预装（只能走运行时补齐路径）。
 ;    编译前请确认 ..\bin\ 下存在官方 MSI；缺失时先运行
 ;    scripts\build-all.ps1（自动下载并校验 SHA256：
 ;    1be9ce80767a728a8682bc3c114256b224b8d6657400ac031e458a05b5e5942d）。
@@ -94,7 +94,8 @@ Source: "tap\tapinstall.exe"; DestDir: "{app}\installer\tap"; Flags: ignoreversi
 ; 极速模式：sogame-helper 提权助手（应用运行时与 exe 同级目录查找并 UAC 调用）
 Source: "..\build\bin\sogame-helper.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; 极速模式：官方 NetBird MSI（应用运行时与 exe 同级目录查找）。
-; 缺失该文件时极速模式报“NetBird 服务未安装”且无法修复，禁止注释本行。
+; 缺失该文件时极速模式需经"待准备"提示条在运行时补齐；
+; 打进安装包可让新机器开箱即用（postinstall 预装），禁止注释本行。
 Source: "..\bin\{#NetBirdMSI}"; DestDir: "{app}"; Flags: ignoreversion
 ; 许可证与版权信息（AGPLv3 正文、NOTICE、品牌政策、第三方许可证清单）
 ; 随安装包分发，确保二进制发行版用户可访问完整的许可证信息。
@@ -105,6 +106,14 @@ Source: "..\THIRD_PARTY_LICENSES\*"; DestDir: "{app}\THIRD_PARTY_LICENSES"; Flag
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式(&D)"; GroupDescription: "附加任务:"
+
+[Run]
+; 安装完成后静默安装 NetBird 网络组件（极速模式的内建依赖，
+; 复用 sogame-helper 的 SHA256+签名+publisher+证书指纹四重校验链）。
+; 安装器已提权（PrivilegesRequired=admin），此处不会再弹 UAC。
+; 失败不阻断安装完成：首次使用极速模式时应用会自动补齐
+; （运行时 EnsureDaemonReady 兜底，见 docs/DAEMON_AUTO_SETUP_DESIGN.md）。
+Filename: "{app}\sogame-helper.exe"; Parameters: "--action install --artifact ""{app}\{#NetBirdMSI}"" --log ""{commonappdata}\SoGame\netbird-install.log"" --result ""{commonappdata}\SoGame\netbird-install.result"""; Flags: runhidden waituntilterminated; StatusMsg: "正在安装网络组件..."
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

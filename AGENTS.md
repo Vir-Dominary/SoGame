@@ -70,7 +70,13 @@ wireguard/               # 极速模式说明（README.md，详细叙述见本�
 1. **Room API 是薄映射层**：房间 = NetBird Group + Setup Key + 同组互通 Policy；
    不实现 NetBird 的登录/OIDC，Setup Key 匿名注册，用户只需昵称 + 房间码。
 2. **官方 MSI 不修改**：daemon 由 `sogame-helper.exe` UAC 提权安装为系统服务；
-   安装前校验 MSI 的 SHA256 + Authenticode 签名 + publisher CN/O（`internal/nbdaemon/artifact_windows.go`）。
+   安装前校验 MSI 的 SHA256 + Authenticode 签名 + publisher CN/O + 证书指纹
+   （`internal/nbdaemon/artifact_windows.go`）。
+   **守护进程对用户不可见（一体化内建依赖）**：UI 无"安装/修复守护进程"概念——
+   安装包 postinstall 静默预装；缺失/损坏/版本漂移时由 `EnsureDaemonReady`
+   自动补齐（启动后台预检 → "待准备"提示条；用户点击或执行房间命令时触发，
+   至多一次 UAC，60s 冷却 + 连续 3 次失败停手）。设计详见
+   `docs/DAEMON_AUTO_SETUP_DESIGN.md`。
 3. **凭证分级保护**：房间码与 owner token 经 Windows DPAPI（current-user）加密落盘
    （`internal/securestore/`）；服务端 SQLite 中 setup key 以 AES-GCM 加密、
    owner token 仅存 SHA256 哈希；房间码查询键为 HMAC-SHA256(pepper, code)
@@ -141,8 +147,8 @@ NoRoom → Enrolling → ControlPlaneConnected → WaitingForPeer → Connecting
 ```powershell
 # 一键构建（顺序红线：先编译 sogame-helper.exe 算 SHA256，再 wails build
 # 注入该哈希——主程序 UAC 提权前的 helper 完整性校验依赖它；
-# 自动下载并校验 NetBird MSI）
-.\scripts\build-all.ps1
+# 自动下载并校验 NetBird MSI；网络受限时用 -LocalMsiPath 指定本地 MSI）
+.\scripts\build-all.ps1 [-LocalMsiPath <本地 MSI 路径>]
 # 输出：build\bin\SoGame.exe、sogame-helper.exe、edge.exe、netbird_installer_0.74.7_windows_amd64.msi
 
 # 客户端测试（主 module）
@@ -256,6 +262,9 @@ go run ./tools/room-api-mock/main.go   # 监听 127.0.0.1:9099，MOCK_RELAY_ENAB
   新增特权操作应优先放 helper。
 - 完整房间码只经 `ExpressRevealRoomCode` 按需获取：`ExpressState` 快照的 `roomCode`
   恒为空串，任何轮询/广播路径不得填充明文房间码。
+- 守护进程是一体化内建依赖：UI 不出现"守护进程/安装/修复"概念；补齐动作只能经
+  `EnsureDaemonReady`（BusyCommand=daemon-setup，60s 冷却+3 次失败停手）；
+  用户向文案一律称"极速模式组件/网络组件"。
 
 **并发与生命周期：**
 

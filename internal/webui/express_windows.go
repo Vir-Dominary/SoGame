@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"sogame/internal/logger"
@@ -40,7 +41,7 @@ import (
 )
 
 // errDaemonUnavailable 表示 NetBird 守护进程未安装或未运行导致拨号失败。
-// 该状态下控制器仍可修复（前端"安装"按钮可用），不应视为致命启动错误。
+// 该状态下控制器仍可自动补齐（EnsureDaemonReady），不应视为致命启动错误。
 var errDaemonUnavailable = errors.New("netbird daemon unavailable")
 
 // NewWindowsExpressController 构造一个完整的极速模式协调器：
@@ -50,9 +51,9 @@ var errDaemonUnavailable = errors.New("netbird daemon unavailable")
 //  4. 组装 session.Service 并注入到控制器
 //  5. 配置 NetBird 服务检查器与 MSI 修复函数
 //
-// 守护进程未安装/未运行时第 3 步拨号失败：控制器会进入"可修复"状态
-// （检查器 + 修复函数已配置，rooms 为 nil），前端"安装"按钮可正常执行
-// MSI 安装；修复成功后自动重新组装控制器，无需重启应用。
+// 守护进程未安装/未运行时第 3 步拨号失败：控制器进入"待准备"状态
+// （检查器 + 修复函数已配置，rooms 为 nil），巡检驱动 daemonNeedsSetup
+// 提示条，用户点击或执行房间命令时自动补齐（EnsureDaemonReady）。
 func NewWindowsExpressController(roomAPIBaseURL string) *ExpressController {
 	controller := NewExpressController()
 	err := assembleWindowsExpress(controller, roomAPIBaseURL)
@@ -60,8 +61,8 @@ func NewWindowsExpressController(roomAPIBaseURL string) *ExpressController {
 		return controllerWithStartupError(controller, err)
 	}
 	// 拨号失败（守护进程不可用）时不预设错误：状态与服务信息由
-	// Startup 时的 refreshService 依据 Windows 服务实际情况填充
-	// （如 ServiceMissing → "NetBird 服务未安装"）。
+	// Startup 时的 refreshService 依据 Windows 服务实际情况填充，
+	// 前端展示"待准备"提示条。
 	return controller
 }
 
@@ -102,8 +103,8 @@ func assembleWindowsExpress(controller *ExpressController, roomAPIBaseURL string
 	defer cancel()
 	rpcAdapter, err := clientnetbird.DialLocalRPCAdapter(dialContext, currentUser.Username)
 	if err != nil {
-		// 守护进程不可用（通常未安装或未运行）：仍配置服务检查器与
-		// 修复函数，使前端"安装/修复"按钮真正执行 MSI 安装。
+	// 守护进程不可用（通常未安装或未运行）：仍配置服务检查器与
+		// 修复函数，使 EnsureDaemonReady 能自动执行 MSI 安装。
 		// probe 传 nil——Inspect 在服务未运行时不会调用版本探测。
 		closePreviousRPC(controller)
 		inspector := nbdaemon.NewServiceInspector(clientnetbird.ExpectedVersion, netbirdProductCode(), nil)
@@ -210,10 +211,14 @@ func windowsRepairFunc(roomAPIBaseURL string, controller *ExpressController) fun
 		if err != nil {
 			return err
 		}
+		artifact, err := resolveInstallerArtifact(root, meta.WindowsX64.Artifact)
+		if err != nil {
+			return err
+		}
 		if err := nbdaemon.RequestInstallerElevation(
 			filepath.Join(root, "sogame-helper.exe"),
 			chooseMSIAction(controller, ctx),
-			filepath.Join(root, meta.WindowsX64.Artifact),
+			artifact,
 			logPath,
 			resultPath,
 		); err != nil {
@@ -225,12 +230,31 @@ func windowsRepairFunc(roomAPIBaseURL string, controller *ExpressController) fun
 	}
 }
 
+// resolveInstallerArtifact 按约定顺序查找官方 NetBird MSI：
+// exe 同目录（安装包布局）→ exe\bin\（build\bin 布局）→ %ProgramData%\SoGame\
+// （运维手动放置的兜底位置）。全部缺失时返回 ErrArtifactMissing 包装错误。
+func resolveInstallerArtifact(exeDir, artifactName string) (string, error) {
+	candidates := []string{
+		filepath.Join(exeDir, artifactName),
+		filepath.Join(exeDir, "bin", artifactName),
+	}
+	if programData := os.Getenv("ProgramData"); programData != "" {
+		candidates = append(candidates, filepath.Join(programData, "SoGame", artifactName))
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("%w: %s (searched: %s)", nbdaemon.ErrArtifactMissing, artifactName, strings.Join(candidates, ", "))
+}
+
 // chooseMSIAction 根据当前 NetBird 服务状态决定 MSI 操作：
 //   - 服务完全未安装 → install（全新安装，不携带 REINSTALL 参数）
 //   - 已安装但停止/异常/版本不匹配 → repair（REINSTALL 修复）
 //
 // 在全新机器上必须走 install：对从未安装过的产品执行 REINSTALL 修复
-// 是未定义行为，可能导致 msiexec 失败，让"安装"按钮看起来无效。
+// 是未定义行为，可能导致 msiexec 失败。
 // 检查失败时回退到 repair，避免把"已安装但短暂不可读"的服务重复全新安装。
 func chooseMSIAction(controller *ExpressController, ctx context.Context) nbdaemon.MSIAction {
 	controller.mu.Lock()

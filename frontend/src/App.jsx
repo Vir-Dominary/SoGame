@@ -40,7 +40,7 @@ import {
   ExpressReconnect,
   ExpressLeaveRoom,
   ExpressRevealRoomCode,
-  ExpressRepairService,
+  ExpressPrepareDaemon,
   CheckUpdate,
   PerformUpdate,
   DetectNATType,
@@ -379,34 +379,36 @@ function App() {
     await doExpressLeave()
   }
 
-  // 一次性提示（数秒后自动消失），用于"守护进程安装完毕"等反馈
+  // 一次性提示（数秒后自动消失），用于"极速模式已就绪"等反馈
   const showExpressNotice = useCallback((msg) => {
     setExpressNotice(msg)
     if (expressNoticeTimerRef.current) clearTimeout(expressNoticeTimerRef.current)
     expressNoticeTimerRef.current = setTimeout(() => setExpressNotice(''), 5000)
   }, [])
 
-  const handleExpressRepair = async () => {
-    setLoadingAction('express-repair')
+  // "立即准备"按钮：主动触发极速模式组件自动就绪（含一次管理员授权）。
+  // 守护进程是一体化内建依赖，用户无需感知其概念。
+  const handleExpressPrepare = async () => {
+    setLoadingAction('express-prepare')
     setExpressBusy(true)
     try {
-      const state = await ExpressRepairService()
+      const state = await ExpressPrepareDaemon()
       setExpressState(state)
       setErrorMsg('')
-      if (state && state.service && state.service.installed) {
-        showExpressNotice('守护进程安装完毕')
+      if (state && state.service && state.service.installed && !state.service.daemonNeedsSetup) {
+        showExpressNotice('极速模式已就绪')
       }
     } catch (e) { setErrorMsg(String(e)) }
     finally { setLoadingAction(null); setExpressBusy(false) }
   }
 
-  // 兜底：轮询观察到 busyCommand 由 repair 变为空且服务已就绪时，提示安装完毕
+  // 兜底：轮询观察到 daemon-setup 就绪流程结束时，提示已就绪
   useEffect(() => {
     const busy = expressState ? expressState.busyCommand : ''
     const prev = prevBusyCommandRef.current
     prevBusyCommandRef.current = busy
-    if (prev === 'repair' && busy === '' && expressState && expressState.service && expressState.service.installed) {
-      showExpressNotice('守护进程安装完毕')
+    if (prev === 'daemon-setup' && busy === '' && expressState && expressState.service && expressState.service.installed && !expressState.service.daemonNeedsSetup) {
+      showExpressNotice('极速模式已就绪')
     }
   }, [expressState, showExpressNotice])
 
@@ -681,8 +683,8 @@ function App() {
               <div className="field"><label>昵称</label><input type="text" value={expressNickname} onChange={e => { setExpressNickname(e.target.value); setErrorMsg('') }} placeholder="您的昵称" maxLength={32} /></div>
               {tabMode === 'join' && (<div className="field"><label>房间码</label><input type="text" value={expressRoomCode} onChange={e => { setExpressRoomCode(e.target.value); setErrorMsg('') }} placeholder="粘贴房间码" maxLength={14} /></div>)}
               <button className={`generate-btn ${(loadingAction === 'express-create' || loadingAction === 'express-join') ? 'loading-bar' : ''}`} onClick={tabMode === 'create' ? handleExpressCreate : handleExpressJoin} disabled={expressBusy || loadingAction === 'express-create' || loadingAction === 'express-join'}>{loadingAction === 'express-create' || loadingAction === 'express-join' ? (tabMode === 'create' ? '创建中...' : '加入中...') : (tabMode === 'create' ? '创建房间' : '加入房间')}</button>
-              {expressState && expressState.service && (!expressState.service.installed || expressState.service.repairRequired) && (<div className="express-hint">守护进程{expressState.service.installed ? '异常' : '未安装'} <button className="repair-btn" onClick={handleExpressRepair} disabled={expressBusy || loadingAction === 'express-repair'}>{loadingAction === 'express-repair' ? '处理中...' : (expressState.service.installed ? '修复' : '安装')}</button></div>)}
-              {loadingAction === 'express-repair' && (<div className="express-installing">正在安装守护进程，请稍后…</div>)}
+              {expressState && expressState.daemonPreparing && (<div className="express-installing">正在准备极速模式，首次约需 30 秒…</div>)}
+              {expressState && expressState.service && expressState.service.daemonNeedsSetup && !expressState.daemonPreparing && (<div className="express-hint">极速模式需要安装网络组件。 <button className="repair-btn" onClick={handleExpressPrepare} disabled={expressBusy || loadingAction === 'express-prepare'}>{loadingAction === 'express-prepare' ? '处理中...' : '立即准备'}</button></div>)}
               {expressNotice && (<div className="express-notice">{expressNotice}</div>)}
               {expressState && expressState.error && (<div className="error-bar">{expressState.error.message}</div>)}
             </div>
