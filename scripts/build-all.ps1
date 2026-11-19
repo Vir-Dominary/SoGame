@@ -63,9 +63,25 @@ Copy-Item "$helperTmp/sogame-helper.exe" "$root/build/bin/sogame-helper.exe" -Fo
 Remove-Item $helperTmp -Recurse -Force
 
 Write-Host ""
-Write-Host "==> [3/4] 下载官方 NetBird MSI 并拷贝二进制到 build\bin\..." -ForegroundColor Cyan
+Write-Host "==> [3/4] 拷贝二进制并准备官方 NetBird MSI..." -ForegroundColor Cyan
 $dest = "$root/build/bin"
 $binDir = "$root/bin"
+
+# 拷贝 edge.exe（经典模式 n2n）：先于 MSI 步骤执行——MSI 缺失时脚本会
+# 硬失败（防缺件发布），但 build\bin 仍应是可运行的完整目录（本机已装
+# NetBird 时极速模式无需 MSI 即可测试）。
+$src = @(
+    @{ From = "$binDir/edge.exe"; To = "$dest/edge.exe" }
+)
+foreach ($item in $src) {
+    if (Test-Path $item.From) {
+        Copy-Item $item.From $item.To -Force
+        $size = (Get-Item $item.To).Length
+        Write-Host ("  {0,-20} -> build\bin\  ({1:N0} bytes)" -f (Split-Path $item.From -Leaf), $size) -ForegroundColor Green
+    } else {
+        Write-Host "  跳过（源文件不存在）: $($item.From)" -ForegroundColor Yellow
+    }
+}
 
 # 下载 NetBird MSI（从 netbird-release.json 读取 URL 和 SHA256）
 $releaseJson = Get-Content -Raw -LiteralPath "$root/internal/releasebuild/netbird-release.json" | ConvertFrom-Json
@@ -106,19 +122,7 @@ if (-not (Test-Path -LiteralPath $msiPath)) {
     Write-Host "  NetBird MSI 下载完成，SHA256 校验通过" -ForegroundColor Green
 }
 
-# 拷贝 edge.exe（经典模式 n2n）
-$src = @(
-    @{ From = "$binDir/edge.exe"; To = "$dest/edge.exe" }
-)
-foreach ($item in $src) {
-    if (Test-Path $item.From) {
-        Copy-Item $item.From $item.To -Force
-        $size = (Get-Item $item.To).Length
-        Write-Host ("  {0,-20} -> build\bin\  ({1:N0} bytes)" -f (Split-Path $item.From -Leaf), $size) -ForegroundColor Green
-    } else {
-        Write-Host "  跳过（源文件不存在）: $($item.From)" -ForegroundColor Yellow
-    }
-}
+# 拷贝 edge.exe（经典模式 n2n）——已在 [3/4] 步骤开头完成
 
 Write-Host ""
 Write-Host "==> [4/4] 验证..." -ForegroundColor Cyan
