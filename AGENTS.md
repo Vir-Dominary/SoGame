@@ -133,7 +133,7 @@ NoRoom → Enrolling → ControlPlaneConnected → WaitingForPeer → Connecting
 | `netbird/` | daemon gRPC 适配器（`rpc/` 为 protoc 生成）、版本检查、恢复监控、profile 管理；`SetupKey` 类型（`String/Format/LogValue/MarshalJSON` 均 `[REDACTED]`） |
 | `nbdaemon/` | NetBird MSI 安装/修复/移除：签名校验、UAC 提权、服务生命周期 |
 | `securestore/` | DPAPI 加密存储：房间码、owner token、房间元数据（room.json，**元数据为明文 JSON**），原子替换 |
-| `natdetect/` | STUN NAT 类型探测（RFC 3489 简化版，ctx 生效），给用户提供组网建议 |
+| `natdetect/` | STUN NAT 类型探测（RFC 3489 简化版）：候选池顺序故障转移（`config.STUNServerCandidates`）、共享 socket 两步对比判定（每次新建 socket 会把 Full Cone 误判为 Symmetric）、全不可达不武断判 UDPBlocked、原始错误只落日志不上屏；DNS 解析受 ctx 管辖。给用户提供组网建议 |
 | `updater/` | 热更新：版本比较、manifest ed25519 验签（公钥内置时强制）、zip 下载（强制 SHA256、大小上限）、解压（ZipSlip/保留名/ADS 防护、目标目录先清理且拒绝符号链接） |
 | `releasebuild/` | 嵌入 `netbird-release.json`（MSI URL/SHA256/ProductCode/证书指纹）；`helperSHA256Override` 经 ldflags 注入 |
 | `n2n/` | 经典模式 edge.exe 进程编排 |
@@ -201,7 +201,7 @@ go run ./tools/room-api-mock/main.go   # 监听 127.0.0.1:9099，MOCK_RELAY_ENAB
 | `DefaultSupernode` | `8.148.244.159:10090` | 经典模式默认中心节点（节点表见 `internal/n2n/edge.go` knownNodes） |
 | `UpdateURL` | `https://virdy.cn/sogame/update.json` | 热更新 manifest |
 | `UpdateManifestPublicKey` | 空（未启用验签） | 更新 manifest ed25519 验签公钥（base64）；填入后 manifest 必须携带有效签名，见 §5 发布签名 |
-| `STUNServerA` / `STUNServerB` | `stun.virdy.cn:3478` / `stun.l.google.com:19302` | NAT 探测 |
+| `STUNServerCandidates` | 自建 `stun.virdy.cn:3478`（待部署）+ 腾讯/小米/Cloudflare 公共 STUN | NAT 探测候选池（顺序即优先级，顺序故障转移；共享 socket 两步对比判定，不武断判 UDPBlocked） |
 
 ### 6.2 Room API 服务端（环境变量，`server/room-api/internal/config/config.go`）
 
@@ -311,6 +311,7 @@ Wintun MIT、Go/npm 依赖各自许可证）。详见 NOTICE、TRADEMARK.md、TH
 | `docs/TAP_*.md` | 经典模式 TAP 适配器测试用例与回归记录 |
 | `docs/CODE_REVIEW_*.md` | 分支代码评审报告（按评审日期与分支命名） |
 | `docs/AUDIT_REPORT_2026-11-12.md` | 全项目代码审计报告（含同日完成的修复记录与升级须知） |
+| `docs/AUDIT_REPORT_2026-11-24.md` | 全项目代码审计报告·第二轮（守护进程一体化专项 + rooms 测试/race 首次真实运行 + B-1 桥接实证；修复项含 NAT 检测重构与 V-1 race 修复） |
 | `internal/netbird/rpc/README.md` | daemon.proto 生成代码说明 |
 | `THIRD_PARTY_LICENSES/` | 第三方组件许可证 |
 

@@ -561,9 +561,7 @@ function App() {
   const natTypeLabel = (type) => {
     switch (type) {
       case 'Open': return '开放网络'
-      case 'FullCone': return 'Full Cone (NAT 1)'
-      case 'RestrictedCone': return 'Restricted Cone (NAT 2)'
-      case 'PortRestricted': return 'Port Restricted (NAT 3)'
+      case 'FullCone': return 'Full/Restricted Cone (NAT 1-2)'
       case 'Symmetric': return 'Symmetric (NAT 4)'
       case 'UDPBlocked': return 'UDP 被阻止'
       default: return '未知'

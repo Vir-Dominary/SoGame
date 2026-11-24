@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"net"
+	"strconv"
 	"time"
 )
 
@@ -14,7 +15,11 @@ const (
 	stunBindingResp uint16 = 0x0101
 	attrXorMapped   uint16 = 0x0020
 	attrMappedAddr  uint16 = 0x0001
-	stunTimeout            = 3 * time.Second
+	// stunTimeout 是单台服务器的探测超时。候选按顺序故障转移：
+	// 总预算 = 台数 × stunTimeout，与 DetectWithTimeout 的整体超时
+	// 取较小者生效。取 2s（而非 3s）：4 台候选第一阶段最坏 8s，
+	// 为第二阶段的对比探测保留预算余量。
+	stunTimeout = 2 * time.Second
 )
 
 type mappedAddr struct {
@@ -34,18 +39,32 @@ func buildBindingRequest() ([]byte, error) {
 	return msg, nil
 }
 
-func sendSTUN(ctx context.Context, server string) (mappedAddr, error) {
-	addr, err := net.ResolveUDPAddr("udp", server)
+// resolveServer 解析 server（host:port）为 UDP 地址。
+// DNS 查询受 ctx 管辖——DetectWithTimeout 的超时承诺必须覆盖解析阶段
+// （劣化 DNS 下 ctx 取消可中断解析）。
+func resolveServer(ctx context.Context, server string) (*net.UDPAddr, error) {
+	var resolver net.Resolver
+	host, port, err := splitHostPort(server)
 	if err != nil {
-		return mappedAddr{}, err
+		return nil, err
 	}
-	conn, err := net.DialUDP("udp", nil, addr)
+	ips, err := resolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return mappedAddr{}, err
+		return nil, err
 	}
-	defer conn.Close()
-	// deadline 取 ctx 剩余预算与 stunTimeout 的较小值：
-	// DetectWithTimeout 的超时承诺必须真实生效。
+	if len(ips) == 0 {
+		return nil, errNoResolvedIP
+	}
+	addr := &net.UDPAddr{IP: ips[0].IP, Port: port}
+	return addr, nil
+}
+
+// probeServer 在共享 UDP socket 上向 serverAddr 发送 STUN Binding 请求
+// 并等待响应。共享 socket 是 NAT 类型判定正确性的前提：判定依据是
+// "同一内网端点对不同服务器的映射是否一致"，RFC 3489 要求两个请求
+// 经由同一本地端口发出；各自新建 socket 会因源端口不同把任何
+// Full Cone NAT 都误判为 Symmetric。
+func probeServer(ctx context.Context, conn *net.UDPConn, serverAddr *net.UDPAddr) (mappedAddr, error) {
 	deadline := time.Now().Add(stunTimeout)
 	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
 		deadline = ctxDeadline
@@ -55,15 +74,22 @@ func sendSTUN(ctx context.Context, server string) (mappedAddr, error) {
 	if err != nil {
 		return mappedAddr{}, err
 	}
-	if _, err := conn.Write(req); err != nil {
+	if _, err := conn.WriteToUDP(req, serverAddr); err != nil {
 		return mappedAddr{}, err
 	}
 	resp := make([]byte, 2048)
-	n, _, err := conn.ReadFromUDP(resp)
-	if err != nil {
-		return mappedAddr{}, err
+	for {
+		n, from, err := conn.ReadFromUDP(resp)
+		if err != nil {
+			return mappedAddr{}, err
+		}
+		// 丢弃来自其他候选服务器的迟到响应（顺序故障转移下
+		// 前一台的响应可能恰好在此刻到达）。
+		if !udpAddrEqual(from, serverAddr) {
+			continue
+		}
+		return parseResponse(resp[:n])
 	}
-	return parseResponse(resp[:n])
 }
 
 func parseResponse(msg []byte) (mappedAddr, error) {
@@ -128,10 +154,30 @@ func parseMappedAddress(data []byte, xor bool, cookie []byte) (mappedAddr, error
 	return mappedAddr{IP: ip, Port: port}, nil
 }
 
+func splitHostPort(server string) (string, int, error) {
+	host, portStr, err := net.SplitHostPort(server)
+	if err != nil {
+		return "", 0, err
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return "", 0, err
+	}
+	return host, port, nil
+}
+
+func udpAddrEqual(a, b *net.UDPAddr) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Port == b.Port && a.IP.Equal(b.IP)
+}
+
 var (
-	errInvalidSTUN      = errSTUN("invalid STUN response")
-	errNoMappedAddr     = errSTUN("no mapped address in STUN response")
+	errInvalidSTUN       = errSTUN("invalid STUN response")
+	errNoMappedAddr      = errSTUN("no mapped address in STUN response")
 	errUnsupportedFamily = errSTUN("unsupported address family")
+	errNoResolvedIP      = errSTUN("no resolved IP for STUN server")
 )
 
 type errSTUN string

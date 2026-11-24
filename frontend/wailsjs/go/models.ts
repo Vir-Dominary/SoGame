@@ -245,8 +245,6 @@ export namespace natdetect {
 	    localPort: number;
 	    publicIp: string;
 	    publicPort: number;
-	    stunServerA: string;
-	    stunServerB: string;
 	    suggestion: string;
 	    error?: string;
 	
@@ -261,8 +259,6 @@ export namespace natdetect {
 	        this.localPort = source["localPort"];
 	        this.publicIp = source["publicIp"];
 	        this.publicPort = source["publicPort"];
-	        this.stunServerA = source["stunServerA"];
-	        this.stunServerB = source["stunServerB"];
 	        this.suggestion = source["suggestion"];
 	        this.error = source["error"];
 	    }

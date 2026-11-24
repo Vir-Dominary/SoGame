@@ -21,15 +21,13 @@ package config
 var AppVersion = "2.1"
 
 const (
-	AppName        = "SoGame"
-	AppAuthor      = "vir_dominary"
-	AppURL         = "https://github.com/vir-dominary"
-	AppBilibili    = "https://space.bilibili.com/454851989"
-	AppDesc        = "SoGame - 远程组网工具"
-	AppSponsorURL  = "https://www.ifdian.net/a/vir_dominary?utm_source=copylink&utm_medium=link"
-	UpdateURL      = "https://virdy.cn/sogame/update.json"
-	STUNServerA    = "stun.virdy.cn:3478"
-	STUNServerB    = "stun.l.google.com:19302"
+	AppName       = "SoGame"
+	AppAuthor     = "vir_dominary"
+	AppURL        = "https://github.com/vir-dominary"
+	AppBilibili   = "https://space.bilibili.com/454851989"
+	AppDesc       = "SoGame - 远程组网工具"
+	AppSponsorURL = "https://www.ifdian.net/a/vir_dominary?utm_source=copylink&utm_medium=link"
+	UpdateURL = "https://virdy.cn/sogame/update.json"
 
 	// UpdateManifestPublicKey 是热更新 manifest 的 ed25519 验签公钥（base64）。
 	// 签名私钥由发布者离线保管（绝不可入库）；生成密钥对用
@@ -66,3 +64,15 @@ var deprecatedRoomAPIURLs = map[string]bool{
 // 当前为空：尚无节点退役。节点下线时在此追加地址，存量配置与旧邀请码
 // 中的该地址会被自动替换为 DefaultSupernode。
 var deprecatedSupernodes = map[string]bool{}
+
+// STUNServerCandidates 是 NAT 探测的候选服务器池（顺序即优先级）：
+// 自建服务器为主，公共服务器兜底。探测按顺序故障转移：第一台成功的
+// 作为主服务器，第二阶段再排除它取下一台可达者用于 NAT 类型对比。
+// 自建 stun.virdy.cn 部署 coturn（仅 STUN，UDP 3478）后应保持首位；
+// 未部署期间公共候选保证功能可用。
+var STUNServerCandidates = []string{
+	"stun.virdy.cn:3478",       // 自建（coturn，运维侧待部署）
+	"stun.qq.com:3478",         // 腾讯公共 STUN
+	"stun.miwifi.com:3478",     // 小米公共 STUN
+	"turn.cloudflare.com:3478", // Cloudflare 公共 STUN（海外兜底）
+}

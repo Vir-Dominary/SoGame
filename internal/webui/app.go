@@ -707,7 +707,15 @@ func (a *App) PerformUpdate(downloadURL, sha256sum string) error {
 }
 
 func (a *App) DetectNATType() natdetect.NATResult {
-	result := natdetect.DetectWithTimeout(config.STUNServerA, config.STUNServerB, 10*time.Second)
+	result := natdetect.DetectWithTimeout(config.STUNServerCandidates, 10*time.Second)
+	if result.RawError != nil {
+		// 原始错误（DNS/超时/协议细节）只进日志，不上屏。
+		logger.Warnf("NAT detect failed: primary=%q secondary=%q err: %v",
+			result.PrimaryServer, result.SecondaryServer, result.RawError)
+	} else {
+		logger.Infof("NAT detect: type=%s public=%s:%d primary=%q secondary=%q",
+			result.Type, result.PublicIP, result.PublicPort, result.PrimaryServer, result.SecondaryServer)
+	}
 	a.mu.Lock()
 	a.natResult = &result
 	wailsCtx := a.ctx

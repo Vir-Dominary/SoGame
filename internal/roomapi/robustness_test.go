@@ -26,6 +26,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -70,9 +71,11 @@ func TestClientJoinCarriesUniqueIdempotencyKeys(t *testing.T) {
 }
 
 func TestClientPerAttemptTimeoutAbortsSlowServer(t *testing.T) {
-	requests := 0
+	// requests 由 handler goroutine 写、测试主 goroutine 读，
+	// 必须原子访问（race detector 下普通 int 跨 goroutine 无 happens-before）。
+	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-		requests++
+		requests.Add(1)
 		time.Sleep(6 * time.Second)
 	}))
 	defer server.Close()
@@ -96,8 +99,8 @@ func TestClientPerAttemptTimeoutAbortsSlowServer(t *testing.T) {
 	if elapsed < defaultPerAttemptTimeout || elapsed >= defaultPerAttemptTimeout+2*time.Second {
 		t.Fatalf("elapsed=%s, want ~%s", elapsed, defaultPerAttemptTimeout)
 	}
-	if requests != 1 {
-		t.Fatalf("requests=%d", requests)
+	if requests.Load() != 1 {
+		t.Fatalf("requests=%d", requests.Load())
 	}
 }
 
