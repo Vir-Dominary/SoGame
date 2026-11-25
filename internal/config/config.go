@@ -134,6 +134,14 @@ func LoadOrCreate() (*Config, error) {
 	}
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
+		// 主文件不存在但 .bak 可能存在：Save 的 Remove+Rename 两步窗口
+		// 崩溃/断电会留下"config.yaml 不存在、.bak 完好"的状态，此分支
+		// 不查 .bak 直接 DefaultConfig 会把用户的房间身份覆盖掉。
+		if backupCfg, backupErr := RestoreFromBackup(); backupErr == nil {
+			logger.Infof("config file missing, restored from backup")
+			migrateAndPersist(backupCfg)
+			return backupCfg, nil
+		}
 		cfg := DefaultConfig()
 		if err := Save(cfg); err != nil {
 			return nil, err
@@ -169,7 +177,15 @@ func LoadOrCreate() (*Config, error) {
 		if enc := getEncryptor(); enc != nil {
 			decryptedKey, err := enc.Decrypt(cfg.Key)
 			if err != nil {
-				logger.Warnf("failed to decrypt key, using raw key: %v", err)
+				// 解密失败（密钥文件丢失/重装系统后自动生成新密钥）时
+				// 必须置空 Key：密文（"v2:"+base64，17+ 字符明文的密文
+				// 必然超过 ValidateKey 的 64 字符上限）若继续参与校验，
+				// 会触发 Validate 失败 → .bak 恢复（.bak 里同样是密文，
+				// 同样失败）→ DefaultConfig 静默整体重置，用户的房间
+				// 身份（community/密钥）无声消失。置空后 Validate 通过，
+				// 用户只需在 UI 重新输入密钥。
+				logger.Warnf("failed to decrypt key, cleared stored key (re-enter it in UI): %v", err)
+				cfg.Key = ""
 			} else {
 				cfg.Key = decryptedKey
 			}

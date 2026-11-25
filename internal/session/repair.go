@@ -129,9 +129,12 @@ func (s *Service) repairRoomIdentity() {
 	hostname, _ := os.Hostname()
 	// 修复路径直接进 performEnrollment:目标就是保留当前房间记录、
 	// 仅重建 daemon 身份,不做 requireEmptyStorage 检查。
+	// preserveLocalState=true:re-join 失败时补偿只回滚 daemon 侧
+	// (Deregister/RemoveProfile),不清除本地 codes/metadata/tokens——
+	// 清除会让"自愈"反而丢掉用户房间(记录消失+房主心跳停)。
 	if _, err := s.performEnrollment(ctx, hostname, func(ctx context.Context) (roomapi.Enrollment, error) {
 		return s.rooms.Join(ctx, string(code))
-	}); err != nil {
+	}, true); err != nil {
 		logger.Warnf("express repair: re-join failed: %v", err)
 		// 修复失败是后台自愈动作:performEnrollment 已把状态机置为
 		// RecoverableError,但下一轮 View 会立即冲掉,形成"错误横幅闪烁"。

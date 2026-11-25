@@ -525,7 +525,7 @@ func TestTeardownDoesNotResurrectClosedRoom(t *testing.T) {
 	}
 	// 看门狗持过期快照执行回收：所有 NetBird 删除在真实环境会返回 404，
 	// CAS 必须在走到那一步之前就幂等退出。
-	if err := service.teardownRoom(context.Background(), staleSnapshot, "owner_offline"); err != nil {
+	if err := service.teardownRoom(context.Background(), staleSnapshot, "owner_offline", 0); err != nil {
 		t.Fatalf("stale teardown must be a no-op success: %v", err)
 	}
 	room, err := database.GetRoom(context.Background(), response.RoomID)
@@ -556,6 +556,46 @@ func TestCloseToleratesNetBirdNotFound(t *testing.T) {
 	}
 	if room.Status != "closed" {
 		t.Fatalf("room must reach closed despite 404s, got %s", room.Status)
+	}
+}
+
+// M-S1 回归：看门狗 worker 持旧快照排队期间房主恢复心跳——
+// 带心跳复查的 CAS（BeginClosingIfStale）必须拒绝回收，
+// 不得误杀刚恢复心跳的在线房间（成员全踢 + 终态 closed）。
+func TestSweepDoesNotKillRoomWhoseOwnerResumedHeartbeat(t *testing.T) {
+	service, database, _ := newTestService(t)
+	response, err := service.Create(context.Background(), "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// 房主心跳一次后离线（心跳时间被回拨到 1 小时前，制造"过期"快照）。
+	if err := service.Heartbeat(context.Background(), response.RoomCode, response.OwnerToken); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	if err := database.TouchOwnerHeartbeat(context.Background(), response.RoomID, time.Now().UTC().Add(-time.Hour)); err != nil {
+		t.Fatalf("backdate heartbeat: %v", err)
+	}
+	// 看门狗快照（此刻房间确实过期）。
+	staleSnapshot, err := database.GetRoom(context.Background(), response.RoomID)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	// worker 排队期间房主恢复心跳。
+	if err := service.Heartbeat(context.Background(), response.RoomCode, response.OwnerToken); err != nil {
+		t.Fatalf("owner resumed heartbeat: %v", err)
+	}
+	// worker 现在持旧快照执行回收（cutoff 早于已恢复的心跳）：
+	// 必须被 CAS 心跳复查拒绝，房间保持 active。
+	oldCutoff := time.Now().UTC().Add(-30 * time.Minute).UnixNano()
+	if err := service.teardownRoom(context.Background(), staleSnapshot, "owner_offline", oldCutoff); err != nil {
+		t.Fatalf("teardown with stale cutoff must be a no-op success: %v", err)
+	}
+	room, err := database.GetRoom(context.Background(), response.RoomID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if room.Status != "active" {
+		t.Fatalf("room with resumed heartbeat must stay active, got %s", room.Status)
 	}
 }
 

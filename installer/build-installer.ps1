@@ -30,11 +30,16 @@ $ErrorActionPreference = "Stop"
 $root = Resolve-Path "$PSScriptRoot/.."
 
 # ---- 自动补编译 sogame-helper.exe（纯 Go 产物，wails build -clean 会清掉它） ----
+# flags 必须与 build-all.ps1 完全一致（helper 构建 flags 红线，见该脚本的
+# 红线说明）；否则补编译产物与主程序注入的 helperSHA256Override 不匹配，
+# 安装后极速模式提权校验将失败。
 if (-not (Test-Path "$root/build/bin/sogame-helper.exe")) {
-    Write-Host "==> sogame-helper.exe 缺失，自动编译..." -ForegroundColor Yellow
+    Write-Host "==> sogame-helper.exe 缺失，自动编译（flags 与 build-all.ps1 一致）..." -ForegroundColor Yellow
+    Write-Host "    警告：建议先运行 scripts\build-all.ps1 ——直接打包时本 helper 为" -ForegroundColor DarkYellow
+    Write-Host "    重新编译产物，须与主程序内嵌的 helperSHA256Override 匹配方可通过提权校验。" -ForegroundColor DarkYellow
     Push-Location $root
     try {
-        go build -trimpath -ldflags "-s -w" -o "$root/build/bin/sogame-helper.exe" ./cmd/sogame-helper/
+        go build -trimpath -ldflags "-s -w -H windowsgui" -o "$root/build/bin/sogame-helper.exe" ./cmd/sogame-helper/
         if ($LASTEXITCODE -ne 0) { throw "sogame-helper.exe 编译失败" }
     } finally {
         Pop-Location
@@ -58,8 +63,13 @@ $required = @(
 
 # NetBird MSI：守护进程一体化后，安装包 postinstall 预装依赖它——
 # 缺失时新机器只能走运行时补齐路径，禁止带病打包。
+# 文件名与期望哈希以 netbird-release.json 为单一事实源；
+# 已存在的文件必须重新校验哈希（坏 MSI 入包会在新机器上静默失败）。
 $releaseJson = Get-Content -Raw -LiteralPath "$root/internal/releasebuild/netbird-release.json" | ConvertFrom-Json
-$required += @{ Path = Join-Path $root ("bin/" + $releaseJson.windowsX64.artifact); Why = "官方 NetBird MSI（先运行 scripts\build-all.ps1 自动下载）" }
+$msiArtifact = $releaseJson.windowsX64.artifact
+$msiExpectedHash = [string]$releaseJson.windowsX64.sha256
+$msiRequiredPath = Join-Path $root ("bin/" + $msiArtifact)
+$required += @{ Path = $msiRequiredPath; Why = "官方 NetBird MSI（先运行 scripts\build-all.ps1 自动下载）" }
 
 $missing = @()
 foreach ($item in $required) {
@@ -71,6 +81,12 @@ foreach ($item in $required) {
     }
 }
 if ($missing.Count -gt 0) { throw "缺少上述文件，拒绝打包（否则安装包功能不完整）" }
+
+# ---- MSI 哈希预检：与 build-all.ps1 同标准 ----
+$msiActualHash = (Get-FileHash -LiteralPath $msiRequiredPath -Algorithm SHA256).Hash.ToLower()
+if ($msiActualHash -ne $msiExpectedHash.ToLower()) {
+    throw "NetBird MSI SHA256 不匹配：期望 $msiExpectedHash，实际 $msiActualHash —— 请重新运行 scripts\build-all.ps1 下载校验"
+}
 
 # ---- 版本号：以 internal/config/app_config.go 的 AppVersion 为单一事实源 ----
 $appConfig = Get-Content -Raw -LiteralPath "$root/internal/config/app_config.go"
@@ -94,10 +110,10 @@ if (-not $iscc) {
 }
 if (-not $iscc) { throw "未找到 Inno Setup 编译器 ISCC.exe，请安装 Inno Setup 6 后重试" }
 
-# ---- 编译（命令行注入版本号，覆盖 iss 内的默认 #define） ----
+# ---- 编译（命令行注入版本号与 MSI 文件名，覆盖 iss 内的默认 #define） ----
 Write-Host ""
 Write-Host "==> 使用 $iscc 编译安装包..." -ForegroundColor Cyan
-& $iscc "/DMyAppVersion=$appVersion" "`"$root/installer/sogame.iss`""
+& $iscc "/DMyAppVersion=$appVersion" "/DNetBirdMSI=$msiArtifact" "`"$root/installer/sogame.iss`""
 if ($LASTEXITCODE -ne 0) { throw "ISCC 编译失败（退出码 $LASTEXITCODE）" }
 
 $output = Get-ChildItem -LiteralPath "$root/installer/output" -Filter "*.exe" |

@@ -128,19 +128,19 @@ NoRoom → Enrolling → ControlPlaneConnected → WaitingForPeer → Connecting
 | 包 | 职责 |
 |---|---|
 | `webui/` | Wails 绑定层：`app.go`（通用+经典模式）、`express.go`（极速协调器）、`express_windows.go`（Windows 组装） |
-| `session/` | 极速模式会话核心：状态机、注册事务补偿、房主心跳、身份自愈、成员刷新（固定 5s；`Service.Close` 生命周期） |
-| `roomapi/` | Room API HTTP 客户端：幂等键、Retry-After 钳制（429 档 60s）、响应大小限制、Enrollment 防序列化/防打印 |
+| `session/` | 极速模式会话核心：状态机、注册事务补偿（自愈 repair 路径保留本地记录）、房主心跳、身份自愈、成员刷新（固定 5s；429 退避 15~60s 钳制；`Service.Close` 生命周期） |
+| `roomapi/` | Room API HTTP 客户端：幂等键、Retry-After 钳制（429 档 60s）、响应大小限制、`ErrInvalidRoomCode` 格式哨兵、Enrollment 防序列化/防打印 |
 | `netbird/` | daemon gRPC 适配器（`rpc/` 为 protoc 生成）、版本检查、恢复监控、profile 管理；`SetupKey` 类型（`String/Format/LogValue/MarshalJSON` 均 `[REDACTED]`） |
 | `nbdaemon/` | NetBird MSI 安装/修复/移除：签名校验、UAC 提权、服务生命周期 |
 | `securestore/` | DPAPI 加密存储：房间码、owner token、房间元数据（room.json，**元数据为明文 JSON**），原子替换 |
 | `natdetect/` | STUN NAT 类型探测（RFC 3489 简化版）：候选池顺序故障转移（`config.STUNServerCandidates`）、共享 socket 两步对比判定（每次新建 socket 会把 Full Cone 误判为 Symmetric）、全不可达不武断判 UDPBlocked、原始错误只落日志不上屏；DNS 解析受 ctx 管辖。给用户提供组网建议 |
 | `updater/` | 热更新：版本比较、manifest ed25519 验签（公钥内置时强制）、zip 下载（强制 SHA256、大小上限）、解压（ZipSlip/保留名/ADS 防护、目标目录先清理且拒绝符号链接） |
 | `releasebuild/` | 嵌入 `netbird-release.json`（MSI URL/SHA256/ProductCode/证书指纹）；`helperSHA256Override` 经 ldflags 注入 |
-| `n2n/` | 经典模式 edge.exe 进程编排 |
+| `n2n/` | 经典模式 edge.exe 进程编排：Wait goroutine 只等待自己启动的进程实例（代际计数防 Stop/Start 交替双回调）、stderr 采集带锁（Builder 非并发安全）、自动重启冷却期做代际检查（不用旧配置劫持新进程） |
 | `tap/` `nic/` | TAP 适配器安装/命名/等待；网卡查询 |
 | `config/` | 客户端配置（config.yaml）与内置常量（`app_config.go`） |
 | `observability/` | 日志脱敏（房间码/setup key/令牌/IP/`-k` argv/32hex 密钥模式；`RedactingHandler` 已接入默认 slog） |
-| `logger/` `diagnostics/` `security/` `platform/` `poll/` | 日志（写盘点统一强制 `observability.Redact`）、依赖检查、经典模式配置加密（AES-GCM v2）、平台依赖（PowerShell 一律环境变量传参+System32 绝对路径）、轮询工具 |
+| `logger/` `diagnostics/` `security/` `platform/` `poll/` `syspath/` | 日志（写盘点统一强制 `observability.Redact`）、依赖检查、经典模式配置加密（AES-GCM v2）、平台依赖（PowerShell 一律环境变量传参+System32 绝对路径）、轮询工具、System32 系统程序路径共享 helper |
 
 ## 5. 构建与测试
 
@@ -155,7 +155,8 @@ NoRoom → Enrolling → ControlPlaneConnected → WaitingForPeer → Connecting
 go test ./internal/...
 
 # Room API 测试（独立 module。注意：rooms/store 等经 go-sqlite3 依赖 CGO，
-# 需 CGO_ENABLED=1 且系统装有 gcc（如 MinGW）；CGO_ENABLED=0 环境只能跑 httpapi 等纯 Go 包）
+# 需 CGO_ENABLED=1 且系统装有 gcc；本机 MinGW 已固化于 C:\mingw64，见 §8.1）
+$env:CGO_ENABLED='1'; $env:CC='C:\mingw64\bin\gcc.exe'
 cd server\room-api; go test ./...
 
 # 安装包（需 Inno Setup 6）
@@ -252,19 +253,28 @@ go run ./tools/room-api-mock/main.go   # 监听 127.0.0.1:9099，MOCK_RELAY_ENAB
   绝不直接打印 `BuildArgs`。
 - 服务端 SQL 必须参数化；owner/admin token 比较必须先哈希再 `subtle.ConstantTimeCompare`
   （消除长度时序侧信道）。
-- MSI/更新包等外部产物必须先校验哈希与签名再执行；调用 `msiexec`/`powershell` 等系统
-  程序一律用 System32 绝对路径；PowerShell 脚本不做字符串拼接，外部数据一律经环境
-  变量传入（`$env:SOGAME_*` 模式）。
+- MSI/更新包等外部产物必须先校验哈希与签名再执行；调用系统程序一律用
+  System32 绝对路径（共享 helper `internal/syspath.System32`，覆盖
+  msiexec/powershell/ping/tasklist/taskkill/netsh/pnputil/ipconfig/notepad
+  全部调用点；Inno 脚本用 `{sys}` 展开）；PowerShell 脚本不做字符串拼接，
+  外部数据一律经环境变量传入（`$env:SOGAME_*` 模式）。
 - 提权操作一律走 `sogame-helper.exe` UAC 通道，参数经 `syscall.EscapeArg` 转义，拒绝拼接
   命令行；helper 的 `--log`/`--result` 写路径受白名单前缀约束（SoGame 数据目录/TEMP），
-  已存在目标拒绝 reparse point，结果文件"临时文件+rename"原子发布。经典模式的
-  TAP/防火墙/网卡操作在主进程（requireAdministrator）内执行，属已知提权面，
-  新增特权操作应优先放 helper。
+  且从白名单根到目标的每一级已存在父目录不得是 reparse point（防 junction 预置把
+  提权写入重定向出白名单），已存在目标拒绝 reparse point，结果文件"临时文件+rename"
+  原子发布。经典模式的 TAP/防火墙/网卡操作在主进程（requireAdministrator）内执行，
+  属已知提权面，新增特权操作应优先放 helper。
+- Wails 绑定方法若有两个返回值，第二返回值必须是 `error` 接口本身，不得是实现了
+  error 的具体类型（如 `*ExpressError`）——typed-nil 会经桥接类型断言变成
+  "非 nil 空错误"，成功结果被丢弃、前端 resolve(null)（回归测试
+  `TestWailsBindingErrorContract` 机制化拦截）。
 - 完整房间码只经 `ExpressRevealRoomCode` 按需获取：`ExpressState` 快照的 `roomCode`
   恒为空串，任何轮询/广播路径不得填充明文房间码。
 - 守护进程是一体化内建依赖：UI 不出现"守护进程/安装/修复"概念；补齐动作只能经
-  `EnsureDaemonReady`（BusyCommand=daemon-setup，60s 冷却+3 次失败停手）；
-  用户向文案一律称"极速模式组件/网络组件"。
+  `EnsureDaemonReady`（BusyCommand=daemon-setup，60s 冷却+3 次失败停手，用户显式
+  点击"立即准备"可清零重试；已有房间命令时等待至多 30s 而非覆盖 busy 位）；
+  用户向文案一律称"极速模式组件/网络组件"。提权等待链 ctx 贯通（90s 预算对
+  UAC/msiexec 阶段真实生效）。
 
 **并发与生命周期：**
 
@@ -293,6 +303,36 @@ go run ./tools/room-api-mock/main.go   # 监听 127.0.0.1:9099，MOCK_RELAY_ENAB
 - 生产事实：Room API 与 Management 均经 `https://legengen.top`（traefik；
   明文 IP 入口 `http://123.56.254.224` 已于 2026-09-24 下线，仅作容器宿主存在）；
   更新分发在 `https://virdy.cn/sogame/`（上传目标仅 `/opt/sogame/downloads/sogame/`）。
+
+### 8.1 依赖外部环境的事项清单（代码侧无法本地闭环）
+
+> 以下事项的**代码/脚本部分**均已入库或可本地完成，但**生效动作依赖服务器、
+> 生产拓扑或平台决策**。逐项完成后从本清单划除。对应审计发现编号见
+> `docs/AUDIT_REPORT_2026-11-24.md`。
+
+| # | 事项 | 依赖什么 | 待执行动作 | 关联发现 |
+|---|---|---|---|---|
+| 1 | **coturn 部署**（NAT 检测自建主服务器） | virdy.cn 服务器资源 + 云安全组 | 部署 coturn（仅 STUN：`listening-port=3478`、`no-tls`、`no-dtls`、关 `lt-cred-mech`），放行 **UDP 3478 入方向**；就绪后客户端无需改动（`stun.virdy.cn` 已在候选池首位）。期间腾讯/小米/Cloudflare 公共 STUN 兜底可用 | NAT 检测（2026-11-24） |
+| 2 | **room-api 服务端修复的生产部署** | 服务器（legengen.top 宿主） | 服务端代码修复（看门狗 CAS 过期复查、限流前缀聚合等）合入后需重建二进制、`docker compose` 重新部署并重启；HMAC 迁移上线后观察审计日志 | M-S1/M-S2 |
+| 3 | **relay 两级开关对齐**（运维决策） | 生产 traefik 配置 | 决策数据面 `/relay` 路由去留：不用中继则从 `deploy/traefik-dynamic.yml` 的 `legengen` 路由摘除 `/relay` 前缀；保留则 `prep-room-api.sh` 的 `ROOM_API_RELAY_ENABLED` 改 `true`（当前两者矛盾，恰为 room-api README 标注的"勿用"组合） | M-S3 |
+| 4 | **全新部署冒烟** | 服务器 | 按 `prep-room-api.sh`+compose 做一次从零部署验证（uid 10001 写 /data、healthcheck、traefik 路由），确认 chown 步骤生效 | M-S4 |
+| 5 | **IPv6 暴露确认** | 服务器网络拓扑 | 确认 `legengen.top` 是否有 AAAA/IPv6 入口；若有，验证限流前缀聚合（/64）生效 | M-S2 前提 |
+| 6 | **热更新验签启用** | virdy.cn 发布链 | 运行 `tools/update-keygen` 生成密钥对（本地可做）→ 公钥填入 `internal/config/app_config.go:UpdateManifestPublicKey` 并发版 → 此后所有 `update.json` 必须带 `-SignKeyFile` 签名上传；私钥离线保管。**注意窗口期：公钥发版与签名链路必须同步就绪，否则全量客户端更新被拒** | H-3（上轮） |
+| 7 | **更新入口 HTTPS 跳转** | virdy.cn nginx/traefik | `sogame-updates` 路由的 80 明文入口加 redirectScheme 中间件（对齐 legengen.top 做法），消除验签未启用期间的中间人暴露面 | 前端/部署低危 |
+| 8 | **traefik accessLog 红线** | 生产 traefik 配置 | 保持 accessLog 关闭，或配置 `fields.names.Path=drop`——一旦开启，明文房间码将绕过服务端全部脱敏防线落日志 | 服务端低危 F-9 |
+| 9 | **CI 落地** | GitHub Actions | 新增 workflow：`go vet` + `go test -race ./...`（race 门禁已全绿）+ `cd server/room-api && CGO_ENABLED=1 go test ./...`（runner 装 MinGW 或用 `quay.io/...` 带 gcc 镜像）；`.github/workflows` 文件本地可编写，启用需推送验证 | §7 流程风险 |
+| 10 | **Docker 镜像 digest 固定** | 发布机可访问 registry | room-api Dockerfile 基础镜像 pin digest（`docker buildx imagetools inspect` 查询后写入） | 上轮接受项 L-21 |
+
+**本地环境固化说明**：MinGW-w64 GCC 16.2 已固化于 `C:\mingw64`（POSIX threads + UCRT，
+winlibs 发行版）。room-api 测试与全量 race 门禁的本地执行方式：
+
+```powershell
+$env:CGO_ENABLED='1'; $env:CC='C:\mingw64\bin\gcc.exe'
+go test -race -count=1 ./...                       # 主 module（D:\SoGame\SoGame）
+cd server\room-api; go test -race -count=1 ./...   # 服务端 module
+```
+
+每版本发布前应全量执行（替代历史上"无法运行"的空档）。
 
 ## 9. 许可证
 

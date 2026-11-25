@@ -110,7 +110,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createRoom(w *statusWriter, r *http.Request) {
 	// create 不读请求体（幂等键在 header），ContentLength 预检无防护对象。
-	if !s.createLimit.Allow(s.clientIP(r)) {
+	if !s.createLimit.Allow(rateLimitKey(s.clientIP(r))) {
 		s.writeRateLimited(w, r, s.createLimit)
 		return
 	}
@@ -147,7 +147,7 @@ func (s *Server) joinRoom(w *statusWriter, r *http.Request) {
 		writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
 		return
 	}
-	if !s.joinLimit.Allow(s.clientIP(r)) {
+	if !s.joinLimit.Allow(rateLimitKey(s.clientIP(r))) {
 		s.writeRateLimited(w, r, s.joinLimit)
 		return
 	}
@@ -185,7 +185,7 @@ func (s *Server) roomAction(w *statusWriter, r *http.Request) {
 	code, action := parts[1], parts[2]
 	switch {
 	case r.Method == http.MethodGet && action == "peers":
-		if !s.peerLimit.Allow(s.clientIP(r)) {
+		if !s.peerLimit.Allow(rateLimitKey(s.clientIP(r))) {
 			s.writeRateLimited(w, r, s.peerLimit)
 			return
 		}
@@ -206,7 +206,7 @@ func (s *Server) roomAction(w *statusWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, response)
 	case r.Method == http.MethodPost && action == "close":
 		// 房主解散房间（标题"房主离开即断开"）。令牌与房间码同强度；挂在 join 限流下。
-		if !s.joinLimit.Allow(s.clientIP(r)) {
+		if !s.joinLimit.Allow(rateLimitKey(s.clientIP(r))) {
 			s.writeRateLimited(w, r, s.joinLimit)
 			return
 		}
@@ -234,7 +234,7 @@ func (s *Server) roomAction(w *statusWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "room close failed")
 	case r.Method == http.MethodPost && action == "heartbeat":
 		// 房主心跳：证明房主在线，避免被看门狗清扫。挂在 peer 限流档位。
-		if !s.peerLimit.Allow(s.clientIP(r)) {
+		if !s.peerLimit.Allow(rateLimitKey(s.clientIP(r))) {
 			s.writeRateLimited(w, r, s.peerLimit)
 			return
 		}
@@ -265,7 +265,7 @@ func (s *Server) roomAction(w *statusWriter, r *http.Request) {
 		}
 	case r.Method == http.MethodPost && action == "disable":
 		// 管理端点挂限流并留审计：鉴权失败必须留痕，否则入侵检测无抓手。
-		if !s.createLimit.Allow(s.clientIP(r)) {
+		if !s.createLimit.Allow(rateLimitKey(s.clientIP(r))) {
 			s.writeRateLimited(w, r, s.createLimit)
 			return
 		}
@@ -306,7 +306,7 @@ func (s *Server) authorizedAdmin(r *http.Request) bool {
 // 客户端 roomapi 实现了 Retry-After 钳制，服务端必须提供该头，
 // 否则瞬时限流下客户端按固定节奏重试、持续撞窗口边界形成自维持 429。
 func (s *Server) writeRateLimited(w http.ResponseWriter, r *http.Request, l *limiter) {
-	w.Header().Set("Retry-After", strconv.Itoa(l.RetryAfter(s.clientIP(r))))
+	w.Header().Set("Retry-After", strconv.Itoa(l.RetryAfter(rateLimitKey(s.clientIP(r)))))
 	writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 }
 
@@ -361,6 +361,22 @@ func (s *Server) clientIP(r *http.Request) string {
 		return host
 	}
 	return r.RemoteAddr
+}
+
+// rateLimitKey 把客户端 IP 聚合为限流计数键：IPv6 取 /64 前缀、IPv4 取
+// /24 前缀。按完整 IP 计数时，IPv6 攻击者在 /64 内无限轮换地址即可
+// 绕过全部 per-IP 限流（单 IPv6 用户通常拿到 /64 而非单地址，按完整
+// IP 计数对正常用户也只是无意义的稀释）。审计日志仍记录完整 IP。
+func rateLimitKey(ip string) string {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		// 解析失败（代理伪头残留等）：原样作为键，同值共享配额。
+		return ip
+	}
+	if v4 := parsed.To4(); v4 != nil {
+		return v4.Mask(net.CIDRMask(24, 32)).String()
+	}
+	return parsed.Mask(net.CIDRMask(64, 128)).String()
 }
 
 type statusWriter struct {

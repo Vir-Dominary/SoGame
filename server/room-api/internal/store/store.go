@@ -261,6 +261,21 @@ func (s *Store) BeginClosing(ctx context.Context, roomID string) (bool, error) {
 	return affected == 1, err
 }
 
+// BeginClosingIfStale 是看门狗/Reconcile 回收路径专用的 CAS：除状态外
+// 同时复查"房主心跳仍然过期"。持有过期快照的回收 worker 在排队期间，
+// 房主可能已恢复心跳（TouchOwnerHeartbeat 把 last_owner_heartbeat 更新为
+// 当前时刻）；仅查状态的 CAS 会把刚恢复心跳的在线房间误杀（成员全踢、
+// 终态 closed）。心跳条件不满足时返回 false，调用方按"已被并发关闭"
+// 幂等跳过。房主主动 Close 走 BeginClosing（不带心跳复查）。
+func (s *Store) BeginClosingIfStale(ctx context.Context, roomID string, heartbeatBeforeNanos int64) (bool, error) {
+	result, err := s.DB.ExecContext(ctx, `UPDATE rooms SET status='closing', last_error='' WHERE id=? AND status='active' AND last_owner_heartbeat IS NOT NULL AND last_owner_heartbeat <= ?`, roomID, heartbeatBeforeNanos)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
+}
+
 // ListOwnerSweepCandidates 返回需要被清扫的 active 房间：
 // 有房主令牌，且房主有过心跳但已超时。
 // 注：从不心跳的房间不扫描——旧版客户端建房后没有心跳能力，
@@ -419,4 +434,27 @@ func (s *Store) ListStaleActiveRooms(ctx context.Context, before int64) ([]Room,
 		rooms = append(rooms, room)
 	}
 	return rooms, rows.Err()
+}
+
+// DeleteClosedRoomsBefore 删除 closed_at 早于 before（Unix nanos）的已关闭
+// 房间行，返回删除行数。终态房间只对"离线成员下次轮询取 410"有短暂价值
+//（成员收到 410 即自行清理本地状态），无期限保留会让匿名端点可无界
+// 灌入 create 请求撑大 DB（closed 行不可再被业务复用）。
+func (s *Store) DeleteClosedRoomsBefore(ctx context.Context, before int64) (int64, error) {
+	result, err := s.DB.ExecContext(ctx, `DELETE FROM rooms WHERE status='closed' AND closed_at IS NOT NULL AND closed_at < ?`, before)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// DeleteOperationsBefore 删除 created_at 早于 before（Unix nanos）的
+// 幂等操作行，返回删除行数。operations 记录 Join 幂等响应缓存，
+// 超过幂等窗口（客户端重试链路分钟级）后无保留价值。
+func (s *Store) DeleteOperationsBefore(ctx context.Context, before int64) (int64, error) {
+	result, err := s.DB.ExecContext(ctx, `DELETE FROM operations WHERE created_at < ?`, before)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

@@ -28,7 +28,7 @@ export function ExpressPrepareDaemon():Promise<app.ExpressState>;
 
 export function ExpressReconnect():Promise<app.ExpressState>;
 
-export function ExpressRevealRoomCode():Promise<string|app.ExpressError>;
+export function ExpressRevealRoomCode():Promise<string>;
 
 export function GenerateInvite(arg1:string):Promise<string>;
 

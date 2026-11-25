@@ -84,18 +84,20 @@ try {
 
 # --- 2. 编译 sogame-helper.exe 并计算哈希 ---
 # 顺序红线：helper 必须先于主程序构建——主程序经 -X 注入 helper 的 SHA256，
-# 使 UAC 提权前的 helper 完整性校验生效；两脚本（build-all/publish）的
-# helper 构建 flags 必须一致，否则注入值与发布产物不匹配。
+# 使 UAC 提权前的 helper 完整性校验生效；三个脚本（build-all/build-installer/
+# publish-update）的 helper 构建 flags 必须完全一致，否则注入值与发布产物
+# 不匹配（统一为 -trimpath -ldflags "-s -w -H windowsgui"，见 build-all.ps1）。
 Write-Host "[2/5] Building sogame-helper.exe..." -ForegroundColor Yellow
-go build -tags "production" -ldflags "-s -w -H windowsgui" -o "$buildDir/sogame-helper.exe" ./cmd/sogame-helper
+go build -trimpath -ldflags "-s -w -H windowsgui" -o "$buildDir/sogame-helper.exe" ./cmd/sogame-helper
 if ($LASTEXITCODE -ne 0) { throw "sogame-helper.exe build failed" }
 $helperHash = (Get-FileHash "$buildDir/sogame-helper.exe" -Algorithm SHA256).Hash.ToLower()
 Write-Host "  sogame-helper.exe SHA256: $helperHash"
 
 # --- 3. 编译 SoGame.exe（注入版本号 + helper 哈希） ---
+# tags 对齐 wails build 生产模式的默认组合（desktop,production）。
 Write-Host "[3/5] Building SoGame.exe v$Version..." -ForegroundColor Yellow
 $ldflags = "-s -w -H windowsgui -X sogame/internal/config.AppVersion=$Version -X sogame/internal/releasebuild.helperSHA256Override=$helperHash"
-go build -tags "production" -ldflags $ldflags -o "$buildDir/SoGame.exe" .
+go build -trimpath -tags "desktop,production" -ldflags $ldflags -o "$buildDir/SoGame.exe" .
 if ($LASTEXITCODE -ne 0) { throw "SoGame.exe build failed" }
 
 # --- 4. 打包 zip ---
@@ -113,10 +115,21 @@ $zipContent = @(
     "$buildDir/sogame-helper.exe",
     "$buildDir/edge.exe"
 )
-# 检查 MSI 是否存在（首次发布需要）
-$msiPath = "$buildDir/netbird_installer_0.74.7_windows_amd64.msi"
+# 检查 MSI 是否存在（首次发布需要）：文件名与期望哈希均以
+# internal/releasebuild/netbird-release.json 为单一事实源
+# （三源漂移曾在版本升级时静默错拿旧名文件）。
+$releaseJson = Get-Content -Raw -LiteralPath (Join-Path $rootDir "internal/releasebuild/netbird-release.json") | ConvertFrom-Json
+$msiName = $releaseJson.windowsX64.artifact
+$msiExpectedHash = [string]$releaseJson.windowsX64.sha256
+$msiPath = "$buildDir/$msiName"
 if (-not (Test-Path $msiPath) -and $LocalMsiPath -ne "") {
     if (-not (Test-Path $LocalMsiPath)) { throw "指定的 MSI 不存在: $LocalMsiPath" }
+    # 手动导入的 MSI 必须与内置期望哈希匹配（对齐 build-all.ps1 的 -LocalMsiPath 标准），
+    # 否则被替换的坏 MSI 会进入热更新包并在新机器上静默失败。
+    $manualHash = (Get-FileHash -LiteralPath $LocalMsiPath -Algorithm SHA256).Hash.ToLower()
+    if ($manualHash -ne $msiExpectedHash.ToLower()) {
+        throw "指定 MSI 的 SHA256 与内置期望值不匹配：期望 $msiExpectedHash，实际 $manualHash"
+    }
     Copy-Item -LiteralPath $LocalMsiPath -Destination $msiPath -Force
 }
 if (Test-Path $msiPath) {
@@ -124,7 +137,7 @@ if (Test-Path $msiPath) {
 } else {
     # 缺 MSI 的热更新包会让极速模式在新机器上无法自动补齐组件
     # （守护进程一体化后依赖安装包/更新包内嵌 MSI），禁止带病发布。
-    throw "NetBird MSI not found at $msiPath. Run scripts\build-all.ps1 first (or pass -MsiPath <path>)."
+    throw "NetBird MSI not found at $msiPath. Run scripts\build-all.ps1 first (or pass -LocalMsiPath <path>)."
 }
 
 Compress-Archive -Path $zipContent -DestinationPath $zipPath -Force

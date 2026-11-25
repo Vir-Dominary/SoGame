@@ -104,7 +104,11 @@ func verifyHelperDigest(path, expected string) error {
 
 // launchElevated 通过 UAC 启动提权辅助进程,等待其结果文件后返回
 // 辅助进程的真实执行结果(成功/失败原因)。
-func launchElevation(helperPath string, arguments []string, resultPath string) error {
+//
+// ctx 贯穿到结果等待阶段（ShellExecute 本身是同步 API、不可取消）：
+// 调用方的预算（如 daemon-setup 的 90s）必须在 UAC 挂起/msiexec 慢装
+// 时仍然生效，否则互斥位会被 10 分钟的兜底超时长期占用。
+func launchElevation(ctx context.Context, helperPath string, arguments []string, resultPath string) error {
 	if err := os.Remove(resultPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("reset elevation result file: %w", err)
 	}
@@ -122,10 +126,10 @@ func launchElevation(helperPath string, arguments []string, resultPath string) e
 		}
 		return fmt.Errorf("request elevated helper: %w", err)
 	}
-	return awaitElevationResult(context.Background(), resultPath)
+	return awaitElevationResult(ctx, resultPath)
 }
 
-func RequestInstallerElevation(helperPath string, action MSIAction, artifactPath, logPath, resultPath string) error {
+func RequestInstallerElevation(ctx context.Context, helperPath string, action MSIAction, artifactPath, logPath, resultPath string) error {
 	if action != MSIInstall && action != MSIRepair {
 		return ErrUnsupportedAction
 	}
@@ -141,7 +145,7 @@ func RequestInstallerElevation(helperPath string, action MSIAction, artifactPath
 		"--log", logPath,
 		"--result", resultPath,
 	}
-	return launchElevation(helperPath, arguments, resultPath)
+	return launchElevation(ctx, helperPath, arguments, resultPath)
 }
 
 // awaitElevationResult 轮询提权辅助进程写入的结果文件,直到其出现、

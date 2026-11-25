@@ -24,7 +24,12 @@
 #endif
 #define MyAppPublisher "vir_dominary"
 #define MyAppExeName "SoGame.exe"
-#define NetBirdMSI "netbird_installer_0.74.7_windows_amd64.msi"
+; NetBird MSI 文件名单一事实源是 internal/releasebuild/netbird-release.json
+; 的 windowsX64.artifact；build-installer.ps1 经 /DNetBirdMSI=<name> 注入，
+; 此处默认值仅兜底手工 ISCC 编译。
+#ifndef NetBirdMSI
+  #define NetBirdMSI "netbird_installer_0.74.7_windows_amd64.msi"
+#endif
 
 ; ============================================================================
 ; 极速模式（netbird）打包说明
@@ -58,7 +63,9 @@ OutputBaseFilename=SoGame-Setup-{#MyAppVersion}
 Compression=lzma
 SolidCompression=yes
 PrivilegesRequired=admin
-PrivilegesRequiredOverridesAllowed=dialog
+; 不允许 dialog 降级（PrivilegesRequiredOverridesAllowed=dialog 会让非管理员
+; 完成安装——此时 helper asInvoker + msiexec 装系统服务必然失败，且 postinstall
+; 的"安装器已提权"前提不成立，导致网络组件静默装不上）。
 DisableProgramGroupPage=yes
 WizardStyle=modern
 SetupIconFile=..\build\windows\icon.ico
@@ -112,8 +119,9 @@ Name: "desktopicon"; Description: "创建桌面快捷方式(&D)"; GroupDescripti
 ; 复用 sogame-helper 的 SHA256+签名+publisher+证书指纹四重校验链）。
 ; 安装器已提权（PrivilegesRequired=admin），此处不会再弹 UAC。
 ; 失败不阻断安装完成：首次使用极速模式时应用会自动补齐
-; （运行时 EnsureDaemonReady 兜底，见 docs/DAEMON_AUTO_SETUP_DESIGN.md）。
-Filename: "{app}\sogame-helper.exe"; Parameters: "--action install --artifact ""{app}\{#NetBirdMSI}"" --log ""{commonappdata}\SoGame\netbird-install.log"" --result ""{commonappdata}\SoGame\netbird-install.result"""; Flags: runhidden waituntilterminated; StatusMsg: "正在安装网络组件..."
+; （运行时 EnsureDaemonReady 兜底，见 docs/DAEMON_AUTO_SETUP_DESIGN.md）；
+; 失败时经 AfterInstall 读取 result 文件向用户提示（不再完全静默）。
+Filename: "{app}\sogame-helper.exe"; Parameters: "--action install --artifact ""{app}\{#NetBirdMSI}"" --log ""{commonappdata}\SoGame\netbird-install.log"" --result ""{commonappdata}\SoGame\netbird-install.result"""; Flags: runhidden waituntilterminated; StatusMsg: "正在安装网络组件..."; AfterInstall: ReportNetBirdSetupResult
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -121,6 +129,36 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Name: "{group}\卸载 {#MyAppName}"; Filename: "{uninstallexe}"
 
 [Code]
+// ReportNetBirdSetupResult 在 postinstall 运行 sogame-helper 之后执行：
+// 读取 helper 的 JSON result 文件，失败时向用户给出明确提示——此前
+// helper 失败（校验不过/杀软拦截）安装照样"成功完成"，用户只能等到
+// 首次使用极速模式时再吃一次 UAC，无任何指向性线索。
+procedure ReportNetBirdSetupResult();
+var
+  ResultFile: string;
+  Content: string;
+begin
+  ResultFile := ExpandConstant('{commonappdata}\SoGame\netbird-install.result');
+  if not FileExists(ResultFile) then begin
+    MsgBox('网络组件（极速模式依赖）未完成预装：未产生结果文件。' + #13#10 +
+           '首次使用极速模式时会自动补齐，届时可能出现一次系统授权弹窗。',
+           mbInformation, MB_OK);
+    exit;
+  end;
+  if not LoadStringFromFile(ResultFile, Content) then begin
+    MsgBox('网络组件（极速模式依赖）未完成预装：结果文件不可读。' + #13#10 +
+           '首次使用极速模式时会自动补齐，届时可能出现一次系统授权弹窗。',
+           mbInformation, MB_OK);
+    exit;
+  end;
+  if Pos('"success":true', Content) = 0 then begin
+    MsgBox('网络组件（极速模式依赖）未完成预装。' + #13#10 +
+           '首次使用极速模式时会自动补齐；若持续失败，请检查安全软件设置。' + #13#10 +
+           '详情见日志：' + ExpandConstant('{commonappdata}\SoGame\netbird-install.log'),
+           mbInformation, MB_OK);
+  end;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   ResultCode: Integer;
@@ -131,7 +169,10 @@ begin
   begin
     // 防火墙规则属系统变更回滚，必须无条件删除——放在用户确认分支内
     // 会让选择"保留数据"的机器永久残留入站放行规则。
-    Exec('netsh', 'advfirewall firewall delete rule name="SoGame VPN"',
+    // 系统程序必须用绝对路径（{sys} 展开 System32）：Inno 的 Exec 对
+    // 裸名做 CreateProcess 完整搜索（含当前目录），卸载器运行于 TEMP
+    // 随机目录，同用户进程可预置 netsh.exe 借管理员卸载提权执行。
+    Exec(ExpandConstant('{sys}\netsh.exe'), 'advfirewall firewall delete rule name="SoGame VPN"',
          '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     if MsgBox('是否同时删除用户配置文件和本地密钥数据？', mbConfirmation, MB_YESNO) = IDYES then
     begin

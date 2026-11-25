@@ -63,6 +63,12 @@ func NewPeerRefresher(api PeerAPI, codes RoomCodeStorage) *PeerRefresher {
 // 服务端 Retry-After 缺失/过小时按此退避）。
 const rateLimitFloor = 15 * time.Second
 
+// rateLimitCeiling 429 的最大退避时长（与 roomapi.Client 的
+// rateLimitRetryCap 语义对齐：异常/被入侵的服务端返回超大
+// Retry-After 时，成员列表轮询不得停摆数小时；钳制后按上限退避，
+// 过期后自动重新尝试）。
+const rateLimitCeiling = 60 * time.Second
+
 func (r *PeerRefresher) Snapshot() PeerRefreshSnapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -92,6 +98,9 @@ func (r *PeerRefresher) Refresh(ctx context.Context) (PeerRefreshSnapshot, error
 			backoff := httpErr.RetryAfter
 			if backoff < rateLimitFloor {
 				backoff = rateLimitFloor
+			}
+			if backoff > rateLimitCeiling {
+				backoff = rateLimitCeiling
 			}
 			r.mu.Lock()
 			r.rateLimitUntil = r.now().Add(backoff)

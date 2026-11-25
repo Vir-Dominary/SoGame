@@ -153,12 +153,16 @@ const (
 	daemonSetupMaxRetries = 3
 	// daemonSetupTimeout 单次就绪流程的总预算（msiexec 首装可能 30s+）。
 	daemonSetupTimeout = 90 * time.Second
+	// daemonSetupBusyWait 就绪流程等待进行中房间命令完成的上限
+	// （设计文档 DAEMON_AUTO_SETUP_DESIGN §4.3：已有命令在跑时等待而非覆盖）。
+	daemonSetupBusyWait = 30 * time.Second
 )
 
 var (
 	errDaemonSetupUnavailable = errors.New("daemon setup unavailable")
 	errDaemonSetupGiveUp      = errors.New("daemon setup failed repeatedly")
 	errDaemonSetupTimeout     = errors.New("daemon setup timed out")
+	errDaemonSetupBusy        = errors.New("another room operation is in progress")
 )
 
 // NewExpressController 创建一个空的极速模式协调器。
@@ -303,7 +307,10 @@ func (c *ExpressController) LeaveRoom() ExpressState {
 // RevealRoomCode 返回完整的房间码（供用户分享给朋友）。
 // 房间命令进行中或当前不在房间时静默返回空码：房间码由命令完成后的
 // 轮询刷新自动补充,避免把"创建/加入进行中"误报为用户可见的错误。
-func (c *ExpressController) RevealRoomCode() (string, *ExpressError) {
+// 注意：第二返回值必须是 error 接口而非具体错误类型——Wails 桥接对
+// "实现 error 的具体指针类型"存在 typed-nil 陷阱（成功路径的字面 nil
+// 会被断言为非 nil error，导致房间码 Result 被丢弃、前端 resolve(null)）。
+func (c *ExpressController) RevealRoomCode() (string, error) {
 	c.mu.Lock()
 	rooms := c.rooms
 	ctx := c.ctx
@@ -315,7 +322,7 @@ func (c *ExpressController) RevealRoomCode() (string, *ExpressError) {
 		return "", nil
 	}
 	if rooms == nil {
-		return "", &ExpressError{Code: expressErrServiceUnavailable, Message: "房间会话不可用", Retryable: true, Action: "检查服务后重试"}
+		return "", errors.New("房间会话不可用，请稍后重试")
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -323,7 +330,7 @@ func (c *ExpressController) RevealRoomCode() (string, *ExpressError) {
 	code, err := rooms.RevealRoomCode(ctx)
 	if err != nil {
 		logger.Warnf("express reveal: failed: %v", err)
-		return "", expressPublicError(err)
+		return "", err
 	}
 	logger.Infof("express reveal: room code revealed")
 	return code, nil
@@ -339,11 +346,19 @@ func (c *ExpressController) ExpressPrepareDaemon() ExpressState {
 }
 
 // prepareDaemon 触发自动就绪并把结果映射为状态快照。
+// 用户显式点击"立即准备"属于主动触发：清零连续失败计数并跳过冷却
+// ——否则 3 次失败停手后用户按提示"检查安全软件后重试"永远无效，
+// 文案与行为必须一致（UAC 弹窗本身即用户确认，无轰炸风险）。
 func (c *ExpressController) prepareDaemon() ExpressState {
 	ctx := c.ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	c.setup.mu.Lock()
+	c.setup.failures = 0
+	c.setup.err = nil
+	c.setup.lastAt = time.Time{}
+	c.setup.mu.Unlock()
 	if err := c.EnsureDaemonReady(ctx); err != nil {
 		return c.failDaemonSetup(err)
 	}
@@ -420,7 +435,13 @@ func (c *ExpressController) EnsureDaemonReady(ctx context.Context) error {
 
 // performDaemonSetup 执行一次就绪流程：占用 daemon-setup busy 位、
 // 调用修复函数（UAC + msiexec）、等待服务就绪。
+// 已有房间命令在跑时等待其完成（最多 daemonSetupBusyWait）而非覆盖
+// BusyCommand——无条件覆盖会破坏互斥语义并与房间命令（enroll 事务）
+// 真实并发。
 func (c *ExpressController) performDaemonSetup(ctx context.Context) error {
+	if err := c.waitForRoomCommandIdle(ctx); err != nil {
+		return err
+	}
 	c.mu.Lock()
 	repair := c.repair
 	c.state.BusyCommand = "daemon-setup"
@@ -456,6 +477,29 @@ func (c *ExpressController) performDaemonSetup(ctx context.Context) error {
 		case <-setupCtx.Done():
 			return errDaemonSetupTimeout
 		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+// waitForRoomCommandIdle 等待进行中的房间命令完成（最多
+// daemonSetupBusyWait）；超时或 ctx 取消时返回错误。
+// busy 位无通知机制，采用短轮询。
+func (c *ExpressController) waitForRoomCommandIdle(ctx context.Context) error {
+	deadline := time.Now().Add(daemonSetupBusyWait)
+	for {
+		c.mu.Lock()
+		busy := c.state.BusyCommand
+		c.mu.Unlock()
+		if busy == "" || busy == "daemon-setup" {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errDaemonSetupBusy
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
 		}
 	}
 }
@@ -499,6 +543,8 @@ func daemonPublicError(err error) *ExpressError {
 		return &ExpressError{Code: expressErrInternal, Message: "极速模式准备超时", Retryable: true, Action: "稍后重试"}
 	case errors.Is(err, errDaemonSetupGiveUp):
 		return &ExpressError{Code: expressErrServiceUnavailable, Message: "极速模式准备多次失败", Retryable: true, Action: "请检查安全软件后重试"}
+	case errors.Is(err, errDaemonSetupBusy):
+		return &ExpressError{Code: expressErrOperationConflict, Message: "有房间操作正在进行，暂时无法准备", Retryable: true, Action: "请稍后重试"}
 	default:
 		return &ExpressError{Code: expressErrServiceUnavailable, Message: "极速模式暂时不可用", Retryable: true, Action: "重试"}
 	}
@@ -529,9 +575,11 @@ func (c *ExpressController) runCommand(command string, execute func(context.Cont
 }
 
 // runCommandWithInitialState 是所有命令的通用执行器，处理并发锁、状态转换和错误映射。
+// 断开/离开属本地清理命令：daemon-setup 就绪流程占用期间必须放行
+// （不依赖守护进程，且用户可能正需要中断"准备中"状态）。
 func (c *ExpressController) runCommandWithInitialState(command, initialState string, execute func(context.Context) (session.Snapshot, error)) ExpressState {
 	c.mu.Lock()
-	if c.state.BusyCommand != "" {
+	if c.state.BusyCommand != "" && !overlapWithDaemonSetup(command, c.state.BusyCommand) {
 		c.state.Error = &ExpressError{
 			Code:      expressErrOperationConflict,
 			Message:   "已有房间操作正在进行",
@@ -560,7 +608,11 @@ func (c *ExpressController) runCommandWithInitialState(command, initialState str
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.state.BusyCommand = ""
+	// 仅清空自己的命令名：与 daemon-setup 并发放行时（overlap），
+	// 无条件置空会把就绪流程的 busy 标志一并清掉。
+	if c.state.BusyCommand == command {
+		c.state.BusyCommand = ""
+	}
 	if err != nil {
 		c.state.State = string(session.StateRecoverableError)
 		c.state.ConnectedPath = string(clientnetbird.PathNone)
@@ -584,6 +636,13 @@ func (c *ExpressController) failCommand(code, message string, retryable bool, ac
 	defer c.mu.Unlock()
 	c.state.Error = &ExpressError{Code: code, Message: message, Retryable: retryable, Action: action}
 	return c.cloneState()
+}
+
+// overlapWithDaemonSetup 判断本地清理命令是否可在 daemon-setup 就绪
+// 流程占用期间放行。清理命令不依赖守护进程，拒绝它们会让用户在
+// "准备中"（可能挂起 UAC 最长数分钟）期间连退出都无法操作。
+func overlapWithDaemonSetup(command, busy string) bool {
+	return busy == "daemon-setup" && (command == "leave" || command == "disconnect")
 }
 
 // clearActiveRoom 清除与当前房间关联的所有状态字段。
@@ -782,6 +841,11 @@ func expressPublicError(err error) *ExpressError {
 	}
 	if errors.Is(err, nbdaemon.ErrElevationTimedOut) {
 		return &ExpressError{Code: expressErrInternal, Message: "极速模式准备超时", Retryable: true, Action: "稍后重试"}
+	}
+	// 房间码格式错误：重试永远无效，必须给出指向性提示而非兜底的
+	// "操作未完成/稍后重试"（误导用户无限重试）。
+	if errors.Is(err, roomapi.ErrInvalidRoomCode) {
+		return &ExpressError{Code: expressErrInvalidInput, Message: "房间码格式不正确", Retryable: false, Action: "请输入 XXXX-XXXX-XXXX 格式的房间码"}
 	}
 	if strings.Contains(strings.ToLower(err.Error()), "room session is unavailable") {
 		return &ExpressError{Code: expressErrServiceUnavailable, Message: "极速模式尚未就绪", Retryable: true, Action: "稍后重试"}

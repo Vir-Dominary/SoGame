@@ -33,6 +33,7 @@ import (
 
 	"sogame/internal/logger"
 	"sogame/internal/nic"
+	"sogame/internal/syspath"
 	tapadapter "sogame/internal/tap"
 
 	"golang.org/x/sys/windows"
@@ -206,7 +207,7 @@ func SetInterfaceMetric(ifName string, metric int) error {
 		return nil
 	}
 
-	cmd := exec.Command("netsh", "interface", "ipv4", "set", "interface",
+	cmd := exec.Command(syspath.System32("netsh.exe"), "interface", "ipv4", "set", "interface",
 		ifName, fmt.Sprintf("metric=%d", metric))
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	output, err := cmd.CombinedOutput()
@@ -230,7 +231,7 @@ func ConfigureTapInterface(ifName, ip string) error {
 	}
 
 	// 先重置为 DHCP，清除可能残留的 IP 配置
-	resetCmd := exec.Command("netsh", "interface", "ip", "set", "address",
+	resetCmd := exec.Command(syspath.System32("netsh.exe"), "interface", "ip", "set", "address",
 		ifName, "dhcp")
 	resetCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	resetCmd.CombinedOutput()
@@ -240,7 +241,7 @@ func ConfigureTapInterface(ifName, ip string) error {
 	// 设置静态 IP（/24 子网掩码，与 10.10.10.X 地址分配策略匹配）
 	// 使用 /24 而非 /16，因为 Windows TAP 适配器默认使用 /24，
 	// 强制设置 /16 会被系统覆盖回 /24，导致不同第三字节用户无法通信。
-	cmd := exec.Command("netsh", "interface", "ip", "set", "address",
+	cmd := exec.Command(syspath.System32("netsh.exe"), "interface", "ip", "set", "address",
 		ifName, "static", ip, "255.255.255.0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	output, err := cmd.CombinedOutput()
@@ -249,7 +250,7 @@ func ConfigureTapInterface(ifName, ip string) error {
 	}
 
 	// 设置 MTU
-	mtuCmd := exec.Command("netsh", "interface", "ipv4", "set", "subinterface",
+	mtuCmd := exec.Command(syspath.System32("netsh.exe"), "interface", "ipv4", "set", "subinterface",
 		ifName, "mtu=1290", "store=persistent")
 	mtuCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	mtuOutput, mtuErr := mtuCmd.CombinedOutput()
@@ -375,13 +376,13 @@ func installTapDriver() (TapInstallStatus, error) {
 	infPath := filepath.Join(tapDir, "OemWin2k.inf")
 
 	logger.Infof("  添加 TAP 驱动到驱动存储...")
-	pnputilCmd := exec.Command("pnputil", "/add-driver", infPath, "/install")
+	pnputilCmd := exec.Command(syspath.System32("pnputil.exe"), "/add-driver", infPath, "/install")
 	pnputilCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	pnputilOutput, pnputilErr := pnputilCmd.CombinedOutput()
 	if pnputilErr != nil {
 		logger.Warnf("  pnputil /add-driver 失败: %v, 输出: %s", pnputilErr, strings.TrimSpace(string(pnputilOutput)))
 		logger.Infof("  重试: 使用 /force 标志...")
-		pnputilCmd2 := exec.Command("pnputil", "/add-driver", infPath, "/install", "/force")
+		pnputilCmd2 := exec.Command(syspath.System32("pnputil.exe"), "/add-driver", infPath, "/install", "/force")
 		pnputilCmd2.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 		pnputilOutput2, pnputilErr2 := pnputilCmd2.CombinedOutput()
 		if pnputilErr2 != nil {

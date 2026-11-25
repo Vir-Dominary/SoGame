@@ -143,12 +143,26 @@ func assembleWindowsExpress(controller *ExpressController, roomAPIBaseURL string
 
 // reassembleExpress 在 Room API 地址变更后重组装控制器并刷新状态。
 // 调用方负责确保当前无房间命令进行中（BusyCommand 为空）。
+// 重组装会 Close 旧 session.Service（停止房主心跳）：若重组装前仍处于
+// 房间中，组装完成后自动重连以恢复心跳与状态机——否则心跳静停会让
+// 服务端看门狗在 OwnerOfflineAfter（默认 5m）后误解散房间。
+// 重组装失败时把状态回置 NoRoom 并清除房间字段，防止残留的旧房间
+// 字段让前端渲染出"假房间"视图（操作时才报"尚未就绪"）。
 func reassembleExpress(controller *ExpressController, roomAPIBaseURL string) {
 	if controller == nil {
 		return
 	}
+	controller.mu.Lock()
+	wasInRoom := controller.state.State != string(session.StateNoRoom) &&
+		controller.state.State != string(session.StateRecoverableError)
+	controller.mu.Unlock()
 	if err := assembleWindowsExpress(controller, roomAPIBaseURL); err != nil {
 		logger.Warnf("express: reassemble after Room API URL change failed: %v", err)
+		controller.mu.Lock()
+		controller.state.State = string(session.StateNoRoom)
+		controller.state.ConnectedPath = string(clientnetbird.PathNone)
+		controller.clearActiveRoom()
+		controller.mu.Unlock()
 		return
 	}
 	controller.mu.Lock()
@@ -159,6 +173,11 @@ func reassembleExpress(controller *ExpressController, roomAPIBaseURL string) {
 		controller.refreshService(ctx)
 	}
 	logger.Infof("express: controller reassembled after Room API URL change")
+	if wasInRoom {
+		// 后台自动重连（经 runCommand 互斥；若新地址下房间不存在会
+		// 得到明确的失败反馈而非静默丢房间）。
+		go controller.Reconnect()
+	}
 }
 
 // closePreviousRPC 关闭并清空控制器中旧的 session.Service 与 RPC 连接（如果存在）。
@@ -216,6 +235,7 @@ func windowsRepairFunc(roomAPIBaseURL string, controller *ExpressController) fun
 			return err
 		}
 		if err := nbdaemon.RequestInstallerElevation(
+			ctx,
 			filepath.Join(root, "sogame-helper.exe"),
 			chooseMSIAction(controller, ctx),
 			artifact,
@@ -277,11 +297,26 @@ func chooseMSIAction(controller *ExpressController, ctx context.Context) nbdaemo
 
 // waitForDaemonAndReassemble 轮询重试拨号 NetBird 守护进程，
 // 就绪后重新组装控制器并刷新状态。MSI 安装完成后服务启动需要数秒，
-// 最多重试 15 次（约 30 秒）。
+// 最多重试 45 次（约 90 秒，与 daemonSetupTimeout 预算对齐——首装后
+// 服务注册到 SCM 可达 30s+，早期 30s 预算放弃后控制器会停留在
+// probe=nil 死状态：巡检恒不健康、用户重试触发多余的 UAC 重装）。
+//
+// 重组装互斥红线：房间命令（create/join/connect/disconnect/leave）
+// 进行中时不得重组装——closePreviousRPC 会销毁命令正在使用的
+// service/RPC 实例，把 enroll 事务半路杀死（补偿链用已关闭的 adapter
+// 执行、服务端遗留孤儿房间）。busy=daemon-setup 时不推迟：此时
+// performDaemonSetup 的 daemonHealthy 等待恰恰依赖本函数完成重组装
+// 重建探测链。
 func waitForDaemonAndReassemble(controller *ExpressController, roomAPIBaseURL string) {
-	for attempt := 0; attempt < 15; attempt++ {
+	for attempt := 0; attempt < 45; attempt++ {
 		if attempt > 0 {
 			time.Sleep(2 * time.Second)
+		}
+		controller.mu.Lock()
+		busy := controller.state.BusyCommand
+		controller.mu.Unlock()
+		if busy != "" && busy != "daemon-setup" {
+			continue
 		}
 		if err := assembleWindowsExpress(controller, roomAPIBaseURL); err != nil {
 			continue

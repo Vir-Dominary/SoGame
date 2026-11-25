@@ -15,6 +15,12 @@ DATA_DIR="/root/room-api-data"
 
 mkdir -p "$DATA_DIR"
 
+# 容器内 room-api 以 uid 10001 运行（Dockerfile USER），/data 卷的宿主
+# 目录默认 root:root 755——不 chown 时容器内 SQLite 打开即失败，进程
+# log.Fatal 崩溃循环，且引导运维走向 chmod 777 的危险解法。
+# 幂等：重复执行安全。
+chown -R 10001:10001 "$DATA_DIR"
+
 # PAT 必须已由运维预置
 if [[ ! -s "$PAT_FILE" ]]; then
     echo "错误：未找到 NetBird PAT 文件 $PAT_FILE" >&2
@@ -68,3 +74,12 @@ if [[ ! -s "$DATA_DIR/admin-token.txt" ]]; then
     chmod 600 "$DATA_DIR/admin-token.txt"
 fi
 echo "提示：请将 $ENV_FILE 与 $DATA_DIR/room-api.db 一并备份。"
+echo ""
+echo "部署前核对（两级 relay 开关）："
+echo "  1. 查看本机 traefik 路由配置是否保留 /relay 前缀（legengen 路由）；"
+echo "  2. 保留 → 须把 env 中 ROOM_API_RELAY_ENABLED 改为 true；"
+echo "     已摘除 → 保持 false。两者不一致时：数据面可达但客户端 UI 报"
+echo "     '无法直连'，产生误导性提示（room-api README 标注的'勿用'组合）。"
+echo "  3. 全新部署后执行一次冒烟：docker compose ps 确认 healthy、"
+echo "     宿主执行 curl -f http://127.0.0.1:8080/healthz、经 traefik 走一次"
+echo "     create/join 流程，验证 uid 10001 可写 /data。"

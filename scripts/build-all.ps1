@@ -45,11 +45,18 @@ Set-Location $root
 # 构建顺序红线：必须先编译 sogame-helper.exe 并计算其 SHA256，再编译
 # 主程序并注入该哈希——主程序内嵌的 helper 完整性校验（UAC 提权前的
 # prepareElevation）依赖此哈希；顺序颠倒则校验链静默失效。
+#
+# helper 构建 flags 红线（三个脚本 build-all/build-installer/publish-update
+# 必须完全一致）：flags 不同则二进制不同，SHA256 必然与主程序注入值
+# 不匹配 → 安装后极速模式提权校验失败且无指向性报错。统一为
+# -trimpath -ldflags "-s -w -H windowsgui"（与主程序发布形态的 -s -w
+# 对齐；windowsgui 消除控制台子系统）。
+$helperBuildFlags = "-trimpath", "-ldflags", "-s -w -H windowsgui"
 Write-Host ""
 Write-Host "==> [1/4] 构建 sogame-helper.exe (NetBird MSI 安装辅助程序)..." -ForegroundColor Cyan
 $helperTmp = "$root/build/tmp-helper"
 New-Item -ItemType Directory -Path $helperTmp -Force | Out-Null
-go build -o "$helperTmp/sogame-helper.exe" ./cmd/sogame-helper/
+go build @helperBuildFlags -o "$helperTmp/sogame-helper.exe" ./cmd/sogame-helper/
 if ($LASTEXITCODE -ne 0) { throw "sogame-helper build failed" }
 $helperHash = (Get-FileHash "$helperTmp/sogame-helper.exe" -Algorithm SHA256).Hash.ToLower()
 Write-Host "  sogame-helper.exe SHA256: $helperHash" -ForegroundColor Green
@@ -139,8 +146,17 @@ foreach ($name in $expected) {
     }
 }
 
-# 验证 NetBird MSI
+# 验证 NetBird MSI：build\bin 下的副本若已存在也必须重新校验哈希——
+# 旧版本/被替换的坏 MSI 入包后 postinstall 与运行时补齐共用四重校验
+# 全部静默失败，新机器极速模式不可用且无指向性提示。
 $msiDest = Join-Path $dest $msiName
+if (Test-Path $msiDest) {
+    $destHash = (Get-FileHash -LiteralPath $msiDest -Algorithm SHA256).Hash.ToLower()
+    if ($destHash -ne $expectedSha256.ToLower()) {
+        Write-Host "  build\bin\ 下的 MSI 副本哈希不匹配，删除后重新拷贝..." -ForegroundColor Yellow
+        Remove-Item -LiteralPath $msiDest -Force
+    }
+}
 if (-not (Test-Path $msiDest)) {
     # 安装器从 bin\ 目录引用 MSI，但也拷贝到 build\bin\ 便于打包
     Copy-Item $msiPath $msiDest -Force

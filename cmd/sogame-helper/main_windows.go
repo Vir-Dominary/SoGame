@@ -129,28 +129,76 @@ func ensureLogDirectory(logPath string) error {
 //   - 必须是绝对路径；
 //   - 必须位于 SoGame 约定的数据目录之下（%LOCALAPPDATA%\SoGame、
 //     %ProgramData%\SoGame 或系统临时目录）；
-//   - 目标若已存在，必须是常规文件且不得是 reparse point（防止同用户进程
-//     预置 junction/symlink 把提权写入重定向到系统文件）。
+//   - 从白名单根到目标的每一级**已存在**父目录不得是 reparse point
+//     （junction/mount point 创建无需特权，标准用户预置
+//     `mklink /J %ProgramData%\SoGame <任意目录>` 即可把提权写入
+//     重定向出白名单——词法前缀匹配防不住，必须逐级检查）；
+//   - 目标若已存在，必须是常规文件且不得是 reparse point。
 func validateWritablePath(flagName, path string) error {
 	if path == "" || !filepath.IsAbs(path) {
 		return fmt.Errorf("%s must be an absolute path", flagName)
 	}
 	clean := filepath.Clean(path)
-	allowed := false
-	for _, root := range writableRoots() {
-		if root == "" {
+	root := ""
+	for _, candidate := range writableRoots() {
+		if candidate == "" {
 			continue
 		}
-		rel, err := filepath.Rel(root, clean)
+		rel, err := filepath.Rel(candidate, clean)
 		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			allowed = true
+			root = candidate
 			break
 		}
 	}
-	if !allowed {
+	if root == "" {
 		return fmt.Errorf("%s path is outside the allowed SoGame data directories", flagName)
 	}
+	if err := rejectReparseAncestry(flagName, root, clean); err != nil {
+		return err
+	}
 	return rejectReparsePoint(flagName, clean)
+}
+
+// rejectReparseAncestry 检查从白名单根到目标路径的每一级已存在父目录
+// 都不是 reparse point。遇到不存在的层级即停：剩余层级由
+// ensureLogDirectory/MkdirAll 以提权身份创建，继承安全 ACL，标准用户
+// 无权事后替换。
+func rejectReparseAncestry(flagName, root, clean string) error {
+	rel := strings.TrimPrefix(strings.TrimPrefix(clean, root), string(filepath.Separator))
+	if rel == "" {
+		return nil
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	current := root
+	// 最后一段是目标文件本身，由 rejectReparsePoint 单独检查。
+	for i := 0; i < len(parts)-1; i++ {
+		current = filepath.Join(current, parts[i])
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("inspect %s ancestor: %w", flagName, err)
+		}
+		pathUTF16, err := windows.UTF16PtrFromString(current)
+		if err != nil {
+			return fmt.Errorf("encode %s ancestor path: %w", flagName, err)
+		}
+		attributes, err := windows.GetFileAttributes(pathUTF16)
+		if err != nil {
+			return fmt.Errorf("read %s ancestor attributes: %w", flagName, err)
+		}
+		if attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+			return fmt.Errorf("%s ancestor %s must not be a reparse point", flagName, current)
+		}
+		// Go 的 os.Lstat 把 junction 识别为 symlink 而非目录，上面的
+		// reparse 检查负责拒绝它们；此处只拒绝"非目录且非 reparse"的
+		// 普通文件占位（如攻击者用同名文件挡住目录层级）。
+		if !info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+			return fmt.Errorf("%s ancestor %s is not a directory", flagName, current)
+		}
+	}
+	return nil
 }
 
 func writableRoots() []string {

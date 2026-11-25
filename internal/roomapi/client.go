@@ -640,19 +640,24 @@ func clearBytes(value []byte) {
 	}
 }
 
+// ErrInvalidRoomCode 是房间码格式错误的哨兵错误（XXXX-XXXX-XXXX，12 位
+// 大写字母数字）。调用方据此向用户展示"格式不正确"而非误导性的
+// "稍后重试"——格式错误重试永远无效。
+var ErrInvalidRoomCode = errors.New("invalid room code")
+
 func normalizeRoomCode(value string) (string, error) {
 	value = strings.ToUpper(strings.TrimSpace(value))
 	parts := strings.Split(value, "-")
 	if len(parts) != 3 {
-		return "", errors.New("invalid room code")
+		return "", ErrInvalidRoomCode
 	}
 	for _, part := range parts {
 		if len(part) != 4 {
-			return "", errors.New("invalid room code")
+			return "", ErrInvalidRoomCode
 		}
 		for _, character := range part {
 			if (character < 'A' || character > 'Z') && (character < '0' || character > '9') {
-				return "", errors.New("invalid room code")
+				return "", ErrInvalidRoomCode
 			}
 		}
 	}

@@ -118,7 +118,13 @@ func compareVersion(a, b string) int {
 // maxDownloadBytes 是更新包大小的硬上限（实际 zip 约几十 MB），防御异常响应耗尽磁盘。
 const maxDownloadBytes = 512 << 20
 
-func Download(ctx context.Context, url, expectedSha256 string, onProgress func(percent int)) (string, error) {
+// Download 下载更新 zip 到 downloadDir 并流式校验 SHA256。
+// downloadDir 必须是不可被同用户普通权限进程写入的目录（生产调用方
+// 传入 %ProgramData%\SoGame\update-staging，管理员 ACL）：下载完成到
+// 提权子进程消费之间存在窗口，zip 落在用户可写的 %TEMP% 时该窗口内
+// 可被同账户 medium 完整性进程替换（校验通过≠校验后不被换）。
+// downloadDir 为空时回退系统 TEMP（仅供测试）。
+func Download(ctx context.Context, url, expectedSha256, downloadDir string, onProgress func(percent int)) (string, error) {
 	// 空哈希意味着信任锚缺失，下载任意内容都会被接受，必须拒绝。
 	if expectedSha256 == "" {
 		return "", fmt.Errorf("缺少 SHA256 校验值，拒绝下载")
@@ -139,9 +145,11 @@ func Download(ctx context.Context, url, expectedSha256 string, onProgress func(p
 	if resp.ContentLength > maxDownloadBytes {
 		return "", fmt.Errorf("更新包超出大小上限")
 	}
-	tmpDir := os.TempDir()
-	// 随机化文件名（共享 %TEMP% 下避免与残留/他进程预置文件互相干扰）。
-	out, err := os.CreateTemp(tmpDir, "sogame-update-*.zip")
+	if downloadDir == "" {
+		downloadDir = os.TempDir()
+	}
+	// 随机化文件名（共享目录下避免与残留/他进程预置文件互相干扰）。
+	out, err := os.CreateTemp(downloadDir, "sogame-update-*.zip")
 	if err != nil {
 		return "", err
 	}

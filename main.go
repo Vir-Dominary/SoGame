@@ -113,8 +113,10 @@ var criticalFiles = map[string]bool{
 // 由 PerformUpdate 以解压目录中的 SoGame.exe 启动，因此 os.Args[0] 天然指向源目录。
 func runUpdateApply(targetDir string) {
 	// 子进程以 windowsgui 构建，无控制台；把结果落到临时日志文件便于排查。
-	logPath := filepath.Join(os.TempDir(), "sogame-update-apply.log")
-	if logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644); err == nil {
+	// 安全：随机文件名 + CreateTemp 的 O_EXCL 语义——固定路径在 %TEMP% 下
+	// 可被同用户进程预置 symlink 指向任意文件，被本提权子进程截断覆盖。
+	logFile, err := os.CreateTemp(os.TempDir(), "sogame-update-apply-*.log")
+	if err == nil {
 		defer logFile.Close()
 		log.SetOutput(logFile)
 	}

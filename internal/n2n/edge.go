@@ -37,6 +37,7 @@ import (
 	"sogame/internal/config"
 	"sogame/internal/logger"
 	"sogame/internal/platform"
+	"sogame/internal/syspath"
 
 	"golang.org/x/sys/windows"
 )
@@ -99,6 +100,15 @@ type Edge struct {
 	authConflictRetries      int
 	registrationRetryPending bool
 	mgmtPort                 int
+	// generation 在每次 Start 成功时递增，标识当前进程代际：
+	// 旧进程的 Wait goroutine 退出时据此判断自己是否仍是当前实例
+	// （Stop/Start 快速交替后 e.cmd 字段已指向新进程，旧 goroutine 若
+	// 直接引用字段会误等新进程、误删新 PID 文件、误触发重启）。
+	generation uint64
+	// stderrBuf/stderrMu 收集 stderr 诊断输出：stderr goroutine 写、
+	// Wait/立即退出路径读，strings.Builder 非并发安全必须加锁。
+	stderrMu  sync.Mutex
+	stderrBuf strings.Builder
 }
 
 func maskEdgeKey(key string) string {
@@ -324,14 +334,20 @@ func (e *Edge) Start(cfg *config.Config) error {
 		}
 	}()
 
-	// 收集 stderr 输出，用于诊断 edge 进程启动失败
-	var stderrBuf strings.Builder
+	// 收集 stderr 输出，用于诊断 edge 进程启动失败。
+	// 经 e.stderrMu 加锁写入（M-W2：stderr goroutine 与 Wait/立即退出
+	// 读取路径并发访问，strings.Builder 非并发安全）。
+	e.stderrMu.Lock()
+	e.stderrBuf.Reset()
+	e.stderrMu.Unlock()
 	go func() {
 		scanner := bufio.NewScanner(stderrPipe)
 		for scanner.Scan() {
 			line := scanner.Text()
-			stderrBuf.WriteString(line)
-			stderrBuf.WriteString("\n")
+			e.stderrMu.Lock()
+			e.stderrBuf.WriteString(line)
+			e.stderrBuf.WriteString("\n")
+			e.stderrMu.Unlock()
 			logger.Infof("[EDGE stderr] %s", line)
 			e.parseEdgeOutput(line)
 		}
@@ -339,25 +355,40 @@ func (e *Edge) Start(cfg *config.Config) error {
 
 	e.cmd = cmd
 	e.done = make(chan struct{})
+	e.generation++
 	e.isHealthy = true
 	e.lastHealthCheck = time.Now()
 
 	done := e.done
 	pid := e.cmd.Process.Pid
+	generation := e.generation
 
 	e.mu.Unlock()
 
 	go func() {
-		err := e.cmd.Wait()
+		// 只 Wait 自己启动的进程实例（H-9：引用字段 e.cmd 会在
+		// Stop/Start 快速交替后等待错误的进程，产生双回调/误删 PID）。
+		err := cmd.Wait()
 		close(done)
 
-		// 进程退出后清除 PID 文件
-		clearEdgePID()
-
 		e.mu.Lock()
+		// 代际检查（H-10）：已有新进程接管时，本 goroutine 只做自身
+		// 收尾（close(done)），不碰共享状态、不清 PID 文件、不重启
+		// 不回调——那些属于新实例的生命周期。
+		if e.generation != generation {
+			superseded := e.generation > generation
+			e.mu.Unlock()
+			if superseded {
+				logger.Debugf("edge wait goroutine for PID %d superseded by a new start", pid)
+			}
+			return
+		}
+		// 仍是当前实例：清除 PID 文件。
+		clearEdgePID()
 		e.isHealthy = false
 		wasManualStop := e.manualStop
 		shouldRestart := e.autoRestart && e.restartCount < e.maxRestarts && !wasManualStop
+		callback := e.callback
 		e.mu.Unlock()
 
 		if wasManualStop {
@@ -366,7 +397,10 @@ func (e *Edge) Start(cfg *config.Config) error {
 		}
 
 		if err != nil {
-			stderrOutput := strings.TrimSpace(stderrBuf.String())
+			// 等待 stderr 采集收尾后取快照（cmd.Wait 返回不保证管道读完；
+			// 锁保证无数据竞争，短等待提高快照完整性）。
+			time.Sleep(200 * time.Millisecond)
+			stderrOutput := e.stderrSnapshot()
 			logger.Errorf("edge process exited with error: %v", err)
 			if stderrOutput != "" {
 				logger.Errorf("edge stderr output:\n%s", stderrOutput)
@@ -383,48 +417,53 @@ func (e *Edge) Start(cfg *config.Config) error {
 				time.Sleep(e.restartCooldown)
 
 				// 冷却期间用户可能已手动断开：尊重显式意图，不复活进程。
+				// 冷却期间用户可能已手动重连（Start 新实例）：代际变化时
+				// 不得用旧配置劫持新进程（H-10）。
 				e.mu.Lock()
 				stopped := e.manualStop
+				generationChanged := e.generation != generation
 				e.mu.Unlock()
 				if stopped {
 					logger.Infof("auto-restart cancelled: manually stopped during cooldown")
 					return
 				}
+				if generationChanged {
+					logger.Infof("auto-restart cancelled: a newer edge start took over during cooldown")
+					return
+				}
 
 				if restartErr := e.Start(cfg); restartErr != nil {
 					logger.Errorf("auto-restart failed: %v", restartErr)
-					if e.callback != nil {
-						e.callback(false, "进程意外退出，自动重启失败: "+restartErr.Error())
+					if callback != nil {
+						callback(false, "进程意外退出，自动重启失败: "+restartErr.Error())
 					}
 				} else {
 					logger.Infof("auto-restart succeeded")
-					if e.callback != nil {
-						e.callback(true, "进程已自动重启")
+					if callback != nil {
+						callback(true, "进程已自动重启")
 					}
 				}
 			} else {
-				if e.callback != nil {
+				if callback != nil {
 					if e.restartCount >= e.maxRestarts {
-						stderrOutput := strings.TrimSpace(stderrBuf.String())
 						errMsg := fmt.Sprintf("进程意外退出，已达到最大重启次数 (%d)", e.maxRestarts)
 						if stderrOutput != "" {
 							errMsg += "\n错误输出:\n" + stderrOutput
 						}
-						e.callback(false, errMsg)
+						callback(false, errMsg)
 					} else {
-						stderrOutput := strings.TrimSpace(stderrBuf.String())
 						errMsg := "进程意外退出: " + err.Error()
 						if stderrOutput != "" {
 							errMsg += "\n错误输出:\n" + stderrOutput
 						}
-						e.callback(false, errMsg)
+						callback(false, errMsg)
 					}
 				}
 			}
 		} else {
 			logger.Infof("edge process exited normally (PID: %d)", pid)
-			if e.callback != nil {
-				e.callback(false, "进程已停止")
+			if callback != nil {
+				callback(false, "进程已停止")
 			}
 		}
 	}()
@@ -432,12 +471,14 @@ func (e *Edge) Start(cfg *config.Config) error {
 	for i := 0; i < 10; i++ {
 		time.Sleep(50 * time.Millisecond)
 		e.mu.Lock()
-		exited := e.cmd.ProcessState != nil
+		// 用局部 cmd 而非 e.cmd 字段：Start 期间本实例就是 cmd；
+		// 引用字段在 Stop/Start 交替后会误检新进程。
+		exited := cmd.ProcessState != nil
 		e.mu.Unlock()
 		if exited {
 			// 等待 stderr 收集完成
 			time.Sleep(200 * time.Millisecond)
-			stderrOutput := strings.TrimSpace(stderrBuf.String())
+			stderrOutput := e.stderrSnapshot()
 			logger.Errorf("edge process exited immediately (PID: %d)", pid)
 			if stderrOutput != "" {
 				logger.Errorf("edge stderr output:\n%s", stderrOutput)
@@ -472,6 +513,13 @@ func (e *Edge) Reset() {
 	// 注意：不清零 registrationRetryPending 和 authConflictRetries。
 	// 这两个字段由 Start() 在判断后管理，避免 Reset() 提前清零导致
 	// Start() 误把 authConflictRetries 重置为 0（注册冲突重试计数器归零 Bug）。
+}
+
+// stderrSnapshot 返回 stderr 诊断输出的快照（线程安全）。
+func (e *Edge) stderrSnapshot() string {
+	e.stderrMu.Lock()
+	defer e.stderrMu.Unlock()
+	return strings.TrimSpace(e.stderrBuf.String())
 }
 
 func (e *Edge) Stop() error {
@@ -996,7 +1044,7 @@ func (e *Edge) postConnectCheck() {
 }
 
 func (e *Edge) pingVPNAddress(ip string) error {
-	cmd := exec.Command("ping", "-n", "1", "-w", "2000", ip)
+	cmd := exec.Command(syspath.System32("ping.exe"), "-n", "1", "-w", "2000", ip)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1186,7 +1234,7 @@ func MeasureNodeLatency(address string) int {
 // pingHost 对目标主机执行一次 ICMP ping，返回延迟毫秒数
 // 使用 Windows 系统 ping 命令，解析输出中的延迟值
 func pingHost(host string) int {
-	cmd := exec.Command("ping", "-n", "1", "-w", "2000", host)
+	cmd := exec.Command(syspath.System32("ping.exe"), "-n", "1", "-w", "2000", host)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1303,7 +1351,7 @@ func processStartTime(pid int) (int64, error) {
 
 // edgeProcessRunning 检查指定 PID 的进程是否仍在运行
 func edgeProcessRunning(pid int) bool {
-	cmd := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid), "/NH", "/FO", "CSV")
+	cmd := exec.Command(syspath.System32("tasklist.exe"), "/FI", fmt.Sprintf("PID eq %d", pid), "/NH", "/FO", "CSV")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1421,7 +1469,7 @@ func terminateEdgeProcessWindows(pid int, done <-chan struct{}, mgmtPort int) er
 
 	// 第三层：taskkill /F 强制终止
 	logger.Infof("graceful shutdown tier 3: taskkill /F (force kill)")
-	cmd := exec.Command("taskkill", "/F", "/T", "/PID", fmt.Sprintf("%d", pid))
+	cmd := exec.Command(syspath.System32("taskkill.exe"), "/F", "/T", "/PID", fmt.Sprintf("%d", pid))
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	output, err := cmd.CombinedOutput()
 	if err != nil {

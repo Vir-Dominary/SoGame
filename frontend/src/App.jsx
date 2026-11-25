@@ -245,8 +245,14 @@ function App() {
       if (n && n.length > 0 && !selectedNode) {
         setSelectedNode(n[0].name)
       }
-    } catch (e) { console.error('loadNodesWithLatency failed:', e) }
-    // latencyLoading 由事件回调设为 false
+    } catch (e) {
+      console.error('loadNodesWithLatency failed:', e)
+    } finally {
+      // loadingAction 必须在此复位：事件回调 nodeLatencyUpdated 只复位
+      // latencyLoading（后台测速完成标志）；loadingAction 若不复位，
+      // 挂载时的首次调用会让测速按钮永久停在"测速中..."并禁用。
+      setLoadingAction(null)
+    }
   }
 
   // 每 60 秒自动刷新延迟（仅经典模式需要）
@@ -300,6 +306,11 @@ function App() {
   const handleExpressJoin = async () => {
     if (!expressRoomCode.trim()) { setErrorMsg('请输入房间码'); return }
     if (!expressNickname.trim()) { setErrorMsg('请输入昵称'); return }
+    // 格式预校验（与 Go 侧 normalizeRoomCode 同规则）：格式错误重试永远
+    // 无效，提前拦截避免误导性的"操作未完成/稍后重试"。
+    if (!/^[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}$/.test(expressRoomCode.trim())) {
+      setErrorMsg('房间码格式不正确，应为 XXXX-XXXX-XXXX（12 位字母数字）'); return
+    }
     setLoadingAction('express-join')
     setErrorMsg('')
     try {
@@ -679,7 +690,7 @@ function App() {
           {!expressInRoom && appMode === 'express' && !isConnected && !isConnecting && (
             <div className="invite-section">
               <div className="field"><label>昵称</label><input type="text" value={expressNickname} onChange={e => { setExpressNickname(e.target.value); setErrorMsg('') }} placeholder="您的昵称" maxLength={32} /></div>
-              {tabMode === 'join' && (<div className="field"><label>房间码</label><input type="text" value={expressRoomCode} onChange={e => { setExpressRoomCode(e.target.value); setErrorMsg('') }} placeholder="粘贴房间码" maxLength={14} /></div>)}
+              {tabMode === 'join' && (<div className="field"><label>房间码</label><input type="text" value={expressRoomCode} onChange={e => { setExpressRoomCode(e.target.value.toUpperCase()); setErrorMsg('') }} placeholder="XXXX-XXXX-XXXX" maxLength={14} /></div>)}
               <button className={`generate-btn ${(loadingAction === 'express-create' || loadingAction === 'express-join') ? 'loading-bar' : ''}`} onClick={tabMode === 'create' ? handleExpressCreate : handleExpressJoin} disabled={expressBusy || loadingAction === 'express-create' || loadingAction === 'express-join'}>{loadingAction === 'express-create' || loadingAction === 'express-join' ? (tabMode === 'create' ? '创建中...' : '加入中...') : (tabMode === 'create' ? '创建房间' : '加入房间')}</button>
               {expressState && expressState.daemonPreparing && (<div className="express-installing">正在准备极速模式，首次约需 30 秒…</div>)}
               {expressState && expressState.service && expressState.service.daemonNeedsSetup && !expressState.daemonPreparing && (<div className="express-hint">极速模式需要安装网络组件。 <button className="repair-btn" onClick={handleExpressPrepare} disabled={expressBusy || loadingAction === 'express-prepare'}>{loadingAction === 'express-prepare' ? '处理中...' : '立即准备'}</button></div>)}

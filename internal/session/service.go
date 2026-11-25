@@ -302,7 +302,13 @@ func (s *Service) View(ctx context.Context) (RoomViewSnapshot, error) {
 				defer s.endCommand()
 				if current, err := s.loadSavedRoom(); err == nil && current.RoomID == metadata.RoomID {
 					s.stopOwnerHeartbeat()
-					_, _ = s.forceClear(context.WithoutCancel(ctx))
+					// 清理调用(Deregister/RemoveProfile 是无 per-call 超时的
+					// gRPC)必须套短预算:daemon 存活但不响应时,无限阻塞会让
+					// View 轮询 goroutine 卡死、busy 永久为 true,此后所有
+					// 房间命令 ErrCommandInProgress 直至重启。
+					clearCtx, cancelClear := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+					_, _ = s.forceClear(clearCtx)
+					cancelClear()
 				}
 				return RoomViewSnapshot{}, ErrRoomClosed
 			}
@@ -616,13 +622,14 @@ func (s *Service) enrollUnlocked(ctx context.Context, hostname string, obtain fu
 			return s.failValidation(err)
 		}
 	}
-	return s.performEnrollment(ctx, hostname, obtain)
+	return s.performEnrollment(ctx, hostname, obtain, false)
 }
 
 // performEnrollment 执行"获取房间凭证 → 重置 daemon 身份 → 注册并进房"的完整事务。
-// 从 enrollUnlocked(前端命令)与 repairRoomIdentity(自愈)两个入口共用;
-// repair 路径不检查本地存储(目标就是保留当前房间、仅修复身份)。
-func (s *Service) performEnrollment(ctx context.Context, hostname string, obtain func(context.Context) (roomapi.Enrollment, error)) (Snapshot, error) {
+// 从 enrollUnlocked(前端命令)与 repairRoomIdentity(自愈)两个入口共用。
+// preserveLocalState 供 repair 路径置 true：补偿时保留本地房间记录
+// （codes/metadata/tokens 属于用户当前房间，re-join 失败不得清除）。
+func (s *Service) performEnrollment(ctx context.Context, hostname string, obtain func(context.Context) (roomapi.Enrollment, error), preserveLocalState bool) (Snapshot, error) {
 	s.machine.Apply(Facts{EnrollmentInProgress: true})
 	logger.Infof("express enroll: requesting room (hostname=%q)", hostname)
 
@@ -641,8 +648,9 @@ func (s *Service) performEnrollment(ctx context.Context, hostname string, obtain
 		return s.fail(&TransactionError{Cause: err})
 	}
 	transaction := enrollmentTransaction{
-		service:   s,
-		profileID: profile.ID,
+		service:            s,
+		profileID:          profile.ID,
+		preserveLocalState: preserveLocalState,
 	}
 	if profile.ID == "" {
 		return s.fail(&TransactionError{Cause: clientnetbird.ErrManagedProfileInconsistent})
@@ -1022,12 +1030,19 @@ type enrollmentTransaction struct {
 	codeWriteAttempted       bool
 	metadataWriteAttempted   bool
 	ownerTokenWriteAttempted bool
-	compensated              bool
-	cleanupFailures          int
+	// preserveLocalState 为 true 时补偿不清除本地存储（codes/metadata/
+	// tokens）：身份自愈路径（repair）复用本事务，但其本地记录属于
+	// 用户当前房间——re-join 失败清除它们会让用户"自愈反而丢房间"
+	// （UI 卡死在无记录态、房主心跳停 → 服务端 5 分钟回收）。
+	// daemon 侧回滚（Deregister/RemoveProfile）不受影响。
+	preserveLocalState bool
+	compensated         bool
+	cleanupFailures     int
 }
 
 // compensate 按写入的严格逆序清理（tokens → metadata → codes，
 // 远端 profile 最先回滚），与"codes → metadata → tokens"的写入序对应。
+// preserveLocalState 路径跳过本地三类清理。
 func (t *enrollmentTransaction) compensate(parent context.Context) {
 	if t.compensated {
 		return
@@ -1042,6 +1057,9 @@ func (t *enrollmentTransaction) compensate(parent context.Context) {
 	}
 	if err := t.service.netbird.RemoveProfile(ctx, t.profileID); err != nil {
 		t.cleanupFailures++
+	}
+	if t.preserveLocalState {
+		return
 	}
 	if t.ownerTokenWriteAttempted && t.service.tokens != nil {
 		if err := t.service.tokens.Clear(); err != nil {

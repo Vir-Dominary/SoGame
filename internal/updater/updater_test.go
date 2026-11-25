@@ -50,7 +50,7 @@ func TestCheckRejectsManifestWithoutSha256(t *testing.T) {
 }
 
 func TestDownloadRejectsEmptySha256(t *testing.T) {
-	_, err := Download(context.Background(), "https://example.com/x.zip", "", nil)
+	_, err := Download(context.Background(), "https://example.com/x.zip", "", "", nil)
 	if err == nil {
 		t.Fatal("空 expectedSha256 必须拒绝下载")
 	}
@@ -63,7 +63,7 @@ func TestDownloadSha256Mismatch(t *testing.T) {
 	defer srv.Close()
 
 	dead := sha256.Sum256([]byte("other"))
-	_, err := Download(context.Background(), srv.URL, hex.EncodeToString(dead[:]), nil)
+	_, err := Download(context.Background(), srv.URL, hex.EncodeToString(dead[:]), "", nil)
 	if err == nil {
 		t.Fatal("SHA256 不匹配必须报错")
 	}
@@ -77,7 +77,7 @@ func TestDownloadSuccess(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	path, err := Download(context.Background(), srv.URL, hex.EncodeToString(sum[:]), nil)
+	path, err := Download(context.Background(), srv.URL, hex.EncodeToString(sum[:]), "", nil)
 	if err != nil {
 		t.Fatalf("下载应成功: %v", err)
 	}

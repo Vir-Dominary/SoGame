@@ -25,6 +25,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"sogame/internal/syspath"
 )
 
 type DependencyCheckResult struct {
@@ -110,7 +112,7 @@ func checkVirtualAdapter(networkAdapterReady bool) DependencyCheckResult {
 		}
 	}
 
-	cmd := exec.Command("ipconfig", "/all")
+	cmd := exec.Command(syspath.System32("ipconfig.exe"), "/all")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	output, err := cmd.CombinedOutput()
 	if err != nil {

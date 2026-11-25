@@ -72,7 +72,7 @@ refreshService 巡检 → ServiceMissing/VersionMismatch/Unhealthy
 ```
 ┌─ 安装包用户 ─────────────────────────────────────────────┐
 │ Inno Setup 复制文件（含 MSI + sogame-helper）             │
-│   → postinstall：sogame-helper --action install --msi …  │
+│   → postinstall：sogame-helper --action install --artifact …  │
 │     （静默、复用四重校验链、失败不阻断安装、写日志）        │
 │   → 用户打开 SoGame：daemon 已就绪，直接可用               │
 └──────────────────────────────────────────────────────────┘
@@ -116,9 +116,9 @@ func (c *ExpressController) EnsureDaemonReady(ctx context.Context) error
 
 1. **巡检**：`refreshService` 已填充 `state.Service`；`Health == ServiceReady` → 立即返回 nil。
 2. **自动修复触发条件**：`ServiceMissing` / `ServiceVersionMismatch` / `ServiceStopped` / `ServiceUnhealthy`，且距上次自动修复尝试 > 60s 冷却。
-3. **互斥**：占用 `BusyCommand="daemon-setup"`；若已有房间命令在跑，等待其完成（最多 30s）再执行；若另一 EnsureDaemonReady 在跑，等待其结果并复用。
+3. **互斥**：占用 `BusyCommand="daemon-setup"`；若已有房间命令在跑，等待其完成（最多 30s，`waitForRoomCommandIdle` 短轮询）后占位，等待超时返回"有房间操作正在进行"；若另一 EnsureDaemonReady 在跑，等待其结果并复用。断开/离开属本地清理命令，就绪流程占用期间照常放行。
 4. **修复动作**：复用现有 `windowsRepairFunc`（chooseMSIAction → RequestInstallerElevation → waitForDaemonAndReassemble），不改动 helper 与 MSI 校验链。
-5. **冷却与上限**：连续失败 3 次后停止自动重试，仅当用户执行新的房间命令时再尝试（避免杀软拦截场景下 UAC 弹窗轰炸）。
+5. **冷却与上限**：连续失败 3 次后停止自动重试；用户显式点击"立即准备"（ExpressPrepareDaemon）或执行新的房间命令时清零计数重试（避免杀软拦截场景下 UAC 弹窗轰炸，同时保证提示条上的"重试"按钮真实有效）。
 6. **就绪后处理**：重组装 + `refreshRoomView`（房间视图恢复）；若本次是"命令前准备"，继续执行原命令。
 
 ### 4.4 启动预检与命令路径透明等待
@@ -142,6 +142,9 @@ if err := c.EnsureDaemonReady(ctx); err != nil {
 ```
 
 超时预算：`daemon-setup` 单独用 90s（msiexec 首装可能 30s+），不占用房间命令的 30s。
+预算经 ctx 贯通到提权等待阶段（`RequestInstallerElevation` → `launchElevation`
+→ `awaitElevationResult`）：UAC 挂起/msiexec 卡死时由调用方预算先行截断，
+不会以 helper 侧 10 分钟兜底超时长期占用 busy 位。
 
 ### 4.5 UI 变更（frontend/src/App.jsx + webui 绑定）
 
@@ -172,7 +175,7 @@ if err := c.EnsureDaemonReady(ctx); err != nil {
 ; 安装完成后静默安装 NetBird daemon（复用 helper 的四重校验链）。
 ; 失败不阻断 SoGame 安装完成：运行时 EnsureDaemonReady 会兜底补齐。
 Filename: "{app}\sogame-helper.exe"; \
-  Parameters: "--action install --msi ""{app}\netbird_installer_0.74.7_windows_amd64.msi"" --log ""{commonappdata}\SoGame\netbird-install.log"" --result ""{commonappdata}\SoGame\netbird-install.result"""; \
+  Parameters: "--action install --artifact ""{app}\netbird_installer_0.74.7_windows_amd64.msi"" --log ""{commonappdata}\SoGame\netbird-install.log"" --result ""{commonappdata}\SoGame\netbird-install.result"""; \
   Flags: runhidden waituntilterminated; \
   StatusMsg: "正在安装网络组件（NetBird）…"
 ```
@@ -180,7 +183,8 @@ Filename: "{app}\sogame-helper.exe"; \
 注意点：
 
 - helper 的 `--log/--result` 白名单已含 `%ProgramData%\SoGame`，合规。
-- helper 需要 `--action install` 支持从给定 MSI 路径执行（现有 `--action install|repair` 已支持，`--msi` 参数已存在——核实签名：`--action, --msi, --log, --result`，已具备）。
+- helper 参数签名为 `--action, --artifact, --log, --result`（`--artifact` 指向
+  MSI 路径；实现早期草稿曾用 `--msi`，落地时已更名——按本文档旧版维护会传错参数）。
 - `waituntilterminated` 保证安装完成时 daemon 已就绪（msiexec 首装 ~15-30s，可接受）。
 - 版本升级安装（覆盖装）时 MSI 同版，helper 内 `msiexec /i` 对已装同版产品是 no-op/快速返回，无感。
 

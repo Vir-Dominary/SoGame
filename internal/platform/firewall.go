@@ -34,6 +34,8 @@ const firewallRuleName = "SoGame VPN"
 
 // powershellPath 返回 System32 下的 PowerShell 绝对路径，防 PATH 劫持
 // （主程序以管理员身份运行，经 PATH 解析外部程序是提权代码执行面）。
+// 回退同样必须是绝对路径——在被攻击环境（子进程环境块被清空 SystemRoot）
+// 里回退裸名恰好成为劫持点。
 func powershellPath() string {
 	if root := os.Getenv("SystemRoot"); root != "" {
 		candidate := filepath.Join(root, `System32\WindowsPowerShell\v1.0\powershell.exe`)
@@ -41,7 +43,7 @@ func powershellPath() string {
 			return candidate
 		}
 	}
-	return "powershell.exe"
+	return `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`
 }
 
 // runPowerShell 执行一段固定脚本并返回 trimmed 输出。

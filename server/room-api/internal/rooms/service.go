@@ -420,7 +420,7 @@ func (s *Service) Reconcile(ctx context.Context) error {
 			return err
 		}
 		for _, room := range staleRooms {
-			if err := s.teardownRoom(ctx, room, "stale_reaped"); err != nil {
+			if err := s.teardownRoom(ctx, room, "stale_reaped", staleBefore); err != nil {
 				// 失败不阻塞其余房间；房间保持 active 由看门狗下拍兜底。
 				audit.Event("room_stale_reap_failed", map[string]any{"room_id": room.ID, "error": err.Error()})
 			}
@@ -583,7 +583,7 @@ func (s *Service) Close(ctx context.Context, code, ownerToken string) error {
 	if err := verifyOwnerToken(room, ownerToken); err != nil {
 		return err
 	}
-	return s.teardownRoom(ctx, room, "owner_left")
+	return s.teardownRoom(ctx, room, "owner_left", 0)
 }
 
 // Heartbeat 房主心跳：验证令牌并刷新存活时间。房间已关闭时返回 ErrRoomClosed，
@@ -615,13 +615,12 @@ func (s *Service) Heartbeat(ctx context.Context, code, ownerToken string) error 
 	return s.store.TouchOwnerHeartbeat(ctx, room.ID, time.Now().UTC())
 }
 
-// StartOwnerWatchdog 周期清扫"房主离线超时"的房间。
-// OwnerOfflineAfter<=0 时关闭本机制（仅显式 Close 生效）。
+// StartOwnerWatchdog 周期清扫"房主离线超时"的房间，并顺带清理超期的
+// 终态数据（closed 房间与过期幂等操作行——两者均不可再被业务复用，
+// 无期限保留会被匿名端点无界灌入撑大 DB）。
+// OwnerOfflineAfter<=0 时仅关闭房主离线回收（终态 TTL 清理仍运行）。
 func (s *Service) StartOwnerWatchdog(ctx context.Context) {
 	offlineAfter := s.cfg.OwnerOfflineAfter
-	if offlineAfter <= 0 {
-		return
-	}
 	interval := s.cfg.SweepInterval
 	if interval <= 0 {
 		interval = time.Minute
@@ -634,10 +633,33 @@ func (s *Service) StartOwnerWatchdog(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				s.sweepOwnerOffline(ctx, offlineAfter)
+				if offlineAfter > 0 {
+					s.sweepOwnerOffline(ctx, offlineAfter)
+				}
+				s.pruneExpiredRows(ctx)
 			}
 		}
 	}()
+}
+
+// retentionPeriod 是终态数据的保留期：closed 房间行保留 7 天——
+// 足够离线成员轮询取到 410 并清理本地状态（客户端轮询周期 5s，
+// 即使几天不开机也能收到）；幂等操作行同为 7 天。
+const retentionPeriod = 7 * 24 * time.Hour
+
+// pruneExpiredRows 清理超期的终态数据。失败仅审计告警，下拍重试。
+func (s *Service) pruneExpiredRows(ctx context.Context) {
+	before := time.Now().UTC().Add(-retentionPeriod).UnixNano()
+	if rooms, err := s.store.DeleteClosedRoomsBefore(ctx, before); err != nil {
+		audit.Event("room_prune_failed", map[string]any{"target": "closed_rooms", "error": err.Error()})
+	} else if rooms > 0 {
+		audit.Event("room_pruned", map[string]any{"closed_rooms": rooms})
+	}
+	if ops, err := s.store.DeleteOperationsBefore(ctx, before); err != nil {
+		audit.Event("room_prune_failed", map[string]any{"target": "operations", "error": err.Error()})
+	} else if ops > 0 {
+		audit.Event("room_pruned", map[string]any{"operations": ops})
+	}
 }
 
 // sweepOwnerOffline 清扫"房主离线超时"的房间。使用有界 worker 池并发回收，
@@ -658,6 +680,11 @@ func (s *Service) sweepOwnerOffline(ctx context.Context, offlineAfter time.Durat
 	sweepCtx, cancel := context.WithTimeout(ctx, ownerSweepBudget)
 	defer cancel()
 
+	// 快照时刻的过期阈值（Unix nanos）：worker 排队期间房主可能已恢复
+	// 心跳，teardownRoom 的 BeginClosingIfStale 用它做 CAS 复查，
+	// 防止持旧快照的回收误杀在线房间。
+	staleBeforeNanos := cutoff.UnixNano()
+
 	const workers = ownerSweepWorkers
 	jobs := make(chan store.Room)
 	var wg sync.WaitGroup
@@ -670,7 +697,7 @@ func (s *Service) sweepOwnerOffline(ctx context.Context, offlineAfter time.Durat
 					// 超时后丢弃剩余任务，留待下一拍重试。
 					continue
 				}
-				if err := s.teardownRoom(sweepCtx, room, "owner_offline"); err != nil {
+				if err := s.teardownRoom(sweepCtx, room, "owner_offline", staleBeforeNanos); err != nil {
 					audit.Event("room_owner_sweep_close_failed", map[string]any{"room_id": room.ID, "error": err.Error()})
 				}
 			}
@@ -691,13 +718,22 @@ dispatch:
 	wg.Wait()
 }
 
-// teardownRoom 执行实际的资源回收。先经 BeginClosing 做状态 CAS（仅 active→closing）：
+// teardownRoom 执行实际的资源回收。先经 CAS 把房间从 active 切入 closing：
 // CAS 失败说明房间已被并发 Close/看门狗关闭，视为幂等成功直接返回，
 // 杜绝"看门狗快照滞后于房主 Close"把已关闭房间复活为 active 的竞态。
+// staleBeforeNanos > 0（看门狗/Reconcile 回收路径）时用带心跳复查的
+// BeginClosingIfStale：回收 worker 排队期间房主恢复心跳的房间不得误杀。
+// 房主主动 Close 传 0（仅状态复查）。
 // 删除类调用把 NetBird 404 视为成功（资源可能已被管理员在 dashboard 手动删除），
 // 重复执行安全；其余任一步失败会把状态还原回 active（允许重试），全部成功才进入 closed。
-func (s *Service) teardownRoom(ctx context.Context, room store.Room, reason string) error {
-	acquired, err := s.store.BeginClosing(ctx, room.ID)
+func (s *Service) teardownRoom(ctx context.Context, room store.Room, reason string, staleBeforeNanos int64) error {
+	var acquired bool
+	var err error
+	if staleBeforeNanos > 0 {
+		acquired, err = s.store.BeginClosingIfStale(ctx, room.ID, staleBeforeNanos)
+	} else {
+		acquired, err = s.store.BeginClosing(ctx, room.ID)
+	}
 	if err != nil {
 		return err
 	}

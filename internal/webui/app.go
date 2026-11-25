@@ -25,6 +25,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -40,6 +41,7 @@ import (
 	"sogame/internal/n2n"
 	"sogame/internal/natdetect"
 	"sogame/internal/platform"
+	"sogame/internal/syspath"
 	"sogame/internal/updater"
 )
 
@@ -69,6 +71,14 @@ type App struct {
 	errMsg   string
 	express  *ExpressController
 	natResult *natdetect.NATResult
+	// lastUpdateManifest 缓存最近一次 CheckUpdate 的结果，供
+	// PerformUpdate 校验前端回传参数与会话内版本信息一致。
+	lastUpdateManifest *updater.UpdateInfo
+	// classicBusy 经典模式连接编排互斥（M-W1）：Wails 每个 JS 调用
+	// 独立 goroutine，连点两次"连接"会并发执行 TAP 安装与 edge 启动
+	// （适配器 before/after 快照差分互相污染、双 edge 进程竞态）。
+	// Disconnect 不占此位——用户中断权优先，必须总能执行。
+	classicBusy bool
 }
 
 func NewApp() *App {
@@ -409,6 +419,22 @@ func (a *App) ConnectWithInvite(code string) error {
 }
 
 func (a *App) Connect(community, ip, key, supernode string) error {
+	// 经典模式命令互斥：连接编排（TAP 安装可达数十秒 + edge 启动）期间
+	// 拒绝并发连接请求（连点两次"连接"会让两轮快照差分与 edge 启动互相
+	// 踩踏）。Disconnect 不占位——中断权优先。
+	a.mu.Lock()
+	if a.classicBusy {
+		a.mu.Unlock()
+		return errors.New("连接操作正在进行中，请等待完成")
+	}
+	a.classicBusy = true
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.classicBusy = false
+		a.mu.Unlock()
+	}()
+
 	// 输入校验必须在任何落盘与进程编排之前：前端传入的字符串将直接进入
 	// edge.exe argv 与 config.yaml，非法值会造成 argv 语义注入或配置损坏
 	// （此前校验只在下次启动 LoadOrCreate 时触发，为时已晚）。
@@ -557,8 +583,15 @@ func (a *App) OpenLogs() error {
 	if _, err := os.Stat(logFile); err != nil {
 		return fmt.Errorf("日志文件不存在: %s", logFile)
 	}
-	cmd := exec.Command("notepad.exe", logFile)
-	return cmd.Start()
+	// 主程序以管理员身份运行：系统程序必须用 System32 绝对路径，
+	// 禁止经 PATH 解析（用户级 PATH 目录放置同名 exe 即提权劫持面）。
+	cmd := exec.Command(syspath.System32("notepad.exe"), logFile)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	// 异步回收进程句柄（Windows 上未 Wait 不释放 Process 对象）。
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 type AboutInfo struct {
@@ -663,15 +696,50 @@ func (a *App) CheckUpdate() updater.UpdateInfo {
 	if err != nil {
 		return updater.UpdateInfo{CurrentVersion: config.AppVersion, Error: err.Error()}
 	}
+	// 缓存本次会话检查到的 manifest：PerformUpdate 据此校验前端回传的
+	// URL/哈希与会话内版本信息一致（防前端被驱动后传任意下载参数）。
+	a.mu.Lock()
+	a.lastUpdateManifest = &info
+	a.mu.Unlock()
 	return info
+}
+
+// updateStagingDir 返回热更新 zip 下载与解压的暂存目录
+// （%ProgramData%\SoGame\update-staging）。
+//
+// 安全红线（H-6）：暂存内容由提权子进程（--update-apply）复制进安装
+// 目录并以管理员启动。目录必须不可被同用户 medium 完整性进程写入：
+// %TEMP% 下"下载校验通过→解压→子进程消费"的窗口内（等锁最长 60s）
+// 可被替换为恶意 exe 完成本地提权。ProgramData 下的目录由管理员进程
+// 创建，继承 Users 只读 ACL。
+func updateStagingDir() (string, error) {
+	programData := os.Getenv("ProgramData")
+	if programData == "" {
+		return "", errors.New("ProgramData 环境变量不可用")
+	}
+	dir := filepath.Join(programData, "SoGame", "update-staging")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, nil
 }
 
 func (a *App) PerformUpdate(downloadURL, sha256sum string) error {
 	ctx := context.Background()
 	a.mu.Lock()
 	wailsCtx := a.ctx
+	// M-C5：下载参数必须与 CheckUpdate 返回并被前端回传的 manifest 一致，
+	// 防止前端被驱动后传入任意 URL/哈希让管理员进程下载执行任意内容。
+	manifest := a.lastUpdateManifest
 	a.mu.Unlock()
-	zipPath, err := updater.Download(ctx, downloadURL, sha256sum, func(percent int) {
+	if manifest == nil || manifest.DownloadURL != downloadURL || manifest.Sha256 != sha256sum {
+		return errors.New("更新参数与会话内的版本信息不一致，请重新检查更新")
+	}
+	stagingDir, err := updateStagingDir()
+	if err != nil {
+		return err
+	}
+	zipPath, err := updater.Download(ctx, downloadURL, sha256sum, stagingDir, func(percent int) {
 		if wailsCtx != nil {
 			runtime.EventsEmit(wailsCtx, "updateProgress", percent)
 		}
@@ -679,7 +747,7 @@ func (a *App) PerformUpdate(downloadURL, sha256sum string) error {
 	if err != nil {
 		return err
 	}
-	extractDir := filepath.Join(os.TempDir(), "sogame-update")
+	extractDir := filepath.Join(stagingDir, "extracted")
 	if err := updater.Extract(zipPath, extractDir); err != nil {
 		updater.CleanupTemp(zipPath, extractDir)
 		return err
@@ -872,7 +940,7 @@ func (a *App) ExpressGetState() ExpressState {
 			Error: &ExpressError{
 				Code:    expressErrServiceUnavailable,
 				Message: "极速模式不可用",
-				Action:  "请检查守护进程",
+				Action:  "请重启应用后重试",
 			},
 		}
 	}
@@ -942,10 +1010,14 @@ func (a *App) ExpressLeaveRoom() ExpressState {
 	return a.express.LeaveRoom()
 }
 
-// ExpressRevealRoomCode 返回完整的房间码（供用户分享）
-func (a *App) ExpressRevealRoomCode() (string, *ExpressError) {
+// ExpressRevealRoomCode 返回完整的房间码（供用户分享）。
+// Wails 桥接红线：绑定方法的错误返回值必须是 error 接口本身，
+// 不能是实现了 error 的具体类型（如 *ExpressError）——后者在成功
+// 路径返回字面 nil 时会以 typed-nil 形式通过桥接的类型断言，
+// 导致 Result 被当作"出错但空错误文本"丢弃、前端 resolve(null)。
+func (a *App) ExpressRevealRoomCode() (string, error) {
 	if a.express == nil {
-		return "", &ExpressError{Code: expressErrServiceUnavailable, Message: "极速模式不可用"}
+		return "", errors.New("极速模式不可用")
 	}
 	return a.express.RevealRoomCode()
 }
