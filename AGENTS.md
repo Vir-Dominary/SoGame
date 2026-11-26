@@ -202,7 +202,7 @@ go run ./tools/room-api-mock/main.go   # 监听 127.0.0.1:9099，MOCK_RELAY_ENAB
 | `DefaultSupernode` | `8.148.244.159:10090` | 经典模式默认中心节点（节点表见 `internal/n2n/edge.go` knownNodes） |
 | `UpdateURL` | `https://virdy.cn/sogame/update.json` | 热更新 manifest |
 | `UpdateManifestPublicKey` | 空（未启用验签） | 更新 manifest ed25519 验签公钥（base64）；填入后 manifest 必须携带有效签名，见 §5 发布签名 |
-| `STUNServerCandidates` | 自建 `stun.virdy.cn:3478`（待部署）+ 腾讯/小米/Cloudflare 公共 STUN | NAT 探测候选池（顺序即优先级，顺序故障转移；共享 socket 两步对比判定，不武断判 UDPBlocked） |
+| `STUNServerCandidates` | 自建 `legengen.top:3478`（netbird 内置 STUN，复用）+ 腾讯/小米/Cloudflare 公共 STUN | NAT 探测候选池（顺序即优先级，顺序故障转移；共享 socket 两步对比判定，不武断判 UDPBlocked） |
 
 ### 6.2 Room API 服务端（环境变量，`server/room-api/internal/config/config.go`）
 
@@ -312,7 +312,7 @@ go run ./tools/room-api-mock/main.go   # 监听 127.0.0.1:9099，MOCK_RELAY_ENAB
 
 | # | 事项 | 依赖什么 | 状态 | 关联发现 |
 |---|---|---|---|---|
-| 1 | **coturn 部署**（NAT 检测自建主服务器） | virdy.cn 服务器资源 + 云安全组 | ⏸ **待决策**：清单原定 `listening-port=3478`，但 3478/udp 已被 netbird-server 内置 STUN 占用——需先决策端口方案（coturn 换端口并同步 `STUNServerA` 常量，或复用 netbird 的 3478）。期间公共 STUN 兜底可用 | NAT 检测（2026-11-24） |
+| 1 | ~~coturn 部署~~（NAT 检测自建主服务器） | ~~virdy.cn 服务器资源 + 云安全组~~ | ✅ **完成（2026-11-26）**：决策**复用 netbird-server 内置 STUN**（原定 coturn 的 3478/udp 与之冲突，独立部署无必要）——候选池首位改为 `legengen.top:3478`（实测 Binding Request 正常），随客户端发版生效；期间公共 STUN 兜底无变化 | NAT 检测（2026-11-24） |
 | 2 | ~~room-api 服务端修复的生产部署~~ | 服务器 | ✅ **完成（2026-11-26）**：4cb16fb 的审计修复（HMAC 房间码迁移、看门狗 CAS、限流前缀聚合等）已编译部署（二进制 773c56ed），端到端验证通过 | M-S1/M-S2 |
 | 3 | ~~relay 两级开关对齐~~ | 生产 traefik 配置 | ✅ **完成（2026-11-26）**：决策"中继经域名 HTTPS 可用、IP 明文入口下线"——`config.yaml` 加 `relay.addresses`（Management 分发 `rels://legengen.top:443`），摘除 IP 明文 `/relay` 路由，`legengen-backend` 的 HTTPS relay 保留，`ROOM_API_RELAY_ENABLED` 保持 true | M-S3 |
 | 4 | ~~全新部署冒烟~~ | 服务器 | ✅ **完成（2026-11-26）**：`prep-room-api.sh` 以临时 env 冒烟通过（密钥生成/幂等/字段齐全）；顺带修复脚本 CRLF 兼容问题（`.gitattributes` 已强制 `*.sh eol=lf`）。注：完整"从零起容器"验证仍待独立环境 | M-S4 |

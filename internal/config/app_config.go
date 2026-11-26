@@ -68,10 +68,11 @@ var deprecatedSupernodes = map[string]bool{}
 // STUNServerCandidates 是 NAT 探测的候选服务器池（顺序即优先级）：
 // 自建服务器为主，公共服务器兜底。探测按顺序故障转移：第一台成功的
 // 作为主服务器，第二阶段再排除它取下一台可达者用于 NAT 类型对比。
-// 自建 stun.virdy.cn 部署 coturn（仅 STUN，UDP 3478）后应保持首位；
-// 未部署期间公共候选保证功能可用。
+// 自建 STUN 复用 netbird-server 内置 STUN（legengen.top:3478/udp，与
+// Management 同机；2026-11-26 实测 Binding Request 响应正常），
+// 不再单独部署 coturn——3478 端口已占用，独立部署无必要。
 var STUNServerCandidates = []string{
-	"stun.virdy.cn:3478",       // 自建（coturn，运维侧待部署）
+	"legengen.top:3478",        // 自建（netbird 内置 STUN，与 Management 同机）
 	"stun.qq.com:3478",         // 腾讯公共 STUN
 	"stun.miwifi.com:3478",     // 小米公共 STUN
 	"turn.cloudflare.com:3478", // Cloudflare 公共 STUN（海外兜底）
