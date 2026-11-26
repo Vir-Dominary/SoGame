@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 SoGame Contributors
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop, feature/wireguard, feature/server-deploy]
+  pull_request:
+
+jobs:
+  client:
+    name: 客户端 (go vet + race test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test -race
+        run: go test -race -count=1 ./...
+
+  room-api:
+    name: Room API (CGO race test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      # server/room-api 依赖 go-sqlite3（CGO），需要 gcc
+      - name: Install gcc
+        run: sudo apt-get update && sudo apt-get install -y gcc
+
+      - name: go vet
+        working-directory: server/room-api
+        run: go vet ./...
+
+      - name: go test -race (CGO)
+        working-directory: server/room-api
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -count=1 ./...

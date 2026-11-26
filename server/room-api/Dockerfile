@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 
 # 构建阶段：需要 CGO（依赖 github.com/mattn/go-sqlite3）。
-FROM golang:1.25 AS build
+# 基础镜像 digest 于 2026-11-26 经 docker images --digests 固化（防上游漂移）。
+FROM golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437 AS build
 
 WORKDIR /src
 
@@ -14,7 +15,7 @@ COPY . .
 RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/room-api ./cmd/room-api
 
 # 运行阶段：仅保留可执行文件与 CA 证书。
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:e67eeead736ff7bbe258ef088bff683635c561b1fcfefad0806c1df4ab49ce0e
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates tzdata && \

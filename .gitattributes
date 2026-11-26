@@ -1,0 +1,7 @@
+# shell 脚本一律 LF（CRLF 会导致服务器 bash 把 'pipefail\r' 当非法 option）
+*.sh text eol=lf
+# bat/cmd 一律 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+# PowerShell 脚本 LF（PS5.1 兼容，且仓库内脚本均以 LF 管理）
+*.ps1 text eol=lf

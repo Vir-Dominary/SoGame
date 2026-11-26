@@ -310,18 +310,18 @@ go run ./tools/room-api-mock/main.go   # 监听 127.0.0.1:9099，MOCK_RELAY_ENAB
 > 生产拓扑或平台决策**。逐项完成后从本清单划除。对应审计发现编号见
 > `docs/AUDIT_REPORT_2026-11-24.md`。
 
-| # | 事项 | 依赖什么 | 待执行动作 | 关联发现 |
+| # | 事项 | 依赖什么 | 状态 | 关联发现 |
 |---|---|---|---|---|
-| 1 | **coturn 部署**（NAT 检测自建主服务器） | virdy.cn 服务器资源 + 云安全组 | 部署 coturn（仅 STUN：`listening-port=3478`、`no-tls`、`no-dtls`、关 `lt-cred-mech`），放行 **UDP 3478 入方向**；就绪后客户端无需改动（`stun.virdy.cn` 已在候选池首位）。期间腾讯/小米/Cloudflare 公共 STUN 兜底可用 | NAT 检测（2026-11-24） |
-| 2 | **room-api 服务端修复的生产部署** | 服务器（legengen.top 宿主） | 服务端代码修复（看门狗 CAS 过期复查、限流前缀聚合等）合入后需重建二进制、`docker compose` 重新部署并重启；HMAC 迁移上线后观察审计日志 | M-S1/M-S2 |
-| 3 | **relay 两级开关对齐**（运维决策） | 生产 traefik 配置 | 决策数据面 `/relay` 路由去留：不用中继则从 `deploy/traefik-dynamic.yml` 的 `legengen` 路由摘除 `/relay` 前缀；保留则 `prep-room-api.sh` 的 `ROOM_API_RELAY_ENABLED` 改 `true`（当前两者矛盾，恰为 room-api README 标注的"勿用"组合） | M-S3 |
-| 4 | **全新部署冒烟** | 服务器 | 按 `prep-room-api.sh`+compose 做一次从零部署验证（uid 10001 写 /data、healthcheck、traefik 路由），确认 chown 步骤生效 | M-S4 |
-| 5 | **IPv6 暴露确认** | 服务器网络拓扑 | 确认 `legengen.top` 是否有 AAAA/IPv6 入口；若有，验证限流前缀聚合（/64）生效 | M-S2 前提 |
-| 6 | **热更新验签启用** | virdy.cn 发布链 | 运行 `tools/update-keygen` 生成密钥对（本地可做）→ 公钥填入 `internal/config/app_config.go:UpdateManifestPublicKey` 并发版 → 此后所有 `update.json` 必须带 `-SignKeyFile` 签名上传；私钥离线保管。**注意窗口期：公钥发版与签名链路必须同步就绪，否则全量客户端更新被拒** | H-3（上轮） |
-| 7 | **更新入口 HTTPS 跳转** | virdy.cn nginx/traefik | `sogame-updates` 路由的 80 明文入口加 redirectScheme 中间件（对齐 legengen.top 做法），消除验签未启用期间的中间人暴露面 | 前端/部署低危 |
-| 8 | **traefik accessLog 红线** | 生产 traefik 配置 | 保持 accessLog 关闭，或配置 `fields.names.Path=drop`——一旦开启，明文房间码将绕过服务端全部脱敏防线落日志 | 服务端低危 F-9 |
-| 9 | **CI 落地** | GitHub Actions | 新增 workflow：`go vet` + `go test -race ./...`（race 门禁已全绿）+ `cd server/room-api && CGO_ENABLED=1 go test ./...`（runner 装 MinGW 或用 `quay.io/...` 带 gcc 镜像）；`.github/workflows` 文件本地可编写，启用需推送验证 | §7 流程风险 |
-| 10 | **Docker 镜像 digest 固定** | 发布机可访问 registry | room-api Dockerfile 基础镜像 pin digest（`docker buildx imagetools inspect` 查询后写入） | 上轮接受项 L-21 |
+| 1 | **coturn 部署**（NAT 检测自建主服务器） | virdy.cn 服务器资源 + 云安全组 | ⏸ **待决策**：清单原定 `listening-port=3478`，但 3478/udp 已被 netbird-server 内置 STUN 占用——需先决策端口方案（coturn 换端口并同步 `STUNServerA` 常量，或复用 netbird 的 3478）。期间公共 STUN 兜底可用 | NAT 检测（2026-11-24） |
+| 2 | ~~room-api 服务端修复的生产部署~~ | 服务器 | ✅ **完成（2026-11-26）**：4cb16fb 的审计修复（HMAC 房间码迁移、看门狗 CAS、限流前缀聚合等）已编译部署（二进制 773c56ed），端到端验证通过 | M-S1/M-S2 |
+| 3 | ~~relay 两级开关对齐~~ | 生产 traefik 配置 | ✅ **完成（2026-11-26）**：决策"中继经域名 HTTPS 可用、IP 明文入口下线"——`config.yaml` 加 `relay.addresses`（Management 分发 `rels://legengen.top:443`），摘除 IP 明文 `/relay` 路由，`legengen-backend` 的 HTTPS relay 保留，`ROOM_API_RELAY_ENABLED` 保持 true | M-S3 |
+| 4 | ~~全新部署冒烟~~ | 服务器 | ✅ **完成（2026-11-26）**：`prep-room-api.sh` 以临时 env 冒烟通过（密钥生成/幂等/字段齐全）；顺带修复脚本 CRLF 兼容问题（`.gitattributes` 已强制 `*.sh eol=lf`）。注：完整"从零起容器"验证仍待独立环境 | M-S4 |
+| 5 | ~~IPv6 暴露确认~~ | 服务器网络拓扑 | ✅ **完成（2026-11-26）**：`legengen.top`/`virdy.cn` 均无 AAAA（纯 IPv4），限流前缀聚合（/64）暂不适用 | M-S2 前提 |
+| 6 | **热更新验签启用**（代码侧完成） | virdy.cn 发布链 | 🔶 **代码已入库（2026-11-26）**：密钥对已生成，公钥已填入 `UpdateManifestPublicKey` 并随下版发布；**私钥离线保管（绝不可入库/上传）**。⚠️ 窗口期约束：公钥发版后所有 `update.json` 必须带 `-SignKeyFile` 签名，否则全量客户端更新被拒——下次发布必须同步签名 | H-3（上轮） |
+| 7 | ~~更新入口 HTTPS 跳转~~ | virdy.cn nginx/traefik | ✅ **完成（2026-11-26）**：`sogame-updates` 80 明文入口 301 跳 HTTPS（实测）；域名 `/Download` 80 入口同加；IP 路由无证书不跳 | 前端/部署低危 |
+| 8 | ~~traefik accessLog 红线~~ | 生产 traefik 配置 | ✅ **完成（2026-11-26）**：`RequestPath` + `RequestLine` 字段 drop（实测日志路径已抹除为 `-`），其余字段保留观测 | 服务端低危 F-9 |
+| 9 | ~~CI 落地~~ | GitHub Actions | ✅ **完成（2026-11-26）**：`.github/workflows/ci.yml` 已入库（client vet+race、room-api CGO race），推送后首次运行需观察 | §7 流程风险 |
+| 10 | ~~Docker 镜像 digest 固定~~ | 发布机可访问 registry | ✅ **完成（2026-11-26）**：Dockerfile 基础镜像 pin digest（`golang:1.25-bookworm` 与 `debian:bookworm-slim`，经服务器实际 pull 验证） | 上轮接受项 L-21 |
 
 **本地环境固化说明**：MinGW-w64 GCC 16.2 已固化于 `C:\mingw64`（POSIX threads + UCRT，
 winlibs 发行版）。room-api 测试与全量 race 门禁的本地执行方式：

@@ -34,7 +34,7 @@ const (
 	// tools/update-keygen，发布签名集成在 scripts/publish-update.ps1。
 	// 空字符串表示未启用验签（向后兼容：跳过签名校验）；
 	// 一旦填入公钥，manifest 必须携带有效签名，否则更新被拒绝。
-	UpdateManifestPublicKey = ""
+	UpdateManifestPublicKey = "PTqc8fX3tM1iQrAl/64tSB6Y/TbrW/iEZc9Z4e7iPqc="
 
 	// DefaultRoomAPIURL 是极速模式（netbird）的默认 Room API 服务地址。
 	// 指向 legengen.top（traefik 的 legengen-rooms 路由，HTTPS 加密传输；
