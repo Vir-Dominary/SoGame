@@ -201,7 +201,7 @@ go run ./tools/room-api-mock/main.go   # 监听 127.0.0.1:9099，MOCK_RELAY_ENAB
 | `DefaultRoomAPIURL` | `https://legengen.top` | 生产 Room API（traefik `legengen-rooms` 路由，HTTPS；明文 IP 入口已于 2026-09-24 下线） |
 | `DefaultSupernode` | `8.148.244.159:10090` | 经典模式默认中心节点（节点表见 `internal/n2n/edge.go` knownNodes） |
 | `UpdateURL` | `https://virdy.cn/sogame/update.json` | 热更新 manifest |
-| `UpdateManifestPublicKey` | 空（未启用验签） | 更新 manifest ed25519 验签公钥（base64）；填入后 manifest 必须携带有效签名，见 §5 发布签名 |
+| `UpdateManifestPublicKey` | `PTqc8fX3...iPqc=`（2026-11-26 已启用） | 更新 manifest ed25519 验签公钥（base64）；已填入——manifest 必须携带有效签名，见 §5 发布签名与 §8.1 #6 窗口期约束 |
 | `STUNServerCandidates` | 自建 `legengen.top:3478`（netbird 内置 STUN，复用）+ 腾讯/小米/Cloudflare 公共 STUN | NAT 探测候选池（顺序即优先级，顺序故障转移；共享 socket 两步对比判定，不武断判 UDPBlocked） |
 
 ### 6.2 Room API 服务端（环境变量，`server/room-api/internal/config/config.go`）
