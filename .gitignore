@@ -24,3 +24,9 @@ bin/*.msi
 
 # 本机 SSH 调试工具与密钥（严禁入库）
 .ssh-tools/
+
+# 热更新 ed25519 签名私钥（绝不可入库；tools/update-keygen 生成，发布者离线保管）
+sogame-update.key
+*.update.key
+*.key
+!*.pub
